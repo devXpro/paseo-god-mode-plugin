@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 256px; height: 256px; background: #000; overflow: hidden; }
+  .glow { position: absolute; left: 50%; top: 50%; width: 250px; height: 250px; border-radius: 50%; transform: translate(-50%, -50%);
+    background: radial-gradient(circle, rgba(255,150,20,0.38) 0%, rgba(255,120,0,0.12) 40%, transparent 68%); }
+  .ring { position: absolute; left: 50%; top: 50%; border-radius: 50%; transform: translate(-50%, -50%); border: 2px solid rgba(255,176,32,0.28); }
+  .orb { position: absolute; left: 50%; top: 50%; width: 132px; height: 132px; border-radius: 50%; transform: translate(-50%, -50%);
+    background:
+      radial-gradient(circle at 34% 28%, rgba(255,255,255,0.95) 0%, rgba(255,246,220,0.85) 6%, rgba(255,214,120,0) 22%),
+      radial-gradient(circle at 50% 55%, #ffcf5a 0%, #ff9d14 34%, #c75a00 62%, #3d1600 88%, #120600 100%);
+    box-shadow: inset -18px -24px 40px rgba(0,0,0,0.55), inset 8px 10px 22px rgba(255,240,200,0.25), 0 0 40px 8px rgba(255,160,30,0.45); }
+</style></head><body>
+  <div class="glow"></div>
+  <div class="ring" style="width: 176px; height: 176px;"></div>
+  <div class="ring" style="width: 222px; height: 222px; border-color: rgba(255,176,32,0.14);"></div>
+  <div class="orb"></div>
+</body></html>

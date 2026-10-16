@@ -1,0 +1,9 @@
+{
+  "id": "god-mode",
+  "name": "God Mode",
+  "description": "Talk to ChatGPT. Every Paseo agent obeys. Full voice and chat control of Paseo from ChatGPT, set up from the sidebar.",
+  "icon": "assets/icon.png",
+  "requirements": {
+    "paseo": ">=0.11.0"
+  }
+}
