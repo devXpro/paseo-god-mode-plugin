@@ -83,6 +83,10 @@ export const releaseStatusRpc = defineRpc({
   input: z.object({ log: z.boolean().default(false) }),
   output: z.object({
     installed: z.string(),
+    /** git describe of the plugin's own directory, when it is a checkout. */
+    source: z.string().nullable(),
+    /** The newest release on GitHub, and whether it is newer than the plugin installed here. */
+    latest: z.object({ version: z.string(), url: z.string(), newer: z.boolean() }).nullable(),
     site: site.nullable(),
     live: versionRef.nullable(),
     newest: versionRef.nullable(),

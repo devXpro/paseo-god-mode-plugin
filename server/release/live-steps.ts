@@ -13,18 +13,20 @@ import { packageWorker } from "./package.ts";
 import type { ReleaseSteps } from "./pipeline.ts";
 import { publishWithCodex } from "./publish.ts";
 import { smokeTest } from "./smoke.ts";
-import { stageSource, writeHosting } from "./stage.ts";
+import { stageSource, writeBuildInfo, writeHosting } from "./stage.ts";
+import type { SourceIdentity } from "../self.ts";
 
 export interface LiveStepsInput {
   server: AppServer;
   codex: string;
   projectId: string;
   sourceDir: string;
+  identity: SourceIdentity;
   workDir: string;
   ctx: JobContext;
 }
 
-export function liveSteps({ server, codex, projectId, sourceDir, workDir, ctx }: LiveStepsInput): ReleaseSteps {
+export function liveSteps({ server, codex, projectId, sourceDir, identity, workDir, ctx }: LiveStepsInput): ReleaseSteps {
   const checkout = siteCheckoutDir();
   return {
     sites: server,
@@ -35,7 +37,8 @@ export function liveSteps({ server, codex, projectId, sourceDir, workDir, ctx }:
       await syncCheckout(checkout, await createCredential(server, projectId));
       const files = await stageSource(sourceDir, checkout);
       await writeHosting(checkout, projectId);
-      const committed = await commitRelease(checkout, `God Mode ${VERSION}`);
+      await writeBuildInfo(checkout, identity);
+      const committed = await commitRelease(checkout, `God Mode ${VERSION}${identity.source ? ` (${identity.source})` : ""}`);
       const sha = committed ?? (await git(checkout, ["rev-parse", "HEAD"]));
       ctx.log(`${files} files staged, ${committed ? `new commit ${sha.slice(0, 7)}` : `unchanged at ${sha.slice(0, 7)}`}`);
       return sha;

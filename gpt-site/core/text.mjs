@@ -149,12 +149,15 @@ export function chatData(chat, now = Date.now()) {
 
 // update_status: the plugin's release status (null when the Mac is unreachable) next to the
 // version this Site was built from.
-export function releaseData(status, siteVersion) {
+export function releaseData(status, siteVersion, build = null) {
   const job = status?.job ?? null;
   return {
     site_version: siteVersion,
+    build,
     installed_version: status?.installed ?? null,
     update_available: status ? status.installed !== siteVersion : null,
+    latest_release: status?.latest?.version ?? null,
+    latest_is_newer: status?.latest ? Boolean(status.latest.newer) : null,
     live_release: status?.live?.versionNumber ?? null,
     mac_online: Boolean(status),
     ...(job
@@ -187,6 +190,7 @@ export function describeRelease(data, now = Date.now()) {
       ? `God Mode ${data.site_version} is live; the Mac has ${data.installed_version}, so an update is available.`
       : `God Mode ${data.site_version} is live and up to date with the Mac.`,
   ];
+  if (data.latest_is_newer) lines.push(`Version ${data.latest_release} is out on GitHub; update the God Mode plugin in Paseo to get it.`);
   if (job?.state === "succeeded") lines.push(`The last ${what} succeeded${job.message ? `: ${job.message}` : "."}`);
   else if (job) lines.push(`The last ${what} ${job.state === "interrupted" ? "was interrupted" : "failed"}${job.error ? `: ${job.error}` : "."}`);
   return lines.join(" ");

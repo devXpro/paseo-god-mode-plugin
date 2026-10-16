@@ -10,6 +10,7 @@ Full voice and chat control of [Paseo](https://paseo.sh) from ChatGPT. Start age
 project, hear what they did, approve, steer and stop them — from your phone, your car or a
 walk, while your Mac does the work.
 
+[![Release](https://img.shields.io/github/v/release/devXpro/paseo-god-mode-plugin?style=flat-square&color=111111&labelColor=111111&label=release)](https://github.com/devXpro/paseo-god-mode-plugin/releases)
 [![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A5%200.11-111111?style=flat-square&labelColor=111111)](https://paseo.sh)
 [![ChatGPT](https://img.shields.io/badge/ChatGPT-Plus%20%C2%B7%20Pro-111111?style=flat-square&labelColor=111111)](https://chatgpt.com)
 [![Licence](https://img.shields.io/github/license/devXpro/paseo-god-mode-plugin?style=flat-square&color=111111&labelColor=111111&label=licence)](LICENSE)
@@ -49,8 +50,15 @@ flowchart LR
 
 ## Install
 
-1. In Paseo open **Settings → Plugins**, turn plugins on, paste `github:devXpro/paseo-god-mode-plugin` into **Plugin source** and press **Install**.
+1. In Paseo open **Settings → Plugins**, turn plugins on, paste `github:devXpro/paseo-god-mode-plugin` into **Plugin source** and press **Install**. From a terminal, pin a release instead:
+
+   ```sh
+   paseo plugin add github:devXpro/paseo-god-mode-plugin --ref v0.5.0
+   ```
+
 2. Open **God Mode** in the sidebar.
+
+`main` is where development happens; releases are the tags.
 
 ## Setup — the sidebar walks you through it
 
@@ -75,7 +83,7 @@ flowchart LR
 
 ## Updates and rollback
 
-- **Update to latest** — one tap in the sidebar, or say *"update God Mode"* to ChatGPT.
+- **Update to latest** — one tap in the sidebar, or say *"update God Mode"* to ChatGPT. It publishes the version of the plugin installed in Paseo; when a newer release is out on GitHub, God Mode says so, and you update the plugin in Paseo first.
 - Every release is tested, published and then checked against the live plugin. If the check fails, the previous version goes back by itself.
 - **Roll back** to any earlier release, by tap or by voice.
 
@@ -84,6 +92,7 @@ flowchart LR
 - A Mac running [Paseo](https://paseo.sh) 0.11 or newer — and the Paseo app on your phone, if you want God Mode there too.
 - **ChatGPT Plus or Pro**: the plans that include ChatGPT Sites.
 - The Codex CLI. The copy inside the ChatGPT desktop app works.
+- Node.js 22.13 or newer and Git: the Site is built and tested on your Mac before it is published.
 - Your Mac awake and online while you use it.
 
 ## Privacy and security
@@ -94,11 +103,31 @@ flowchart LR
 - Approvals, stops, updates and rollbacks are confirmed before they happen.
 - When your Mac is asleep or offline, ChatGPT tells you so and changes nothing.
 
+## Versions
+
+One version, `MAJOR.MINOR.PATCH`, covers the plugin and the Site it publishes; each release is a
+tag `vX.Y.Z` with notes in [CHANGELOG.md](CHANGELOG.md). The Site reports which source it was
+built from. Sites numbers your Site's versions on its own (v1, v2, …), so those are deployments,
+not God Mode versions; a ledger on your Mac keeps which is which. Within a major version, tools are
+only added, never removed or renamed, so a rollback never strands ChatGPT on tools that are gone.
+
+## Development
+
+```sh
+npm ci && npm --prefix gpt-site ci
+npm run check            # typecheck and tests of the plugin and the Site
+paseo plugin add "$PWD"  # run it from this checkout
+```
+
+Releasing: add the version's section to [CHANGELOG.md](CHANGELOG.md), then
+`npm version X.Y.Z && git push --follow-tags`. That runs the checks, writes the version everywhere
+it appears, commits "Release vX.Y.Z" and tags it; the tag's workflow checks again and publishes the
+GitHub release.
+
 ## Status
 
-**Building in public.** The ChatGPT side already drives Paseo end to end, voice on an iPhone
-included. The sidebar plugin, its guided setup and one-tap updates are being built now —
-watch the repository for the first release.
+**First public release.** Used every day on one Mac, voice on an iPhone included; expect rough
+edges elsewhere and say so in the issues.
 
 ## Licence
 

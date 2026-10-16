@@ -143,3 +143,11 @@ test("the release status reads as one or two sentences", () => {
   const done = { ...running, action: "rollback", state: "succeeded", result: { message: "Version 6 is live again." } };
   assert.match(describeRelease(releaseData(status(done), "0.1.0"), now), /The last rollback succeeded: Version 6 is live again\./);
 });
+
+test("a newer release on GitHub is mentioned, and the build travels in the data", () => {
+  const data = releaseData({ installed: "0.5.0", live: { versionNumber: 9 }, latest: { version: "0.6.0", newer: true }, job: null }, "0.5.0", "v0.5.0");
+  assert.equal(data.build, "v0.5.0");
+  assert.equal(describeRelease(data), "God Mode 0.5.0 is live and up to date with the Mac. Version 0.6.0 is out on GitHub; update the God Mode plugin in Paseo to get it.");
+  const same = releaseData({ installed: "0.5.0", latest: { version: "0.5.0", newer: false }, job: null }, "0.5.0");
+  assert.doesNotMatch(describeRelease(same), /GitHub/);
+});

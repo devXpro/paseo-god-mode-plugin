@@ -6,7 +6,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test \"server/**/*.test.ts\" \"shared/**/*.test.ts\"",
-    "check": "npm run typecheck && npm test && npm --prefix gpt-site run check"
+    "check": "npm run typecheck && npm test && npm --prefix gpt-site run check",
+    "preversion": "npm run check",
+    "version": "node scripts/sync-version.mjs && git add shared/version.ts gpt-site/core/version.mjs gpt-site/package.json gpt-site/package-lock.json"
   },
   "devDependencies": {
     "@getpaseo/plugin": "^0.11.2",

@@ -1,4 +1,8 @@
-// The plugin and the Site it publishes share one version. A test keeps this equal to package.json,
-// which the host does not hand to plugin code. It continues paseo-remote's numbering (0.3.1 was
-// its last release): ChatGPT refreshes a Site plugin's tools only when this version goes up.
+// The plugin and the Site it publishes share one version: the "version" in package.json, which
+// `npm version` copies here and into gpt-site (scripts/sync-version.mjs); a test keeps them equal.
+// It continues paseo-remote's numbering (0.3.1 was its last release) because ChatGPT refreshes a
+// Site plugin's tools only when this version moves on.
 export const VERSION = "0.4.1";
+
+/** Where releases are published, as GitHub tags vX.Y.Z. */
+export const REPOSITORY = "devXpro/paseo-god-mode-plugin";

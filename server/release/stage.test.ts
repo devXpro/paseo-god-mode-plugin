@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { packageWorker } from "./package.ts";
-import { stageSource, writeHosting } from "./stage.ts";
+import { stageSource, writeBuildInfo, writeHosting } from "./stage.ts";
 
 test("staging copies what git would publish and replaces whatever was there", async () => {
   const source = await mkdtemp(join(tmpdir(), "god-mode-src-"));
@@ -70,4 +70,12 @@ test("packaging refuses a build without a worker entry", async () => {
   await mkdir(join(checkout, ".openai"), { recursive: true });
   await writeFile(join(checkout, ".openai", "hosting.json"), "{}");
   await assert.rejects(packageWorker(checkout, join(checkout, "site.tgz")), /dist\/server\/index\.js/);
+});
+
+test("the build file records the plugin source and stays an importable module", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "god-mode-build-"));
+  await mkdir(join(checkout, "core"), { recursive: true });
+  await writeBuildInfo(checkout, { source: "v0.5.0-2-gabc1234", commit: "abc1234def" });
+  const { BUILD } = await import(join(checkout, "core", "build.mjs"));
+  assert.deepEqual(BUILD, { source: "v0.5.0-2-gabc1234", commit: "abc1234def" });
 });

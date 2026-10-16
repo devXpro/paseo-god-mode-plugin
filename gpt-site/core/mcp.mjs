@@ -3,6 +3,7 @@
 // runs under node --test; app/mcp/route.ts only wires in env, the operations
 // and the call log.
 import { PaseoOffline } from "./paseo.mjs";
+import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
 import { truncate } from "./text.mjs";
 
@@ -319,8 +320,11 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: {} },
     outputSchema: object({
       site_version: { type: "string" },
+      build: { ...nullableString, description: "The source this Site was built from, as git describe: a tag such as v0.5.0, or the commits after one." },
       installed_version: nullableString,
       update_available: { type: ["boolean", "null"] },
+      latest_release: { ...nullableString, description: "The newest God Mode release on GitHub." },
+      latest_is_newer: { type: ["boolean", "null"], description: "That release is newer than the plugin installed on the Mac." },
       live_release: { type: ["integer", "null"] },
       mac_online: { type: "boolean" },
       // Absent when there has been no job. A nullable object type is avoided on purpose: no other
@@ -439,7 +443,7 @@ async function dispatch(name, args, config, ops, log, caller) {
     case "stop_chat":
       return (need("chat") && { invalid: need("chat") }) || ops.stopChat(url, { chat: args.chat });
     case "update_status":
-      return ops.releaseStatus(url, { siteVersion: VERSION });
+      return ops.releaseStatus(url, { siteVersion: VERSION, build: BUILD.source });
     case "update_site":
       if (!["update", "rollback"].includes(args.action)) return { invalid: 'action must be "update" or "rollback".' };
       // Sites marks requests from a signed-in ChatGPT user; service access carries no identity.

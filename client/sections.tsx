@@ -359,7 +359,16 @@ export function ReleaseStep({ theme }: { theme: PluginTheme }) {
     <SettingsSection title="4 · Publish and update">
       <SettingsCard>
         <SettingsRow label="Live" hint={liveText} />
-        <SettingsRow label="This plugin" hint={`God Mode ${data.installed}`} />
+        <SettingsRow label="This plugin" hint={`God Mode ${data.installed}${data.source && data.source !== `v${data.installed}` ? ` (${data.source})` : ""}`} />
+        {data.latest ? (
+          <SettingsRow
+            label="Latest on GitHub"
+            hint={data.latest.newer ? undefined : `God Mode ${data.latest.version}`}
+            error={data.latest.newer ? `God Mode ${data.latest.version} is out. Update the plugin in Paseo, then update the Site here.` : undefined}
+          >
+            <ExternalLink href={data.latest.url}>Release notes</ExternalLink>
+          </SettingsRow>
+        ) : null}
         <SettingsRow label="Link to this Mac" hint={data.pairing === "secret" ? PAIRING_TEXT.secret : undefined} error={data.pairing === "secret" ? undefined : PAIRING_TEXT[data.pairing]} />
         <ConfirmAction
           label={data.live ? "Update to this plugin's version" : "Publish the Site"}

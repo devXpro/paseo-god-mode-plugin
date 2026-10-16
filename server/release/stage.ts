@@ -32,3 +32,9 @@ export async function writeHosting(checkoutDir: string, projectId: string): Prom
   const template = JSON.parse(await readFile(join(checkoutDir, ".openai", "hosting.template.json"), "utf8"));
   await writeFile(join(checkoutDir, ".openai", "hosting.json"), `${JSON.stringify({ ...template, project_id: projectId }, null, 2)}\n`);
 }
+
+/** Records in the Site's checkout which plugin source it is built from (gpt-site/core/build.mjs). */
+export async function writeBuildInfo(checkoutDir: string, identity: { source: string | null; commit: string | null }): Promise<void> {
+  const body = `// Written by the God Mode plugin at release time.\nexport const BUILD = ${JSON.stringify({ source: identity.source, commit: identity.commit })};\n`;
+  await writeFile(join(checkoutDir, "core", "build.mjs"), body);
+}

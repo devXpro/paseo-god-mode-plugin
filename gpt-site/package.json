@@ -1,6 +1,6 @@
 {
-  "name": "paseo-remote",
-  "version": "0.1.0",
+  "name": "paseo-god-mode-site",
+  "version": "0.4.1",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

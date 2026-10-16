@@ -8,10 +8,12 @@ import { VERSION } from "../../shared/version.ts";
 import { AppServer } from "../codex/app-server.ts";
 import { findCodex } from "../codex/locate.ts";
 import { fromEnvironment, readPreferences, writePreferences } from "../preferences.ts";
-import { siteSourceDir } from "../self.ts";
+import { pluginDir, siteSourceDir, sourceIdentity } from "../self.ts";
 import { PAIRING_KEY, checkSlug, createSite, getEnvironment, listSites, listVersions, readReleases } from "../sites/sites.ts";
 import { type SiteRecord, jobsDir, readSite, writeSite } from "../store.ts";
 import { JobRunner } from "./job.ts";
+import { latestRelease } from "./latest.ts";
+import { recordRelease } from "./ledger.ts";
 import { liveSteps } from "./live-steps.ts";
 import { runConfigure, runRollback, runUpdate } from "./pipeline.ts";
 
@@ -54,8 +56,11 @@ export class ReleaseService {
         })
       : { live: null, newest: null, releases: [], pairing: "unknown" as const };
     const job = this.jobs.status();
+    const [identity, latest] = await Promise.all([pluginDir().then(sourceIdentity).catch(() => null), latestRelease(VERSION)]);
     return {
       installed: VERSION,
+      source: identity?.source ?? null,
+      latest,
       site: site && view(site),
       ...remote,
       job: job && (withLog ? job : { ...job, log: job.log.slice(-5) }),
@@ -69,15 +74,18 @@ export class ReleaseService {
     const codex = await findCodex();
     if (!codex) throw new Error(NO_CODEX);
     const sourceDir = await siteSourceDir();
+    const identity = await sourceIdentity(await pluginDir());
     return this.jobs.start(action, async (ctx) => {
       const workDir = join(jobsDir(), ctx.id);
       await mkdir(workDir, { recursive: true, mode: 0o700 });
       const server = await AppServer.start(codex, { cwd: homedir(), timeoutMs: 120_000 });
       try {
-        const steps = liveSteps({ server, codex, projectId: site.projectId, sourceDir, workDir, ctx });
-        if (action === "update") return await runUpdate(steps);
-        if (action === "configure") return await runConfigure(steps);
-        return await runRollback(steps, version ?? "previous");
+        const steps = liveSteps({ server, codex, projectId: site.projectId, sourceDir, identity, workDir, ctx });
+        const result =
+          action === "update" ? await runUpdate(steps) : action === "configure" ? await runConfigure(steps) : await runRollback(steps, version ?? "previous");
+        const entry = await recordRelease(action, result, { product: VERSION, source: identity.source });
+        ctx.log(`ledger: Sites version ${entry.sitesVersion ?? "?"} is God Mode ${entry.product ?? "unknown"}`);
+        return result;
       } finally {
         server.close();
         await rm(workDir, { recursive: true, force: true });

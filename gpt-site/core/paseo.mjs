@@ -635,7 +635,7 @@ export async function stopChat(pairingUrl, { chat } = {}) {
 // it through the same relay connection as every other tool.
 const GOD_MODE = "god-mode";
 
-export async function releaseStatus(pairingUrl, { siteVersion }) {
+export async function releaseStatus(pairingUrl, { siteVersion, build = null }) {
   let status = null;
   try {
     status = await withDaemon(pairingUrl, (client) => client.invokePluginRpc(GOD_MODE, "god-mode.release.status", { log: false }));
@@ -643,7 +643,7 @@ export async function releaseStatus(pairingUrl, { siteVersion }) {
     // Offline still has an answer: the version this Site is running.
     if (!(error instanceof PaseoOffline)) throw error;
   }
-  const data = releaseData(status, siteVersion);
+  const data = releaseData(status, siteVersion, build);
   return { text: describeRelease(data), data };
 }
 

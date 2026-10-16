@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMcpHandler, readConfig, TOOLS } from "./mcp.mjs";
 import { PaseoOffline } from "./paseo.mjs";
+import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
 import { chatData } from "./text.mjs";
 
@@ -273,8 +274,8 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy" }],
     ["answer_approval", { chat_id: sampleChat.id, done: false, what: null }],
     ["stop_chat", { chat_id: sampleChat.id, done: true }],
-    ["update_status", { site_version: "0.1.0", installed_version: "0.1.1", update_available: true, live_release: 7, mac_online: true, job: { action: "update", state: "running", step: "Publishing", started_at: "2026-10-16T19:00:00.000Z", finished_at: null, message: null, error: null } }],
-    ["update_status", { site_version: "0.1.0", installed_version: null, update_available: null, live_release: null, mac_online: false }],
+    ["update_status", { site_version: "0.1.0", build: "v0.1.0-2-gabc1234", installed_version: "0.1.1", update_available: true, latest_release: "0.2.0", latest_is_newer: true, live_release: 7, mac_online: true, job: { action: "update", state: "running", step: "Publishing", started_at: "2026-10-16T19:00:00.000Z", finished_at: null, message: null, error: null } }],
+    ["update_status", { site_version: "0.1.0", build: null, installed_version: null, update_available: null, latest_release: null, latest_is_newer: null, live_release: null, mac_online: false }],
     ["update_site", { started: true, action: "update", job_id: "j1", message: "update started" }],
   ];
   for (const [tool, data] of cases) {
@@ -299,7 +300,7 @@ test("update_status asks the Mac with the version this Site is built from", asyn
   const { ops, calls } = fakeOps();
   await createMcpHandler({ config: configured(), ops })(call("update_status", {}));
   assert.equal(calls[0].name, "releaseStatus");
-  assert.deepEqual(calls[0].args, { siteVersion: VERSION });
+  assert.deepEqual(calls[0].args, { siteVersion: VERSION, build: BUILD.source });
 });
 
 test("no tool declares a nullable object, which ChatGPT may refuse in a tool list", () => {
