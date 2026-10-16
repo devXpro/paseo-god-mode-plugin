@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.png" alt="Paseo God Mode — talk to ChatGPT, every Paseo agent obeys" width="100%" />
+<img src="docs/assets/banner.jpg" alt="Paseo God Mode — talk to ChatGPT, every Paseo agent obeys" width="100%" />
 
 # Paseo God Mode
 
