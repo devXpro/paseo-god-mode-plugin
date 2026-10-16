@@ -1,10 +1,40 @@
 # paseo-remote: design
 
-Drive Paseo's Claude agents from ChatGPT, voice first. Version 0.3: nine tools with
-structured results, batch reads and two kinds of search; 0.2 added the call log and per-site
-settings; the 0.1 prototype (`list_projects`, `start_agent`) proved the path on 2026-10-16.
+Drive Paseo's coding agents from ChatGPT, voice first. Version 0.6: twelve tools, guidance tuned
+against a measured eval (`eval/`), and `read_activity` for what agents and their subagents are doing
+now. 0.3 brought structured results, batch reads and two kinds of search; 0.2 the call log and
+per-site settings; the 0.1 prototype (`list_projects`, `start_agent`) proved the path on 2026-10-16.
 
-## 0. What 0.3 changed, and why this way
+## 0. What 0.6 changed, and why this way
+
+Every change below was measured first: about 90 phrases in Russian and English through a real
+model, the 0.5.0 metadata against the new one (`eval/README.md`, `eval/results/report.md`).
+
+- **Guidance.** OpenAI's Apps SDK docs say ChatGPT and Codex read the server `instructions` next to
+  the tool metadata, with the essentials in the first 512 characters, and that a tool description
+  starts with "Use this when…" and says when not to. The instructions now open with a routing map
+  (one call per request); the rules that decide a call are repeated in the tool or parameter they
+  govern (the chat being discussed, ids never spoken, the read-back before allowing or stopping).
+- **Write tools act only on an explicit command.** Drafting, thinking aloud, "maybe we send it?" or
+  "ok" after a draft nobody asked about get "Send it?" instead. With looser wording the model sent
+  in 15% of such cases; with this wording, none, and explicit commands still send exactly once.
+- **The outcome of a write is the truth:** replied or still_working = delivered and never sent
+  again unless asked; busy = not delivered, ask add-or-interrupt (after that, a plain "send it"
+  steers); an error = not confirmed. Failed write calls say "Unknown whether it took effect".
+- **`read_activity`** reads Paseo's provider subagents (`listProviderSubagents`,
+  `fetchProviderSubagentTimeline`): each Task/Agent subagent's task, status, running time, current
+  step and result. A separate tool, not a `read_chat` view: OpenAI recommends one tool per action,
+  and in the eval the view answered "what are the subagents doing?" without context 1 time in 4
+  against 4 in 4. Without a chat it covers every chat at work, including idle chats whose
+  backgrounded subagents still run; `overview` counts subagents too.
+- **Reads take the one active chat** when a name matches several ("the agent in jobby"): with a
+  candidate list the model asked "which one?" every time. Writes still ask.
+- **`read_chat` keeps two views,** `text` and `commands`. The `turns` view clashed with the `turns`
+  count and was mixed up with it; `search` duplicated `search_messages(chat=…)` and went unused.
+- **Text for speech:** chats by title, project and state, no ids or hashes; ids stay in
+  `structuredContent`, which the model also sees.
+
+## 0.3: what changed, and why this way
 
 - **Batch reads** extend `read_chat` (`turns`, 1-10, going back from `turn`) instead of a new
   tool: one call per catch-up. One turn stays the default, with the old text layout.
@@ -26,6 +56,7 @@ settings; the 0.1 prototype (`list_projects`, `start_agent`) proved the path on 
   ChatGPT to start a new chat, instead of a bare JSON-RPC error. After the 0.2 deploy, ChatGPT
   kept calling 0.1's `list_projects` from an old conversation.
 - Archived chats can be read by their full id (search results carry it).
+- (0.6 removed `read_chat view=turns` and `view=search`; see above.)
 - **Call rules**, stated three times on purpose: in the server instructions (inside the first
   512 characters), in the descriptions of the tools they concern, and as a one-line hint under
   every `list_chats` result. Reuse a #id already in the conversation; `list_chats` only to find
@@ -54,9 +85,9 @@ lookup call is needed first.
 
 | Layer | Content | Changes with |
 | --- | --- | --- |
-| MCP server `instructions` (`initialize` and `server/discover`) | Domain, names vs ids, current-chat rule, read-back rule, read_chat views, language, dictation hints. Essentials in the first 512 characters. | Deploy, and the site settings |
-| Tool and parameter descriptions, annotations | "Use this when…", accepted inputs, honest hints. | Deploy |
-| Hint lines inside tool results | The next step: ask which chat, still working, chat busy. | Deploy |
+| MCP server `instructions` (`initialize` and `server/discover`) | The routing map (one call per request) in the first 512 characters, then the write-command rule, the chat being discussed, the outcome of a write, no polling, no ids aloud, the read-back, language, dictation hints. | Deploy, and the site settings |
+| Tool and parameter descriptions, annotations | "Use this when…" and when not; the rules that decide that tool's call, repeated there (the `chat` parameter carries the focus and the no-ids rule for every tool that takes it). | Deploy |
+| Hint lines inside tool results | Whether a write arrived, the next step when it is not obvious (busy, still working, which chat), and that a failed write is not confirmed. | Deploy |
 | ChatGPT project instructions | Style and routing only. | By hand, rarely |
 
 Model-facing text is English. The language spoken to the user is the `PASEO_LANGUAGE` setting;
@@ -69,7 +100,8 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | --- | --- | --- |
 | `overview` | read | Waiting for the user, running, new replies and errors in the last `hours`, projects with chat counts. |
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `limit`. |
-| `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`), `commands` (the last 8 tool calls of the turn with output, plus the total), `turns` (latest first), `search` (turn numbers of matches). `turn` counts back from the latest. |
+| `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) or `commands` (the last 8 tool calls of the turn with output, plus the total). `turn` counts back from the latest, `turns` reads several at once. |
+| `read_activity` | read | What a chat's agent and its subagents are doing now: state, current step, each subagent's task, status, running time, current step or result (up to 6, running first). Without `chat`: every chat at work, idle ones with running backgrounded subagents included. |
 | `start_chat` | write | New workspace and agent in a project, like New chat. Waits up to `wait_seconds` for the reply. `model`, `thinking`, `mode` override the site defaults for this chat. |
 | `send_message` | write | To an existing chat. If the chat is busy it asks first; `if_busy` = `steer` (add to the current work) or `interrupt`. |
 | `answer_approval` | write | Allow or deny a pending request, pressing the same action the app shows ("Implement", "Reject"). Requests are described as what will happen: "plan: …", "run: …", "edit …". |
@@ -79,14 +111,17 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 Not exposed: terminals, files, git, schedules, plugins, daemon control. The pairing link can do
 all of it; the Site never will.
 
-Results are plain text; chats always read `#<shortId> <title> - <project> - <state>, <age>`.
+Results are text for speech next to `structuredContent`; chats read `<title> (<project>): <state>, <age>`,
+never with ids, which travel in the data.
 
 ### Name resolution
 
 Full id or a 6+ character id prefix, then an exact title, then word overlap on title and
 project. Words match when equal, when one prefixes the other, or when they share four letters,
-which absorbs Russian endings. Recency breaks ties. One clear winner is used; otherwise up to
-three candidates come back. A project that matches nothing returns the whole project list, so
+which absorbs Russian endings. Recency breaks ties. One clear winner is used. Otherwise reads take
+the only active chat among the best matches (running, waiting for approval, or with subagents at
+work) and say so in `note`; writes, and reads without one active chat, get up to three candidates
+back. A project that matches nothing returns the whole project list, so
 ChatGPT can turn "прокси" into "proxy" and retry without asking.
 
 ## 4. Settings
@@ -132,7 +167,8 @@ No pruning yet: at a few hundred bytes a row, D1's 10 GB lasts for years.
 
 ```
 core/text.mjs        pure: name matching, truncation, lines for chats, tool calls, permissions
-core/paseo.mjs       relay connection and the seven Paseo operations
+core/paseo.mjs       relay connection and the Paseo operations
+eval/                the tool-selection eval: cases, stub server, runner, judge, report
 core/mcp.mjs         settings, instructions, tool metadata, JSON-RPC dispatch, logging hooks
 core/probe.mjs       runs the operations locally against the real daemon
 core/*.test.mjs      node --test, no network
@@ -145,7 +181,7 @@ The Site source must stay self-contained: Sites packages this folder only.
 
 ## 9. Tuning
 
-A labelled set of about 20 spoken requests in Russian and English, each with the expected tool
-and arguments: direct ("что в чате про карту флота"), indirect ("чё там с тестами"), negative
-("какая погода" must not touch Paseo). Run them in Live, read `get_logs`, change one
-description at a time.
+`eval/` holds the measured version of this: about 90 labelled requests, a stub MCP server with a
+fake Paseo, and a runner over `codex exec` that compares the released metadata with the working
+tree. Change one description at a time, run it, and read `eval/results/report.md`; Live voice on
+the phone is the final check.

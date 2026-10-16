@@ -2,16 +2,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  activityData,
+  activityText,
   chatData,
   chatLine,
   describePermission,
   describeRelease,
+  describeStep,
   describeToolCall,
+  duration,
+  isStep,
   latestFirstWithin,
+  pickActive,
   releaseData,
   resolve,
   snippet,
   toIso,
+  tokensOf,
   toolCallData,
   truncate,
 } from "./text.mjs";
@@ -122,13 +129,12 @@ test("tool calls show the command and a cut of its output", () => {
   assert.equal(describeToolCall({ ...call, status: "failed", detail: { type: "edit", filePath: "x.js" } }, 100), "edit x.js (failed)");
 });
 
-test("a chat line carries short id, title, project and state", () => {
+test("a chat line is spoken words: title, project, state and age, no id", () => {
   const now = Date.parse("2026-10-16T12:00:00Z");
-  const line = chatLine(
-    { id: "a22524f0-1", title: "Fleet map", project: "proxy", status: "running", attention: null, permissions: [], updatedAt: "2026-10-16T11:50:00Z" },
-    now,
-  );
-  assert.equal(line, "#a22524f Fleet map - proxy - running, 10 min ago");
+  const chat = { id: "a22524f0-1", title: "Fleet map", project: "proxy", status: "running", attention: null, permissions: [], updatedAt: "2026-10-16T11:50:00Z" };
+  assert.equal(chatLine(chat, now), "Fleet map (proxy): running, 10 min ago");
+  assert.equal(chatLine({ ...chat, subagentsRunning: 2 }, now), "Fleet map (proxy): running, 2 subagent(s) working, 10 min ago");
+  assert.equal(chatLine({ ...chat, status: "idle", attention: "finished", subagentsRunning: 1 }, now), "Fleet map (proxy): 1 subagent(s) working, 10 min ago");
 });
 
 test("the release status reads as one or two sentences", () => {
@@ -150,4 +156,74 @@ test("a newer release on GitHub is mentioned, and the build travels in the data"
   assert.equal(describeRelease(data), "God Mode 0.5.0 is live and up to date with the Mac. Version 0.6.0 is out on GitHub; update the God Mode plugin in Paseo to get it.");
   const same = releaseData({ installed: "0.5.0", latest: { version: "0.5.0", newer: false }, job: null }, "0.5.0");
   assert.doesNotMatch(describeRelease(same), /GitHub/);
+});
+
+test("a project name picks the one active chat for reads, never between two", () => {
+  const chat = (id, title, status, extra = {}) => ({ id, title, project: "jobby-jobs", status, attention: null, permissions: [], ...extra });
+  const items = [chat("a1b2c3d4-1", "Auth refactor", "running"), chat("b1b2c3d4-2", "README", "idle"), chat("c1b2c3d4-3", "Docs", "idle"), chat("d1b2c3d4-4", "Lint", "idle")];
+  const found = resolve(items, "jobby", { text: (c) => `${c.title} ${c.project}` });
+  assert.equal(found.match, undefined);
+  assert.equal(found.candidates.length, 3, "three are offered to the user");
+  assert.equal(found.top.length, 4, "every best match is kept for picking");
+  assert.equal(pickActive(found.top), items[0]);
+  assert.equal(pickActive([...items, chat("e1b2c3d4-5", "Tests", "running")]), null, "two active chats still need the user");
+  assert.equal(pickActive([items[1], chat("f1", "Waiting", "idle", { permissions: [{ kind: "tool", name: "Bash" }] })]).id, "f1");
+  assert.equal(pickActive([items[1], { ...items[2], subagentsRunning: 1 }]).id, "c1b2c3d4-3");
+});
+
+test("steps read as speech: a command, a file name, a host, a first sentence", () => {
+  const call = (detail, name = "Tool") => ({ type: "tool_call", name, status: "running", detail });
+  assert.equal(describeStep(call({ type: "shell", command: "npm test -- auth" })), "running npm test -- auth");
+  assert.equal(describeStep(call({ type: "read", filePath: "/Users/r/p/src/auth/session.ts" })), "reading session.ts");
+  assert.equal(describeStep(call({ type: "edit", filePath: "src/a.ts" })), "editing a.ts");
+  assert.equal(describeStep(call({ type: "fetch", url: "https://developers.openai.com/plugins/x.md" })), "opening developers.openai.com");
+  assert.equal(describeStep(call({ type: "sub_agent", description: "Map routes" })), "waiting for a subagent: Map routes");
+  assert.equal(describeStep(call({ type: "unknown" }, "WebSearch")), "using WebSearch");
+  assert.equal(describeStep({ type: "reasoning", text: "I should check the docs. Then more." }), "thinking: I should check the docs.");
+  assert.equal(describeStep(null), null);
+  assert.equal(isStep(call({ type: "plain_text", label: "Background task completed" }, "task_notification")), false);
+  assert.equal(isStep(call({ type: "shell", command: "ls" }, "Bash")), true);
+  assert.equal(isStep({ type: "user_message", text: "go" }), false);
+  assert.equal(duration(42_000), "42 s");
+  assert.equal(duration(4 * 60_000), "4 min");
+  assert.equal(duration(65 * 60_000), "1 h 5 min");
+  assert.equal(tokensOf("general-purpose · Opus 5.5 · Max · 45.1k tokens"), "45.1k");
+  assert.equal(tokensOf(null), null);
+});
+
+test("activity shows running subagents first, then those finished this turn, with steps and results", () => {
+  const now = Date.parse("2026-10-16T12:00:00Z");
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+  const chat = { id: "b7c1d2e3-4f50", title: "Auth refactor", project: "jobby-jobs", status: "running", attention: null, permissions: [], updatedAt: at(1), createdAt: at(40) };
+  const sub = (id, status, created, updated, extra = {}) => ({ id, title: "Explore", description: `task ${id}`, status, createdAt: at(created), updatedAt: at(updated), subtitle: "Explore · Opus · 38.2k tokens", ...extra });
+  const subagents = [
+    sub("old", "completed", 120, 110, { result: "from an earlier turn" }),
+    sub("done", "completed", 33, 30, { result: "14 routes" }),
+    sub("run", "running", 29, 0, { step: "reading session.ts" }),
+  ];
+  const a = activityData({ chat, subagents, turnStartedAt: at(35), parentStep: "waiting for a subagent: task run", now });
+  assert.equal(a.working, true);
+  assert.equal(a.turn_elapsed, "35 min");
+  assert.equal(a.current_step, "waiting for 1 subagent(s)");
+  assert.deepEqual(a.subagents.map((s) => s.id), ["run", "done"], "the earlier turn's subagent only counts");
+  assert.equal(a.subagents_running, 1);
+  assert.equal(a.subagents_done, 2);
+  assert.equal(a.subagents[0].elapsed, "29 min");
+  assert.equal(a.subagents[0].current_step, "reading session.ts");
+  assert.equal(a.subagents[1].result, "14 routes");
+  assert.equal(a.subagents[1].elapsed, "3 min");
+  assert.equal(a.subagents[1].tokens, "38.2k");
+  assert.equal(a.chat.subagents_running, 1);
+  assert.equal(
+    activityText(a),
+    [
+      "Auth refactor (jobby-jobs) is working, 35 min into the turn: waiting for 1 subagent(s).",
+      '- Explore "task run": running for 29 min, now reading session.ts.',
+      '- Explore "task done": completed after 3 min. Result: 14 routes',
+    ].join("\n"),
+  );
+  const idle = activityData({ chat: { ...chat, status: "idle", attention: "finished" }, subagents: [sub("bg", "running", 14, 2)], turnStartedAt: at(20), parentStep: null, now });
+  assert.equal(idle.working, true, "a backgrounded subagent keeps an idle chat working");
+  assert.equal(idle.current_step, null);
+  assert.match(activityText(idle), /^Auth refactor \(jobby-jobs\) is working\./);
 });

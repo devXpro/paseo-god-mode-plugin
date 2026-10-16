@@ -7,6 +7,44 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-17
+
+### Added
+
+- `read_activity`: what an agent and its subagents are doing right now. For each Claude Task/Agent
+  subagent it gives the task, status, running time, current step (latest tool call or thought) and,
+  once finished, the result. Without a chat it covers every chat at work, including idle chats
+  whose backgrounded subagents still run.
+- `overview` counts the subagents working in each running chat, and lists an idle chat whose
+  subagents are still working as running.
+- A tool-selection eval in `gpt-site/eval/`: about 90 Russian and English phrases through a real
+  OpenAI model in `codex exec`, against a stub server with a fake Paseo, comparing a release with
+  the working tree.
+
+### Changed
+
+- The instructions and tool descriptions ChatGPT reads were rewritten after that eval:
+  - one call per request, with a routing map at the top of the instructions;
+  - write tools act only on an explicit command: drafting, thinking aloud, "maybe we send it?" or
+    "ok" after a draft get "Send it?" instead;
+  - the outcome of a write is the truth: delivered is never sent again unless asked, busy means not
+    delivered (ask add or interrupt; a plain "send it" afterwards adds to the current work), a failed
+    write is never reported as done;
+  - "allow it" right after the request was read out needs no second yes; "allow it" with nothing
+    waiting answers the agent's question;
+  - updates check `update_status` first and send the user to the plugin when GitHub is ahead;
+  - coding agents in general (Claude, Codex…), not only Claude.
+- Reads take the one active chat when a name matches several ("the agent in jobby") and say so;
+  writes still ask which chat.
+- Tool results read as speech: chats by title, project and state, never ids or hashes, which stay in
+  the structured data. A failed write says it is unknown whether it took effect.
+
+### Removed
+
+- `read_chat` views `turns` and `search`. Read several turns with `turns=N`; search one chat with
+  `search_messages(chat=…)`. ChatGPT chats started before this release keep the old tool list:
+  start a new chat.
+
 ## [0.5.0] - 2026-10-16
 
 First public release.

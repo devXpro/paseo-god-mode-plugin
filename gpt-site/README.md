@@ -56,12 +56,15 @@ A spoken request can override model, thinking and mode for one new chat.
 | --- | --- |
 | `overview` | Chats waiting for you, running chats, new replies, projects. |
 | `list_chats` | Finds chats by title, workspace, branch or project with Paseo's own search, archive included on request; or lists a project's chats, or chats in a state. |
-| `read_chat` | `text`: what was said, final message first; `turns: N` reads the last N turns in one call. `commands`: the shell commands and tool calls with output. `turns` view: the list of turns. `search`: where a phrase occurs in this chat. |
-| `search_messages` | Where something was said: searches the message text of the most recent chats in parallel and returns chat, turn and snippet. |
+| `read_chat` | `text`: what was said, final message first; `turns: N` reads the last N turns in one call. `commands`: the shell commands and tool calls with output. |
+| `read_activity` | What an agent and its subagents are doing right now: state, current step, each subagent's task, status, running time and result. Without a chat: every chat at work. |
+| `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
 | `start_chat` | A new chat in a project with your task as the first message. |
 | `send_message` | A follow-up or an answer to an existing chat. |
 | `answer_approval` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | Cancel what a chat is doing now. |
+| `update_status` | Which God Mode version is live, whether the Mac or GitHub has a newer one, how the last update went. |
+| `update_site` | Update God Mode to the version installed on the Mac, or roll it back; runs on the Mac. |
 | `get_logs` | This plugin's own call log. |
 
 Every tool except `get_logs` returns readable text plus `structuredContent` that matches its
@@ -81,8 +84,7 @@ ChatGPT voice in a project reads the project's instructions. Something like:
 ```
 I talk to you by voice, often on the move. Answer in one or two sentences.
 For anything about my agents, chats, projects or Paseo, use the paseo-remote plugin
-with as few calls as possible: reuse a chat #id you already have instead of listing
-chats again, and read several turns with one read_chat call (turns=N).
+with as few calls as possible. Send nothing to an agent unless I say to send it.
 ```
 
 The same call rules are in the plugin's server instructions and in the tool descriptions;
@@ -110,7 +112,9 @@ npm ci
 node --test core/*.test.mjs          # unit tests, no network
 node core/probe.mjs overview         # the real operations against your Paseo, via the relay
 node core/probe.mjs read "chat name" --turns 3 --json
+node core/probe.mjs activity                     # every chat at work, with its subagents
 node core/probe.mjs search "some phrase" --archived
+node eval/run.mjs --variants current --filter '^(core|w)\.'   # the tool-selection eval, see eval/README.md
 ```
 
 `core/` holds everything that matters and runs under Node; `app/mcp/route.ts` only wires it

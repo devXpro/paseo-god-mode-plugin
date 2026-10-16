@@ -58,3 +58,8 @@ next-env.d.ts
 /.claude-data/
 /.idea/
 /.openai/hosting.json
+
+# Eval runs: results, the extracted baseline and the empty working directory.
+/eval/results/
+/eval/.baseline/
+/eval/workdir/

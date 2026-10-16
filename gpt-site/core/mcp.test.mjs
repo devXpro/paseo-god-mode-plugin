@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "readChat", "readActivity", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -86,23 +86,30 @@ test("readConfig: defaults, flags and clamping", () => {
   assert.equal(readConfig({ PASEO_NEW_CHAT_MODE: "bypassPermissions" }).mode, "bypassPermissions");
 });
 
-test("instructions follow the language and the confirmation setting, and push one call per question", async () => {
+test("instructions follow the language and the confirmation setting, and route each request to one call", async () => {
   const { ops } = fakeOps();
   const ru = await createMcpHandler({ config: readConfig({ PASEO_LANGUAGE: "ru" }), ops })(rpc("initialize"));
-  assert.match(ru.result.instructions, /Speak to the user in Russian/);
-  assert.match(ru.result.instructions, /по SEO/);
-  assert.match(ru.result.instructions, /wait for the user's yes/);
-  assert.match(ru.result.instructions, /turns=N, never turn by turn/);
-  assert.match(ru.result.instructions, /search_messages/);
-  assert.match(ru.result.instructions, /already in this conversation goes straight to read_chat or send_message, no list_chats/);
-  assert.match(ru.result.instructions, /no view "turns" first/);
+  const text = ru.result.instructions;
+  assert.match(text, /^Paseo runs the user's coding agents \(Claude, Codex…\)/);
+  assert.match(text, /Speak to the user in Russian/);
+  assert.match(text, /по SEO/);
+  assert.match(text, /subagents are doing now → read_activity/);
+  assert.match(text, /where something was said → search_messages/);
+  assert.match(text, /call them only when the user explicitly tells you to act now/);
+  assert.match(text, /"ok" or "fine" after a draft you did not ask about/);
+  assert.match(text, /never send it again unless the user says to send it again/);
+  assert.match(text, /busy = not delivered/);
+  assert.match(text, /a plain "send it" means add it \(if_busy steer\)/);
+  assert.match(text, /do not poll/);
+  assert.match(text, /never read ids, hashes or links aloud/);
+  assert.match(text, /must have heard exactly what will happen and said yes/);
   const plain = await createMcpHandler({ config: readConfig({ PASEO_CONFIRM_RISKY: "off" }), ops })(rpc("server/discover"));
   assert.match(plain.result.instructions, /Answer in the user's language/);
   assert.doesNotMatch(plain.result.instructions, /по SEO/);
   assert.match(plain.result.instructions, /no read-back needed/);
-  const marker = "one search_messages, not chat by chat.";
-  const rulesEnd = ru.result.instructions.indexOf(marker) + marker.length;
-  assert.ok(rulesEnd > 0 && rulesEnd <= 512, `the call rules sit in the first 512 characters (end at ${rulesEnd})`);
+  const marker = "→ search_messages.";
+  const routingEnd = text.indexOf(marker) + marker.length;
+  assert.ok(routingEnd > marker.length && routingEnd <= 512, `the routing sits in the first 512 characters (ends at ${routingEnd})`);
 });
 
 test("the server version changes with anything the model reads", async () => {
@@ -121,17 +128,18 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes eleven tools, output schemas and honest annotations", async () => {
+test("tools/list exposes twelve tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
-    ["overview", "list_chats", "read_chat", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "update_status", "update_site", "get_logs"],
+    ["overview", "list_chats", "read_chat", "read_activity", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "update_status", "update_site", "get_logs"],
   );
   for (const tool of result.tools) {
     assert.equal(Boolean(tool.outputSchema), tool.name !== "get_logs", `${tool.name} outputSchema`);
   }
   const byName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
   assert.equal(byName.read_chat.annotations.readOnlyHint, true);
+  assert.equal(byName.read_activity.annotations.readOnlyHint, true);
   assert.equal(byName.search_messages.annotations.readOnlyHint, true);
   assert.equal(byName.send_message.annotations.readOnlyHint, false);
   assert.equal(byName.stop_chat.annotations.destructiveHint, true);
@@ -141,18 +149,39 @@ test("tools/list exposes eleven tools, output schemas and honest annotations", a
   assert.ok(TOOLS.every((t) => t.annotations.openWorldHint === false));
   assert.match(byName.read_chat.description, /turns=5/);
   assert.match(byName.search_messages.description, /Do not read chats one by one/);
+  assert.deepEqual(byName.read_chat.inputSchema.properties.view.enum, ["text", "commands"]);
+  assert.equal(byName.read_chat.inputSchema.properties.query, undefined);
+  assert.equal(byName.read_activity.inputSchema.required, undefined, "read_activity works without a chat");
 });
 
 test("the call rules are repeated where ChatGPT picks the tool", () => {
   const byName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
-  assert.match(byName.list_chats.description, /^Use this only to find or filter chats not yet known/);
-  assert.match(byName.list_chats.description, /If you already have the chat's #id, skip this/);
-  assert.match(byName.read_chat.description, /Pass the #id you already have; no lookup first/);
-  assert.match(byName.read_chat.description, /do not call view "turns" first/);
+  assert.match(byName.list_chats.description, /^Use this only to find chats/);
+  assert.match(byName.list_chats.description, /If you already have the chat, skip this/);
+  assert.match(byName.overview.description, /do not list chats afterwards/);
   assert.match(byName.read_chat.description, /never turn by turn/);
-  assert.match(byName.send_message.description, /Pass the #id you already have; no lookup first/);
-  assert.match(byName.overview.description, /without list_chats/);
-  assert.match(byName.read_chat.inputSchema.properties.chat.description, /reused from earlier results in this conversation/);
+  assert.match(byName.read_chat.description, /use read_activity/);
+  assert.match(byName.read_activity.description, /Leave chat empty to cover every chat/);
+  assert.match(byName.search_messages.description, /pass chat to search a single chat/);
+  for (const tool of ["read_chat", "read_activity", "send_message", "answer_approval", "stop_chat"]) {
+    assert.match(byName[tool].inputSchema.properties.chat.description, /Ids are for calls only/, tool);
+    assert.match(byName[tool].inputSchema.properties.chat.description, /Keep the chat being discussed/, tool);
+  }
+  // Write tools: only on an explicit command, the outcome is the truth, no duplicates, no polling.
+  assert.match(byName.send_message.description, /only when the user explicitly tells you to send it now/);
+  assert.match(byName.send_message.description, /ask "Send it\?" first/);
+  assert.match(byName.send_message.description, /busy = NOT delivered/);
+  assert.match(byName.send_message.description, /never send it again unless the user says to send it again/);
+  assert.match(byName.send_message.description, /never say it was sent/);
+  assert.match(byName.send_message.inputSchema.properties.if_busy.description, /a plain "send it"/);
+  assert.match(byName.start_chat.description, /explicitly tells you to start one now/);
+  assert.match(byName.start_chat.description, /never start the same task twice/);
+  assert.match(byName.start_chat.description, /do not poll/);
+  assert.match(byName.answer_approval.description, /wait for their yes first/);
+  assert.match(byName.answer_approval.description, /use send_message/);
+  assert.match(byName.stop_chat.description, /wait for their yes/);
+  assert.match(byName.update_site.description, /after one update_status call/);
+  assert.match(byName.update_site.description, /update the God Mode plugin in Paseo first/);
 });
 
 test("without the secret, tools refuse except get_logs", async () => {
@@ -178,13 +207,20 @@ test("operations that still return a plain string keep working", async () => {
   assert.equal(response.result.structuredContent, undefined);
 });
 
-test("read_chat, list_chats and search_messages pass their new arguments through", async () => {
+test("read_chat, read_activity, list_chats and search_messages pass their arguments through", async () => {
   const { ops, calls } = fakeOps();
   const handle = createMcpHandler({ config: configured(), ops });
   await handle(call("read_chat", { chat: "#a22524f", turns: 5, max_chars: 3000 }));
-  assert.deepEqual(calls.at(-1).args, { chat: "#a22524f", view: "text", turn: 1, turns: 5, query: undefined, maxChars: 3000 });
+  assert.deepEqual(calls.at(-1).args, { chat: "#a22524f", view: "text", turn: 1, turns: 5, maxChars: 3000 });
   await handle(call("read_chat", { chat: "fleet" }));
   assert.equal(calls.at(-1).args.turns, 1, "one turn stays the default");
+  const before = calls.length;
+  for (const view of ["turns", "search"]) assert.equal((await handle(call("read_chat", { chat: "fleet", view }))).error.code, -32602, view);
+  assert.equal(calls.length, before, "removed views run nothing");
+  await handle(call("read_activity", {}));
+  assert.deepEqual(calls.at(-1), { name: "readActivity", url: SECRET, args: { chat: undefined, maxChars: undefined } });
+  await handle(call("read_activity", { chat: "fleet", max_chars: 900 }));
+  assert.deepEqual(calls.at(-1).args, { chat: "fleet", maxChars: 900 });
   await handle(call("list_chats", { query: "DNSSEC", include_archived: true }));
   assert.deepEqual(calls.at(-1).args, { project: undefined, status: undefined, query: "DNSSEC", includeArchived: true, limit: 10 });
   await handle(call("search_messages", { query: "dataviz", project: "proxy", scan: 30 }));
@@ -217,6 +253,24 @@ test("a tool from an outdated tool list gets a way out, not a bare error", async
   assert.equal(log.rows[0].tool, "list_projects");
 });
 
+test("a failed write never reads as done", async () => {
+  const { ops } = fakeOps({
+    sendMessage: () => {
+      throw new Error("no answer within 45 s");
+    },
+    stopChat: () => {
+      throw new PaseoOffline("connect timed out");
+    },
+    readChat: () => {
+      throw new Error("relay closed");
+    },
+  });
+  const handle = createMcpHandler({ config: configured(), ops });
+  assert.match((await handle(call("send_message", { chat: "x", text: "go" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
+  assert.doesNotMatch((await handle(call("read_chat", { chat: "x" }))).result.content[0].text, /took effect/);
+});
+
 test("an offline daemon becomes one sentence, logged with the detail, never the secret", async () => {
   const { ops } = fakeOps({
     overview: () => {
@@ -247,7 +301,7 @@ test("notifications get no body", async () => {
 test("the shapes the operations produce match the declared output schemas", () => {
   const clarification = { needs_clarification: { kind: "chat", query: "fleet", candidates: [sampleChat] } };
   const cases = [
-    ["overview", { summary: "1 running", hours: 12, waiting: [], running: [sampleChat], new: [], projects: [{ name: "proxy", chats: 3 }] }],
+    ["overview", { summary: "1 running", hours: 12, waiting: [], running: [{ ...sampleChat, subagents_running: 2 }], new: [], projects: [{ name: "proxy", chats: 3 }] }],
     ["list_chats", { scope: "proxy", query: null, include_archived: false, total: 1, chats: [sampleChat] }],
     ["list_chats", clarification],
     [
@@ -259,7 +313,29 @@ test("the shapes the operations produce match the declared output schemas", () =
       },
     ],
     ["read_chat", { chat: sampleChat, total_turns: 4, turns: [{ turn: 1, position: 4, started_at: null, total_tool_calls: 2, tool_calls: [{ kind: "shell", name: "Bash", status: "completed", text: "$ ls" }] }] }],
-    ["read_chat", { chat: sampleChat, query: "x", total_matches: 1, matches: [{ turn: 3, role: "assistant", at: "2026-10-16T15:48:00.160Z", snippet: "…x…" }] }],
+    ["read_chat", { chat: sampleChat, note: '"proxy" matches 2 chats; this is the only active one.', total_turns: 1, turns: [] }],
+    [
+      "read_activity",
+      {
+        summary: "1 chat(s) working, 1 subagent(s) running.",
+        chats: [
+          {
+            chat: { ...sampleChat, subagents_running: 1 },
+            working: true,
+            turn_started_at: "2026-10-16T16:30:00.000Z",
+            turn_elapsed: "10 min",
+            current_step: "waiting for 1 subagent(s)",
+            subagents_running: 1,
+            subagents_done: 1,
+            subagents: [
+              { id: "toolu_1", title: "Explore", task: "Find call sites", status: "running", started_at: "2026-10-16T16:31:00.000Z", updated_at: "2026-10-16T16:39:00.000Z", elapsed: "9 min", current_step: "reading session.ts", result: null, tokens: "52.4k" },
+              { id: "toolu_2", title: "Explore", task: "Map routes", status: "completed", started_at: null, updated_at: null, elapsed: "3 min", current_step: null, result: "14 routes", tokens: null },
+            ],
+          },
+        ],
+      },
+    ],
+    ["read_activity", { summary: "Nothing is working right now.", chats: [] }],
     [
       "search_messages",
       {

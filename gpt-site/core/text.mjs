@@ -67,7 +67,16 @@ export function resolve(items, query, { id = (x) => x.id, text = (x) => x.name }
   if (top.length === 1 && best >= 0.5) {
     return { match: top[0].item };
   }
-  return { candidates: scored.sort((a, b) => b.score - a.score).slice(0, 3).map((s) => s.item) };
+  const candidates = scored.sort((a, b) => b.score - a.score).slice(0, 3).map((s) => s.item);
+  // `top` keeps every best-scoring item, beyond the three offered to the user.
+  return scored.length ? { candidates, top: top.map((s) => s.item) } : { candidates };
+}
+
+// For reads: of the chats a reference could mean ("the agent in jobby"), the one with something
+// going on — running, waiting for an approval, or with subagents at work. Null unless exactly one.
+export function pickActive(chats) {
+  const active = chats.filter((c) => ["running", "initializing"].includes(c.status) || c.permissions.length > 0 || c.subagentsRunning > 0);
+  return active.length === 1 ? active[0] : null;
 }
 
 // Cuts at a line or sentence end when one is in the second half, else at a word
@@ -144,6 +153,7 @@ export function chatData(chat, now = Date.now()) {
     updated_ago: chat.updatedAt ? ago(chat.updatedAt, now) : null,
     created_at: toIso(chat.createdAt),
     archived: Boolean(chat.archived),
+    ...(chat.subagentsRunning !== undefined ? { subagents_running: chat.subagentsRunning } : {}),
   };
 }
 
@@ -219,20 +229,24 @@ export function describePermission(permission, max = 120) {
   return truncate(permission.title ?? permission.description ?? permission.name, max);
 }
 
-// What a chat is doing, from the user's point of view.
+// What a chat is doing, from the user's point of view. subagentsRunning is known only where the
+// caller asked the daemon (overview, read_activity).
 export function chatState(chat) {
   if (chat.permissions.length > 0) {
     return `waiting for approval: ${describePermission(chat.permissions[0], 80)}`;
   }
-  if (chat.status === "running" || chat.status === "initializing") return "running";
+  const helpers = chat.subagentsRunning > 0 ? `${chat.subagentsRunning} subagent(s) working` : null;
+  if (chat.status === "running" || chat.status === "initializing") return helpers ? `running, ${helpers}` : "running";
+  if (helpers) return helpers;
   if (chat.status === "error" || chat.attention === "error") return "error";
   if (chat.attention === "finished") return "new reply";
   return "idle";
 }
 
+// A chat in words to be spoken: title, project, state, age. Ids stay in the structured data.
 export function chatLine(chat, now = Date.now()) {
   const archived = chat.archived ? ", archived" : "";
-  return `#${chat.id.slice(0, 7)} ${truncate(chat.title, 70)} - ${chat.project} - ${chatState(chat)}${archived}, ${ago(chat.updatedAt, now)}`;
+  return `${truncate(chat.title, 70)} (${chat.project}): ${chatState(chat)}${archived}, ${ago(chat.updatedAt, now)}`;
 }
 
 // The structured form of one tool call.
@@ -250,7 +264,7 @@ export function candidatesText(kind, query, candidates) {
     return `No ${kind} matches "${query}". Ask the user for another name.`;
   }
   return [
-    `Several ${kind}s could match "${query}". Ask the user which one, then call again with its name or #id:`,
+    `Several ${kind}s could match "${query}". Ask the user which one, then call again with the one they mean:`,
     ...candidates.map((c) => `- ${c}`),
   ].join("\n");
 }
@@ -277,4 +291,108 @@ export function describeToolCall(item, max) {
     default:
       return `${item.name}${failed}`;
   }
+}
+
+// ---- read_activity ----------------------------------------------------------------------------
+
+export function duration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+const firstSentence = (text) => String(text ?? "").trim().split(/(?<=[.!?])\s|\n/)[0];
+const fileName = (path) => String(path ?? "").split("/").filter(Boolean).at(-1) ?? "";
+
+// Timeline items that show what an agent is doing. Claude Code's task notifications (a background
+// command has finished) are bookkeeping, not a step.
+export const isStep = (item) => ["tool_call", "reasoning", "assistant_message"].includes(item?.type) && item.name !== "task_notification";
+
+// What one timeline item says about work in progress, short enough to speak: the command, the
+// file name, the site — never a whole path or link.
+export function describeStep(item, max = 100) {
+  if (!item) return null;
+  if (item.type === "tool_call") {
+    const detail = item.detail ?? {};
+    switch (detail.type) {
+      case "shell":
+        return truncate(`running ${detail.command}`, max);
+      case "read":
+        return `reading ${fileName(detail.filePath)}`;
+      case "edit":
+      case "write":
+        return `editing ${fileName(detail.filePath)}`;
+      case "search":
+        return truncate(`searching for "${detail.query}"`, max);
+      case "fetch": {
+        let host = String(detail.url ?? "");
+        try {
+          host = new URL(host).hostname;
+        } catch {}
+        return `opening ${host}`;
+      }
+      case "sub_agent":
+        return truncate(`waiting for a subagent: ${detail.description ?? detail.subAgentType ?? "a task"}`, max);
+      default:
+        return `using ${item.name}`;
+    }
+  }
+  if (item.type === "reasoning") return truncate(`thinking: ${firstSentence(item.text)}`, max);
+  if (item.type === "assistant_message") return truncate(`writing: ${firstSentence(item.text)}`, max);
+  return null;
+}
+
+// "general-purpose · Opus 5.5 · Max · 45.1k tokens" → "45.1k"
+export function tokensOf(subtitle) {
+  return String(subtitle ?? "").match(/([\d.]+k?) tokens/)?.[1] ?? null;
+}
+
+// What a chat and its subagents are doing now. `subagents` are Paseo's provider-subagent
+// descriptors, the shown ones carrying `step` (latest tool call or thought) and `result` (final
+// message) read from their timelines. Running ones come first, then those finished in the latest
+// turn; older ones only count.
+export function activityData({ chat, subagents, turnStartedAt, parentStep, now = Date.now(), limit = 6 }) {
+  const running = subagents.filter((s) => s.status === "running");
+  const start = Date.parse(turnStartedAt ?? "") || 0;
+  const finished = subagents
+    .filter((s) => s.status !== "running" && Date.parse(s.createdAt) >= start)
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const parentRunning = ["running", "initializing"].includes(chat.status);
+  const waitingOnHelpers = running.length > 0 && (!parentStep || parentStep.startsWith("waiting for a subagent"));
+  return {
+    chat: chatData({ ...chat, subagentsRunning: running.length }, now),
+    working: parentRunning || running.length > 0,
+    turn_started_at: toIso(turnStartedAt),
+    turn_elapsed: parentRunning && start ? duration(now - start) : null,
+    current_step: parentRunning ? (waitingOnHelpers ? `waiting for ${running.length} subagent(s)` : (parentStep ?? null)) : null,
+    subagents_running: running.length,
+    subagents_done: subagents.length - running.length,
+    subagents: [...running, ...finished].slice(0, limit).map((s) => ({
+      id: s.id,
+      title: s.title || "subagent",
+      task: s.description ?? "",
+      status: s.status,
+      started_at: toIso(s.createdAt),
+      updated_at: toIso(s.updatedAt),
+      elapsed: duration((s.status === "running" ? now : Date.parse(s.updatedAt)) - Date.parse(s.createdAt)),
+      current_step: s.status === "running" ? (s.step ?? null) : null,
+      result: s.status === "running" ? null : (s.result ?? null),
+      tokens: tokensOf(s.subtitle),
+    })),
+  };
+}
+
+export function activityText(activity) {
+  const { chat } = activity;
+  const head = activity.working
+    ? `${chat.title} (${chat.project}) is working${activity.turn_elapsed ? `, ${activity.turn_elapsed} into the turn` : ""}${activity.current_step ? `: ${activity.current_step}` : ""}.`
+    : `${chat.title} (${chat.project}) is not working now: ${chat.state}, ${chat.updated_ago}.`;
+  const lines = activity.subagents.map((s) =>
+    s.status === "running"
+      ? `- ${s.title} "${truncate(s.task, 80)}": running for ${s.elapsed}${s.current_step ? `, now ${s.current_step}` : ""}.`
+      : `- ${s.title} "${truncate(s.task, 80)}": ${s.status} after ${s.elapsed}${s.result ? `. Result: ${truncate(s.result, 160)}` : "."}`,
+  );
+  return [head, ...lines].join("\n");
 }

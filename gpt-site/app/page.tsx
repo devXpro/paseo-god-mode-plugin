@@ -1,12 +1,15 @@
 const tools: Array<[string, string]> = [
   ["overview", "What needs you, what is running, new replies, projects."],
   ["list_chats", "Find chats by title, workspace, branch or project, archive included on request."],
-  ["read_chat", "What was said in the last N turns at once; the commands; the turns; a search."],
-  ["search_messages", "Where something was said, across many chats in one call."],
+  ["read_chat", "What was said in the last N turns at once, or the commands that ran."],
+  ["read_activity", "What an agent and its subagents are doing right now."],
+  ["search_messages", "Where something was said, across many chats or in one, in one call."],
   ["start_chat", "A new chat in a project, with your task as the first message."],
   ["send_message", "A follow-up or an answer to an existing chat."],
   ["answer_approval", "Allow or deny what a chat is waiting for."],
   ["stop_chat", "Cancel what a chat is doing now."],
+  ["update_status", "Which God Mode version is live, and whether there is an update."],
+  ["update_site", "Update God Mode from the Mac, or roll it back."],
   ["get_logs", "This plugin's own call log, for troubleshooting."],
 ];
 

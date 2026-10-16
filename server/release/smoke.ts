@@ -76,6 +76,8 @@ export async function smokeTest({ codex, checkoutDir, log, retries = 4, metadata
         };
         const listing = await check("list_chats", { limit: 2 });
         await check("overview", { hours: 1 });
+        // Only where the live plugin has it: a rollback can put back a version from before 0.6.0.
+        if (visible[`${prefix}.read_activity`]) await check("read_activity", {});
         const chat = (listing as { chats?: { id?: string }[] } | null)?.chats?.[0]?.id;
         if (chat) await check("read_chat", { chat, turns: 2 });
         await check("search_messages", { query: "test", limit: 1, scan: 5 });

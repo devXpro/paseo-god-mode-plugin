@@ -11,13 +11,18 @@ import { buildRelayWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 // Keep @getpaseo/* pinned and re-run core/probe.mjs before bumping it.
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
+  activityData,
+  activityText,
   candidatesText,
   chatData,
   chatLine,
   chatState,
   describePermission,
   describeRelease,
+  describeStep,
+  isStep,
   latestFirstWithin,
+  pickActive,
   releaseData,
   resolve,
   snippet,
@@ -34,6 +39,11 @@ const COMMANDS_SHOWN = 8;
 const MAX_TURNS = 10;
 const SEARCH_SCAN = { default: 20, max: 50 };
 const SEARCH_CONCURRENCY = 8;
+// read_activity without a chat: which chats to ask for subagents, and how many subagents to show.
+const ACTIVITY_SCAN = 12;
+const ACTIVITY_RECENT_MS = 3 * 3_600_000;
+const SUBAGENTS_SHOWN = 6;
+const SUBAGENT_TAIL = 12;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class PaseoOffline extends Error {}
@@ -144,8 +154,10 @@ function clarification(kind, query, text, names) {
 }
 
 // Resolves a spoken chat reference among active chats, or a full id of any chat
-// including archived ones. Returns { chat } or { ask }.
-async function pickChat(client, query, chats) {
+// including archived ones. Returns { chat, note? } or { ask }. Reads take the one
+// active chat among several matches ("the agent in jobby") and say so in `note`;
+// writes always ask.
+async function pickChat(client, query, chats, { read = false } = {}) {
   const all = chats ?? (await fetchChats(client));
   const found = resolve(all, query, { text: (c) => `${c.title} ${c.project}` });
   if (found.match) return { chat: found.match };
@@ -153,6 +165,11 @@ async function pickChat(client, query, chats) {
   if (UUID.test(raw)) {
     const fetched = await client.fetchAgent(raw);
     if (fetched) return { chat: toChat(fetched) };
+  }
+  const active = read ? pickActive(found.top ?? found.candidates) : null;
+  if (active) {
+    const matches = (found.top ?? found.candidates).length;
+    return { chat: active, note: `"${query}" matches ${matches} chats; this is the only active one.` };
   }
   const lines = found.candidates.map((c) => chatLine(c));
   return { ask: clarification("chat", query, candidatesText("chat", query, lines), found.candidates.map((c) => chatData(c))) };
@@ -181,14 +198,37 @@ function section(title, chats, limit, now) {
 const isRunning = (c) => ["running", "initializing"].includes(c.status);
 const isWaiting = (c) => c.permissions.length > 0 || c.attention === "permission";
 
+// The chat's Claude Task/Agent subagents (Paseo's provider subagents). An archived chat or one the
+// daemon cannot load simply has none.
+async function listSubagents(client, chatId) {
+  try {
+    return (await client.listProviderSubagents(chatId)).subagents ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// Marks how many subagents are working in each chat. A turn can end while backgrounded subagents
+// keep going, so an idle chat may still be working.
+async function countSubagents(client, chats) {
+  await mapLimit(chats, SEARCH_CONCURRENCY, async (c) => {
+    const subagents = await listSubagents(client, c.id);
+    c.subagents = subagents;
+    c.subagentsRunning = subagents.filter((s) => s.status === "running").length;
+  });
+}
+
 export async function overview(pairingUrl, { hours = 12 } = {}) {
   return withDaemon(pairingUrl, async (client) => {
     const [projects, chats] = await Promise.all([fetchProjects(client), fetchChats(client)]);
     const now = Date.now();
     const since = now - hours * 3_600_000;
     const waiting = chats.filter(isWaiting);
-    const running = chats.filter((c) => !isWaiting(c) && isRunning(c));
-    const replies = chats.filter((c) => !isWaiting(c) && !isRunning(c) && c.attention && Date.parse(c.updatedAt) >= since);
+    const busy = chats.filter((c) => !isWaiting(c) && isRunning(c));
+    const recent = chats.filter((c) => !isWaiting(c) && !isRunning(c) && c.attention && Date.parse(c.updatedAt) >= since);
+    await countSubagents(client, [...busy.slice(0, 8), ...recent.slice(0, 8)]);
+    const running = [...busy, ...recent.filter((c) => c.subagentsRunning > 0)];
+    const replies = recent.filter((c) => !(c.subagentsRunning > 0));
     const perProject = projects.map((p) => ({ name: p.name, chats: chats.filter((c) => c.project === p.name).length }));
     const summary =
       waiting.length + running.length + replies.length === 0
@@ -257,7 +297,7 @@ export async function listChats(pairingUrl, { project, status = "all", query, in
     }
     const more = chats.length > limit ? `\n… ${chats.length - limit} more; narrow it with project, status or query.` : "";
     // Steers the next call to an id it already has instead of another lookup.
-    const hint = "\nPass a #id above straight to read_chat or send_message; no need to list again.";
+    const hint = "\nThe data carries each chat's id: pass it to the next tool; no need to list again.";
     return { text: `${chats.length} chat(s) in ${scope}:\n${shown.map((c) => chatLine(c, now)).join("\n")}${more}${hint}`, data };
   });
 }
@@ -416,44 +456,98 @@ async function searchChat(client, chat, query, perChat) {
 }
 
 function matchLine(chat, m) {
-  return `#${chat.id.slice(0, 7)} ${truncate(chat.title, 50)} - ${chat.project}: turn ${m.turn} (${m.role}): ${m.snippet}`;
+  return `${truncate(chat.title, 50)} (${chat.project}), turn ${m.turn} (${m.role}): ${m.snippet}`;
 }
 
-export async function readChat(pairingUrl, { chat, view = "text", turn = 1, turns = 1, query, maxChars } = {}) {
+// A read that took the one active chat among several matches says so before its answer.
+function withNote(result, note) {
+  if (!note) return result;
+  return { text: `${note}\n${result.text}`, data: { ...result.data, note } };
+}
+
+export async function readChat(pairingUrl, { chat, view = "text", turn = 1, turns = 1, maxChars } = {}) {
   const count = clamp(Math.trunc(turns) || 1, 1, MAX_TURNS);
   const from = Math.max(1, Math.trunc(turn) || 1);
   const max = clamp(maxChars ?? (count === 1 ? 1500 : Math.min(6000, 800 * count)), 200, 6000);
   return withDaemon(pairingUrl, async (client) => {
-    const picked = await pickChat(client, chat);
+    const picked = await pickChat(client, chat, undefined, { read: true });
     if (picked.ask) return picked.ask;
     const target = picked.chat;
-    const header = chatLine(target);
-
-    if (view === "turns") {
-      const { prompts = [] } = await client.listAgentTimelinePrompts(target.id);
-      const latest = prompts.slice(-12).reverse().map((p, i) => ({ turn: i + 1, position: prompts.length - i, started_at: toIso(p.timestamp), preview: truncate(p.preview, 120) }));
-      return {
-        text: [header, `${prompts.length} turn(s), latest first:`, ...latest.map((t) => `${t.turn}. ${t.preview}`)].join("\n"),
-        data: { chat: chatData(target), total_turns: prompts.length, turns: latest },
-      };
-    }
-
-    if (view === "search") {
-      if (!query) return { text: "Searching a chat needs a query.", data: { chat: chatData(target), query: "", total_matches: 0, matches: [] } };
-      const result = await searchChat(client, target, query, 8);
-      const data = { chat: chatData(target), query, total_matches: result.total, matches: result.matches };
-      if (result.total === 0) return { text: `${header}\nNo matches for "${query}".`, data };
-      return {
-        text: [header, `${result.total} match(es) for "${query}", turns counted from the latest:`, ...result.matches.map((m) => `turn ${m.turn} (${m.role}): ${m.snippet}`)].join("\n"),
-        data,
-      };
-    }
-
     const loaded = await loadTurns(client, target.id, from, count);
     if (loaded.missing) {
-      return { text: `${header}\n${loaded.missing}`, data: { chat: chatData(target), total_turns: loaded.total, turns: [] } };
+      return withNote({ text: `${chatLine(target)}\n${loaded.missing}`, data: { chat: chatData(target), total_turns: loaded.total, turns: [] } }, picked.note);
     }
-    return view === "commands" ? renderTurnsCommands(target, loaded, max) : renderTurnsText(target, loaded, max);
+    return withNote(view === "commands" ? renderTurnsCommands(target, loaded, max) : renderTurnsText(target, loaded, max), picked.note);
+  });
+}
+
+// What a chat's agent and its subagents are doing now. `known` saves a second listing when the
+// caller already has the subagents.
+async function activityOf(client, chat, known) {
+  const [subagents, prompts, tail] = await Promise.all([
+    known ?? listSubagents(client, chat.id),
+    client.listAgentTimelinePrompts(chat.id).then((r) => r.prompts ?? []).catch(() => []),
+    isRunning(chat) ? client.fetchAgentTimeline(chat.id, { direction: "tail", limit: 40, projection: "projected" }).catch(() => null) : null,
+  ]);
+  const turnStart = prompts.at(-1);
+  const startedAt = Date.parse(turnStart?.timestamp ?? "") || 0;
+  const shown = [
+    ...subagents.filter((s) => s.status === "running"),
+    ...subagents.filter((s) => s.status !== "running" && Date.parse(s.createdAt) >= startedAt),
+  ].slice(0, SUBAGENTS_SHOWN);
+  const detailed = new Map(
+    await Promise.all(
+      shown.map(async (s) => {
+        try {
+          const page = await client.fetchProviderSubagentTimeline(chat.id, s.id, { direction: "tail", limit: SUBAGENT_TAIL });
+          const items = page.rows.map((r) => r.item).reverse();
+          const step = items.find(isStep);
+          const result = items.find((i) => i.type === "assistant_message")?.text;
+          return [s.id, { ...s, step: describeStep(step), result: result ? truncate(result, 300) : null }];
+        } catch {
+          return [s.id, s];
+        }
+      }),
+    ),
+  );
+  const own = (tail?.entries ?? [])
+    .filter((e) => !turnStart || e.seqStart >= turnStart.seq)
+    .map((e) => e.item)
+    .reverse()
+    .find(isStep);
+  return activityData({
+    chat,
+    subagents: subagents.map((s) => detailed.get(s.id) ?? s),
+    turnStartedAt: turnStart?.timestamp ?? null,
+    parentStep: describeStep(own),
+    limit: SUBAGENTS_SHOWN,
+  });
+}
+
+// read_activity: one chat, or every chat where an agent or a subagent is working now. A turn can
+// end while backgrounded subagents keep going, so recent idle chats are asked too.
+export async function readActivity(pairingUrl, { chat, maxChars } = {}) {
+  const max = clamp(maxChars ?? 1500, 200, 6000);
+  return withDaemon(pairingUrl, async (client) => {
+    const chats = await fetchChats(client);
+    if (chat) {
+      const picked = await pickChat(client, chat, chats, { read: true });
+      if (picked.ask) return picked.ask;
+      const activity = await activityOf(client, picked.chat);
+      const summary = activity.working ? "working" : "not working";
+      return withNote({ text: truncate(activityText(activity), max), data: { summary, chats: [activity] } }, picked.note);
+    }
+    const now = Date.now();
+    const candidates = chats.filter((c) => isRunning(c) || now - Date.parse(c.updatedAt) < ACTIVITY_RECENT_MS).slice(0, ACTIVITY_SCAN);
+    await countSubagents(client, candidates);
+    const working = candidates.filter((c) => isRunning(c) || c.subagentsRunning > 0);
+    if (working.length === 0) {
+      return { text: "No agent or subagent is working right now.", data: { summary: "Nothing is working right now.", chats: [] } };
+    }
+    const activities = await Promise.all(working.map((c) => activityOf(client, c, c.subagents)));
+    const helpers = activities.reduce((n, a) => n + a.subagents_running, 0);
+    const summary = `${activities.length} chat(s) working, ${helpers} subagent(s) running.`;
+    return { text: truncate([summary, ...activities.map(activityText)].join("\n"), max), data: { summary, chats: activities } };
   });
 }
 
@@ -510,7 +604,7 @@ export async function searchMessages(pairingUrl, { query, project, chat, include
 // Waits up to `seconds` for the agent's turn to end and describes the outcome.
 async function awaitReply(client, agentId, seconds) {
   const wait = clamp(seconds, 0, MAX_WAIT_SECONDS);
-  if (wait === 0) return { text: "Not waiting for the reply; read the chat later.", data: { outcome: "not_waiting" } };
+  if (wait === 0) return { text: "Not waiting for the reply; offer to check later.", data: { outcome: "not_waiting" } };
   const state = await client.waitForFinish(agentId, wait * 1000);
   switch (state.status) {
     case "idle": {
@@ -527,7 +621,7 @@ async function awaitReply(client, agentId, seconds) {
       return { text: `Agent stopped with an error: ${error}`, data: { outcome: "error", error } };
     }
     default:
-      return { text: "Agent is still working. Tell the user, and read the chat when they ask.", data: { outcome: "still_working" } };
+      return { text: "Agent is still working. Tell the user and offer to check later; do not poll.", data: { outcome: "still_working" } };
   }
 }
 
@@ -546,7 +640,7 @@ export async function startChat(pairingUrl, { project, prompt, model, thinking, 
     });
     const outcome = await awaitReply(client, agent.id, waitSeconds);
     return {
-      text: `Started chat #${agent.id.slice(0, 7)} in ${picked.project.name}.\n${outcome.text}`,
+      text: `Started a new chat in ${picked.project.name}; the task arrived.\n${outcome.text}`,
       data: { chat_id: agent.id, short_id: agent.id.slice(0, 7), project: picked.project.name, ...outcome.data },
     };
   });
@@ -560,14 +654,14 @@ export async function sendMessage(pairingUrl, { chat, text, ifBusy, waitSeconds 
     const busy = isRunning(target);
     if (busy && !ifBusy) {
       return {
-        text: `${chatLine(target)}\nThis chat is busy. Ask the user whether to interrupt it or add the message to the current work, then call again with if_busy.`,
-        data: { chat_id: target.id, short_id: target.id.slice(0, 7), outcome: "busy" },
+        text: `Not sent: ${truncate(target.title, 70)} is busy. Ask the user whether to add this to its current work or interrupt it, then call again with if_busy.`,
+        data: { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, outcome: "busy" },
       };
     }
     await client.sendAgentMessage(target.id, text, busy ? { activeTurnBehavior: ifBusy } : undefined);
     const outcome = await awaitReply(client, target.id, waitSeconds);
     return {
-      text: `Sent to #${target.id.slice(0, 7)} ${truncate(target.title, 70)}.\n${outcome.text}`,
+      text: `Sent to ${truncate(target.title, 70)}; it arrived.\n${outcome.text}`,
       data: { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, ...outcome.data },
     };
   });
@@ -580,7 +674,10 @@ export async function answerApproval(pairingUrl, { chat, decision, request } = {
     const target = picked.chat;
     const pending = target.permissions;
     if (pending.length === 0) {
-      return { text: `${chatLine(target)}\nNothing is waiting for approval in this chat.`, data: { chat_id: target.id, done: false, what: null } };
+      return {
+        text: `${chatLine(target)}\nNothing is waiting for approval here, so nothing was allowed or denied. If the agent asked the user a question in its text, answer it with send_message.`,
+        data: { chat_id: target.id, done: false, what: null },
+      };
     }
     let permission = pending[0];
     if (pending.length > 1) {
@@ -608,7 +705,7 @@ export async function answerApproval(pairingUrl, { chat, decision, request } = {
     await client.respondToPermissionAndWait(target.id, permission.id, response, 10_000);
     const what = describePermission(permission);
     return {
-      text: `${behavior === "allow" ? "Allowed" : "Denied"}: ${what} in #${target.id.slice(0, 7)}.`,
+      text: `${behavior === "allow" ? "Allowed" : "Denied"}: ${what} in ${truncate(target.title, 70)}.`,
       data: { chat_id: target.id, done: true, decision: behavior, what },
     };
   });
@@ -620,11 +717,11 @@ export async function stopChat(pairingUrl, { chat } = {}) {
     if (picked.ask) return picked.ask;
     const target = picked.chat;
     if (!isRunning(target)) {
-      return { text: `${chatLine(target)}\nIt is not running; nothing to stop.`, data: { chat_id: target.id, done: false } };
+      return { text: `${chatLine(target)}\nIt is not running; nothing was stopped.`, data: { chat_id: target.id, done: false } };
     }
     await client.cancelAgent(target.id);
     return {
-      text: `Stopped #${target.id.slice(0, 7)} ${truncate(target.title, 70)}. State before: ${chatState(target)}.`,
+      text: `Stopped ${truncate(target.title, 70)}. State before: ${chatState(target)}.`,
       data: { chat_id: target.id, done: true },
     };
   });

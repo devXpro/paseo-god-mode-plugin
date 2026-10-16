@@ -3,7 +3,8 @@
 //
 //   node core/probe.mjs overview [--hours 12]
 //   node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
-//   node core/probe.mjs read <chat> [--view text|commands|turns|search] [--turn 1] [--turns 3] [--query Q] [--max N]
+//   node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [--max N]
+//   node core/probe.mjs activity [chat] [--max N]
 //   node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
 //   node core/probe.mjs start <project> <prompt…> [--wait 15] [--model M] [--thinking T] [--mode M]
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
@@ -19,6 +20,7 @@ import {
   answerApproval,
   listChats,
   overview,
+  readActivity,
   readChat,
   searchMessages,
   sendMessage,
@@ -78,9 +80,9 @@ const operations = {
       view: values.view,
       turn: number(values.turn, 1),
       turns: number(values.turns, 1),
-      query: values.query,
       maxChars: number(values.max, undefined),
     }),
+  activity: () => readActivity(url, { chat: first, maxChars: number(values.max, undefined) }),
   search: () =>
     searchMessages(url, {
       query: [first, ...rest].join(" "),
