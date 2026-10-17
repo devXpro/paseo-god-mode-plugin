@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -134,11 +134,11 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes fifteen tools, output schemas and honest annotations", async () => {
+test("tools/list exposes sixteen tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
-    ["overview", "list_chats", "read_chat", "read_activity", "show_images", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "plugin_read", "plugin_action", "update_status", "update_site", "get_logs"],
+    ["overview", "list_chats", "read_chat", "read_activity", "show_images", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "archive_chat", "plugin_read", "plugin_action", "update_status", "update_site", "get_logs"],
   );
   for (const tool of result.tools) {
     assert.equal(Boolean(tool.outputSchema), tool.name !== "get_logs", `${tool.name} outputSchema`);
@@ -151,6 +151,8 @@ test("tools/list exposes fifteen tools, output schemas and honest annotations", 
   assert.equal(byName.search_messages.annotations.readOnlyHint, true);
   assert.equal(byName.send_message.annotations.readOnlyHint, false);
   assert.equal(byName.stop_chat.annotations.destructiveHint, true);
+  assert.equal(byName.archive_chat.annotations.readOnlyHint, false);
+  assert.equal(byName.archive_chat.annotations.destructiveHint, true);
   assert.equal(byName.update_status.annotations.readOnlyHint, true);
   assert.equal(byName.update_site.annotations.destructiveHint, true);
   assert.match(byName.update_site.description, /wait for the user's yes before calling/);
@@ -163,7 +165,7 @@ test("tools/list exposes fifteen tools, output schemas and honest annotations", 
   assert.deepEqual(byName.plugin_action.inputSchema.required, ["plugin", "operation"]);
   assert.match(byName.read_chat.description, /turns=5/);
   assert.match(byName.search_messages.description, /Do not read chats one by one/);
-  assert.deepEqual(byName.read_chat.inputSchema.properties.view.enum, ["text", "commands"]);
+  assert.deepEqual(byName.read_chat.inputSchema.properties.view.enum, ["text", "commands", "thinking"]);
   assert.equal(byName.read_chat.inputSchema.properties.query, undefined);
   assert.equal(byName.read_activity.inputSchema.required, undefined, "read_activity works without a chat");
 });
@@ -182,7 +184,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "send_message", "answer_approval", "stop_chat"]) {
+  for (const tool of ["read_chat", "read_activity", "show_images", "send_message", "answer_approval", "stop_chat", "archive_chat"]) {
     assert.match(byName[tool].inputSchema.properties.chat.description, /Ids are for calls only/, tool);
     assert.match(byName[tool].inputSchema.properties.chat.description, /Keep the chat being discussed/, tool);
   }
@@ -203,6 +205,10 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.answer_approval.description, /wait for their yes first/);
   assert.match(byName.answer_approval.description, /use send_message/);
   assert.match(byName.stop_chat.description, /wait for their yes/);
+  assert.match(byName.archive_chat.description, /wait for their yes/);
+  assert.match(byName.archive_chat.description, /a new message to it brings it back/);
+  assert.match(byName.archive_chat.description, /busy means nothing was archived/);
+  assert.match(byName.read_chat.description, /view "thinking"/);
   assert.match(byName.update_site.description, /after one update_status call/);
   assert.match(byName.update_site.description, /update the God Mode plugin in Paseo first/);
 });
@@ -237,6 +243,8 @@ test("read_chat, read_activity, list_chats and search_messages pass their argume
   assert.deepEqual(calls.at(-1).args, { chat: "#a22524f", view: "text", turn: 1, turns: 5, maxChars: 3000 });
   await handle(call("read_chat", { chat: "fleet" }));
   assert.equal(calls.at(-1).args.turns, 1, "one turn stays the default");
+  await handle(call("read_chat", { chat: "fleet", view: "thinking", turns: 2 }));
+  assert.deepEqual(calls.at(-1).args, { chat: "fleet", view: "thinking", turn: 1, turns: 2, maxChars: undefined });
   const before = calls.length;
   for (const view of ["turns", "search"]) assert.equal((await handle(call("read_chat", { chat: "fleet", view }))).error.code, -32602, view);
   assert.equal(calls.length, before, "removed views run nothing");
@@ -281,6 +289,9 @@ test("a failed write never reads as done", async () => {
     sendMessage: () => {
       throw new Error("no answer within 45 s");
     },
+    archiveChat: () => {
+      throw new Error("no answer within 45 s");
+    },
     stopChat: () => {
       throw new PaseoOffline("connect timed out");
     },
@@ -291,6 +302,7 @@ test("a failed write never reads as done", async () => {
   const handle = createMcpHandler({ config: configured(), ops });
   assert.match((await handle(call("send_message", { chat: "x", text: "go" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
+  assert.match((await handle(call("archive_chat", { chat: "x" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.doesNotMatch((await handle(call("read_chat", { chat: "x" }))).result.content[0].text, /took effect/);
 });
 
@@ -394,6 +406,10 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "not_waiting", delivered: true }],
     ["answer_approval", { chat_id: sampleChat.id, done: false, what: null }],
     ["stop_chat", { chat_id: sampleChat.id, done: true }],
+    ["archive_chat", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "archived", done: true, archived_at: "2026-10-17T12:00:00.000Z" }],
+    ["archive_chat", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy", done: false }],
+    ["archive_chat", clarification],
+    ["read_chat", { chat: { ...sampleChat, context: { used_tokens: 59606, max_tokens: 1000000, percent_used: 6, remaining_tokens: 940394 } }, total_turns: 3, turns: [{ turn: 1, position: 3, started_at: null, thinking: "Check the relay first.", omitted_thoughts: 0 }] }],
     ["update_status", { site_version: "0.1.0", build: "v0.1.0-2-gabc1234", installed_version: "0.1.1", update_available: true, latest_release: "0.2.0", latest_is_newer: true, live_release: 7, mac_online: true, job: { action: "update", state: "running", step: "Publishing", started_at: "2026-10-16T19:00:00.000Z", finished_at: null, message: null, error: null } }],
     ["update_status", { site_version: "0.1.0", build: null, installed_version: null, update_available: null, latest_release: null, latest_is_newer: null, live_release: null, mac_online: false }],
     ["update_site", { started: true, action: "update", job_id: "j1", message: "update started" }],

@@ -9,9 +9,9 @@ import { truncate } from "./text.mjs";
 import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
-const READ_VIEWS = ["text", "commands"];
+const READ_VIEWS = ["text", "commands", "thinking"];
 // Tools that act on agents or plugins: when one fails, nobody knows whether it took effect.
-const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site", "plugin_action"]);
+const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "archive_chat", "update_site", "plugin_action"]);
 const CALL_DEADLINE_MS = 45_000;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
@@ -56,15 +56,15 @@ export function buildInstructions(config) {
   const lines = [
     "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
     "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages. Paseo plugins (beyond agent chats) → plugin_read.",
-    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
+    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
     "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Reuse ids from earlier results instead of listing again. Names work too: the tools resolve what the user said and offer candidates when unsure.',
     "A write result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived, so never send it again unless the user asks for another message; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
     "If an agent is still working, say so and offer to check later; do not poll.",
     "Name chats by their title; never read ids, hashes or links aloud.",
     config.confirmRisky
-      ? 'Before allowing a request, stopping a chat or updating God Mode, the user must have heard exactly what will happen and said yes; "allow it" right after you read the request out is that yes.'
-      : "Act on approvals and stops as soon as the user asks; no read-back needed.",
+      ? 'Before allowing a request, stopping or archiving a chat or updating God Mode, the user must have heard exactly what will happen and said yes; "allow it" right after you read the request out is that yes.'
+      : "Act on approvals, stops and archiving as soon as the user asks; no read-back needed.",
     config.language
       ? `Speak to the user in ${languageName(config.language)}. Keep answers to one or two sentences unless they ask for more.`
       : "Answer in the user's language, in one or two sentences unless they ask for more.",
@@ -110,6 +110,16 @@ const CHAT_OUT = {
     created_at: time,
     archived: { type: "boolean" },
     subagents_running: { type: "integer", description: "Subagents of this chat working now; given by overview and read_activity." },
+    context: {
+      type: "object",
+      description: "How full the agent's context window is, as Paseo's context meter shows it. Absent when Paseo does not know yet: after a restart of Paseo, until the agent's next turn.",
+      properties: {
+        used_tokens: { type: "integer" },
+        max_tokens: { type: "integer" },
+        percent_used: { type: "integer" },
+        remaining_tokens: { type: "integer" },
+      },
+    },
   },
   required: ["id", "short_id", "title", "project", "status", "updated_at"],
 };
@@ -146,6 +156,8 @@ const TURN_OUT = {
       type: "array",
       items: { type: "object", properties: { kind: { type: "string" }, name: { type: "string" }, status: { type: "string" }, text: { type: "string" } } },
     },
+    thinking: { type: "string", description: "view thinking: the agent's reasoning in this turn, latest kept first; empty when the model shared none." },
+    omitted_thoughts: { type: "integer" },
   },
 };
 
@@ -332,12 +344,12 @@ export const TOOLS = [
   {
     name: "read_chat",
     description:
-      'Use this to tell the user what a chat said or did, in one call, with the id you already have or the name the user said. Default: the latest turn, the agent\'s final message first; turns=N reads the last N turns at once (turns=5 sums up a whole short chat), never turn by turn. view "commands": the commands and tool calls it ran, only when asked what it ran. Images read as [image N]: to show one or say what is on it, use show_images. For what it is doing right now, or its subagents, use read_activity; to find where something was said, search_messages.',
+      'Use this to tell the user what a chat said or did, in one call, with the id you already have or the name the user said. Default: the latest turn, the agent\'s final message first; turns=N reads the last N turns at once (turns=5 sums up a whole short chat), never turn by turn. view "commands": the commands and tool calls it ran, only when asked what it ran; view "thinking": the agent\'s reasoning, only when asked how it thought (models often share none). It also tells how full the chat\'s context window is. Images read as [image N]: to show one or say what is on it, use show_images. For what it is doing right now, or its subagents, use read_activity; to find where something was said, search_messages.',
     inputSchema: {
       type: "object",
       properties: {
         chat: CHAT,
-        view: { type: "string", enum: ["text", "commands"], description: "text (default): what was said. commands: what it ran." },
+        view: { type: "string", enum: READ_VIEWS, description: "text (default): what was said. commands: what it ran. thinking: how it reasoned." },
         turn: { type: "integer", minimum: 1, description: "The newest turn to read, counted from the latest: 1 = latest." },
         turns: { type: "integer", minimum: 1, maximum: 10, description: "How many turns to read, going back from turn. Default 1." },
         max_chars: { type: "integer", minimum: 200, maximum: 6000, description: "Budget for the whole answer. Default 1500 for one turn, 800 per turn for several." },
@@ -355,7 +367,7 @@ export const TOOLS = [
   {
     name: "read_activity",
     description:
-      'Use this when the user asks what an agent is doing right now, how far it got, or what its subagents are doing ("what is it doing?", "what are the subagents up to?"). One call returns the chat\'s state and current step, and each subagent\'s task, status, current step and running time; finished subagents come with their result. Leave chat empty to cover every chat where an agent or a subagent is working now. Not for what was said earlier: use read_chat.',
+      'Use this when the user asks what an agent is doing right now, how far it got, or what its subagents are doing ("what is it doing?", "what are the subagents up to?"). One call returns the chat\'s state, current step and how full its context window is, and each subagent\'s task, status, current step and running time; finished subagents come with their result. Leave chat empty to cover every chat where an agent or a subagent is working now. Not for what was said earlier: use read_chat.',
     inputSchema: {
       type: "object",
       properties: {
@@ -494,6 +506,20 @@ export const TOOLS = [
       "Use this only when the user tells you to stop or cancel what a chat is doing right now. Unless the user has just confirmed which chat and that it should stop, say it in one sentence and wait for their yes. done=false means nothing was stopped.",
     inputSchema: { type: "object", properties: { chat: CHAT }, required: ["chat"] },
     outputSchema: object({ chat_id: { type: "string" }, done: { type: "boolean" } }),
+    annotations: { ...write, destructiveHint: true },
+  },
+  {
+    name: "archive_chat",
+    description:
+      "Use this only when the user tells you to archive a chat: Paseo hides it from the chat list and keeps its history, and a new message to it brings it back. Unless the user has just confirmed which chat and that it should be archived, say it in one sentence and wait for their yes. busy means nothing was archived because the chat is working now: tell the user, and stop it only if they ask. done=false means nothing was archived.",
+    inputSchema: { type: "object", properties: { chat: CHAT }, required: ["chat"] },
+    outputSchema: object({
+      chat_id: { type: "string" },
+      short_id: { type: "string" },
+      outcome: { type: "string", enum: ["archived", "busy", "already_archived"] },
+      done: { type: "boolean" },
+      archived_at: time,
+    }),
     annotations: { ...write, destructiveHint: true },
   },
   {
@@ -680,6 +706,8 @@ async function dispatch(name, args, config, ops, log, caller) {
       return (need("chat", "decision") && { invalid: need("chat", "decision") }) || ops.answerApproval(url, { chat: args.chat, decision: args.decision, request: args.request });
     case "stop_chat":
       return (need("chat") && { invalid: need("chat") }) || ops.stopChat(url, { chat: args.chat });
+    case "archive_chat":
+      return (need("chat") && { invalid: need("chat") }) || ops.archiveChat(url, { chat: args.chat });
     case "plugin_read":
       if (!isArgs(args.args)) return { invalid: "args must be an object." };
       return ops.pluginRead(url, { plugin: args.plugin || undefined, operation: args.operation || undefined, args: args.args });

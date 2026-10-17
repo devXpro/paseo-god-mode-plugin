@@ -140,6 +140,7 @@ export function snippet(text, query, radius = 80) {
 
 // The structured form of a chat, alongside its text line.
 export function chatData(chat, now = Date.now()) {
+  const context = contextOf(chat.usage);
   return {
     id: chat.id,
     short_id: chat.id.slice(0, 7),
@@ -154,7 +155,31 @@ export function chatData(chat, now = Date.now()) {
     created_at: toIso(chat.createdAt),
     archived: Boolean(chat.archived),
     ...(chat.subagentsRunning !== undefined ? { subagents_running: chat.subagentsRunning } : {}),
+    ...(context ? { context } : {}),
   };
+}
+
+// How full the agent's context window is, from Paseo's lastUsage: the numbers its own context meter
+// shows. Paseo keeps them in memory only, so after a daemon restart they are unknown (null) until
+// the agent's next turn.
+export function contextOf(usage) {
+  const used = usage?.contextWindowUsedTokens;
+  const max = usage?.contextWindowMaxTokens;
+  if (!Number.isFinite(used) || !Number.isFinite(max) || used < 0 || max <= 0) return null;
+  return { used_tokens: used, max_tokens: max, percent_used: Math.round((used / max) * 100), remaining_tokens: Math.max(0, max - used) };
+}
+
+// 59606 → "60k", 1000000 → "1M".
+function tokenCount(n) {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${Number((n / 1_000_000).toFixed(1))}M`;
+}
+
+// A chat's context (chatData's context field) in words, or null when Paseo does not know it.
+export function contextLine(context) {
+  if (!context) return null;
+  return `Context window: ${context.percent_used}% used (${tokenCount(context.used_tokens)} of ${tokenCount(context.max_tokens)} tokens).`;
 }
 
 // update_status: the plugin's release status (null when the Mac is unreachable) next to the
@@ -516,10 +541,11 @@ export function activityText(activity) {
   const head = activity.working
     ? `${chat.title} (${chat.project}) is working${activity.turn_elapsed ? `, ${activity.turn_elapsed} into the turn` : ""}${activity.current_step ? `: ${activity.current_step}` : ""}.`
     : `${chat.title} (${chat.project}) is not working now: ${chat.state}, ${chat.updated_ago}.`;
+  const context = contextLine(chat.context);
   const lines = activity.subagents.map((s) =>
     s.status === "running"
       ? `- ${s.title} "${truncate(s.task, 80)}": running for ${s.elapsed}${s.current_step ? `, now ${s.current_step}` : ""}.`
       : `- ${s.title} "${truncate(s.task, 80)}": ${s.status} after ${s.elapsed}${s.result ? `. Result: ${truncate(s.result, 160)}` : "."}`,
   );
-  return [head, ...lines].join("\n");
+  return [head, context, ...lines].filter(Boolean).join("\n");
 }

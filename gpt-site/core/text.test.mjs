@@ -6,6 +6,8 @@ import {
   activityText,
   chatData,
   chatLine,
+  contextLine,
+  contextOf,
   describePermission,
   describeRelease,
   describeStep,
@@ -66,6 +68,22 @@ test("chatData carries ISO times next to the relative ones", () => {
     created_at: "2026-10-16T10:00:00.000Z",
     archived: true,
   });
+});
+
+test("the context window reads as Paseo's meter shows it, and is absent when unknown", () => {
+  const usage = { inputTokens: 4, cachedInputTokens: 55401, outputTokens: 68, totalCostUsd: 2.2, contextWindowMaxTokens: 1000000, contextWindowUsedTokens: 59606 };
+  const context = contextOf(usage);
+  assert.deepEqual(context, { used_tokens: 59606, max_tokens: 1000000, percent_used: 6, remaining_tokens: 940394 });
+  assert.equal(contextLine(context), "Context window: 6% used (60k of 1M tokens).");
+  assert.equal(contextLine(contextOf({ contextWindowMaxTokens: 200000, contextWindowUsedTokens: 187500 })), "Context window: 94% used (188k of 200k tokens).");
+  assert.equal(contextOf({ contextWindowMaxTokens: 200000, contextWindowUsedTokens: 210000 }).remaining_tokens, 0);
+  for (const unknown of [null, undefined, {}, { contextWindowUsedTokens: 10 }, { contextWindowMaxTokens: 0, contextWindowUsedTokens: 0 }]) {
+    assert.equal(contextOf(unknown), null);
+  }
+  assert.equal(contextLine(null), null);
+  const chat = { id: "a22524f0-1", title: "Fleet", project: "proxy", status: "idle", permissions: [], updatedAt: "2026-10-16T11:50:00Z" };
+  assert.deepEqual(chatData({ ...chat, usage }).context, context);
+  assert.equal("context" in chatData({ ...chat, usage: null }), false, "no context field when Paseo does not know it");
 });
 
 test("toolCallData keeps kind, name, status and the readable line", () => {

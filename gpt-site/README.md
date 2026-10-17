@@ -45,7 +45,7 @@ ChatGPT (voice or text)
 | `PASEO_NEW_CHAT_THINKING` | the model's default | `off`, `low`, `medium`, `high`, `xhigh` or `max`. |
 | `PASEO_NEW_CHAT_MODE` | Paseo's default | `default`, `acceptEdits`, `auto`, `bypassPermissions` (skips every prompt) or `plan`. |
 | `PASEO_WAIT_SECONDS` | `15` | How long a call waits for the agent's reply before saying it is still working. Max 25. |
-| `PASEO_CONFIRM_RISKY` | `on` | ChatGPT reads back approvals and stops and waits for your yes. `off` acts at once. |
+| `PASEO_CONFIRM_RISKY` | `on` | ChatGPT reads back approvals, stops and archiving and waits for your yes. `off` acts at once. |
 | `PASEO_LOG` | `on` | Keep a log of every call in the Site's database, for `get_logs`. |
 
 A spoken request can override model, thinking and mode for one new chat.
@@ -56,7 +56,7 @@ A spoken request can override model, thinking and mode for one new chat.
 | --- | --- |
 | `overview` | Chats waiting for you, running chats, new replies, projects. |
 | `list_chats` | Finds chats by title, workspace, branch or project with Paseo's own search, archive included on request; or lists a project's chats, or chats in a state. |
-| `read_chat` | `text`: what was said, final message first; `turns: N` reads the last N turns in one call. `commands`: the shell commands and tool calls with output. |
+| `read_chat` | `text`: what was said, final message first; `turns: N` reads the last N turns in one call. `commands`: the shell commands and tool calls with output. `thinking`: the agent's reasoning, when the model shared any. Every view says how full the chat's context window is. |
 | `read_activity` | What an agent and its subagents are doing right now: state, current step, each subagent's task, status, running time and result. Without a chat: every chat at work. |
 | `show_images` | The screenshots and pictures in a chat, shown in ChatGPT by a widget and handed to the model where ChatGPT allows it: the newest, a turn's, or the N-th of a turn (`[image N]` in `read_chat`). Without a chat: the newest image of the most recent chats. |
 | `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
@@ -64,13 +64,14 @@ A spoken request can override model, thinking and mode for one new chat.
 | `send_message` | A follow-up or an answer to an existing chat. |
 | `answer_approval` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | Cancel what a chat is doing now. |
+| `archive_chat` | Archive a chat, like Archive in Paseo: hidden from the list, history kept, a new message brings it back. A working chat is left alone (`busy`). |
 | `update_status` | Which God Mode version is live, whether the Mac or GitHub has a newer one, how the last update went. |
 | `update_site` | Update God Mode to the version installed on the Mac, or roll it back; runs on the Mac. |
 | `get_logs` | This plugin's own call log. |
 
 Every tool except `get_logs` returns readable text plus `structuredContent` that matches its
 declared `outputSchema`: chats with `id`, `short_id`, `title`, `project`, `status`, `state`,
-`updated_at` (ISO 8601, UTC) and `updated_ago`; turns with `turn` (1 = latest), `position`,
+`updated_at` (ISO 8601, UTC), `updated_ago`, and `context` (used, max and remaining tokens, percent used) when Paseo knows it; turns with `turn` (1 = latest), `position`,
 `started_at`, `user_text`, `agent_text`, and `images` when the turn has some (pictures read as
 `[image N]` in the text, never as a path on the Mac). An ambiguous name returns
 `needs_clarification` with the candidates instead. `show_images` also returns the image bytes in

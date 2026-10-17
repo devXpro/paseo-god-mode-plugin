@@ -3,7 +3,7 @@
 //
 //   node core/probe.mjs overview [--hours 12]
 //   node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
-//   node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [--max N]
+//   node core/probe.mjs read <chat> [--view text|commands|thinking] [--turn 1] [--turns 3] [--max N]
 //   node core/probe.mjs activity [chat] [--max N]
 //   node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 //   node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
@@ -11,6 +11,7 @@
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
 //   node core/probe.mjs stop <chat>
+//   node core/probe.mjs archive <chat>
 //   node core/probe.mjs plugins
 //   node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 //   node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
@@ -25,6 +26,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   answerApproval,
+  archiveChat,
   listChats,
   overview,
   pluginAction,
@@ -122,6 +124,7 @@ const operations = {
     sendMessage(url, { chat: first, text: rest.join(" "), ifBusy: values["if-busy"], waitSeconds: number(values.wait, 15) }),
   approve: () => answerApproval(url, { chat: first, decision: rest[0], request: values.request }),
   stop: () => stopChat(url, { chat: first }),
+  archive: () => archiveChat(url, { chat: first }),
   plugins: () => pluginRead(url, {}),
   "plugin-read": () => pluginRead(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined }),
   "plugin-act": () =>

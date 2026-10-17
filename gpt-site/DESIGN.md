@@ -30,8 +30,18 @@ model, the 0.5.0 metadata against the new one (`eval/README.md`, `eval/results/r
   backgrounded subagents still run; `overview` counts subagents too.
 - **Reads take the one active chat** when a name matches several ("the agent in jobby"): with a
   candidate list the model asked "which one?" every time. Writes still ask.
-- **`read_chat` keeps two views,** `text` and `commands`. The `turns` view clashed with the `turns`
-  count and was mixed up with it; `search` duplicated `search_messages(chat=…)` and went unused.
+- **`read_chat` has three views,** `text`, `commands` and `thinking` (0.9). The `turns` view clashed
+  with the `turns` count and was mixed up with it; `search` duplicated `search_messages(chat=…)` and
+  went unused. `thinking` is the `reasoning` items of the same timeline pages: Claude's thinking
+  when the model shares it (often it records an empty block, and Paseo drops those) or Codex's
+  reasoning summaries.
+- **Context window (0.9)** comes from the agent snapshot's `lastUsage`, the numbers Paseo's own
+  context meter shows. The daemon keeps it in memory only: after a restart it is unknown until the
+  agent's next turn, so `context` is then absent rather than guessed.
+- **`archive_chat` (0.9)** calls Paseo's `archiveAgent`, which would interrupt a working agent and
+  its subagents; a chat that is running or has running subagents returns `busy` and is left alone.
+  Paseo has no unarchive request: a new message to the chat restores it. Confirmation is the
+  read-back rule, as for `stop_chat`, not a token.
 - **Text for speech:** chats by title, project and state, no ids or hashes; ids stay in
   `structuredContent`, which the model also sees.
 - **One instruction, one message (0.7.2).** After a send with `wait_seconds` 0 the model read
@@ -106,13 +116,14 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | --- | --- | --- |
 | `overview` | read | Waiting for the user, running, new replies and errors in the last `hours`, projects with chat counts. |
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `limit`. |
-| `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) or `commands` (the last 8 tool calls of the turn with output, plus the total). `turn` counts back from the latest, `turns` reads several at once. |
+| `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) `commands` (the last 8 tool calls of the turn with output, plus the total) or `thinking` (the agent's reasoning, latest kept first). Every view gives the chat's context window when known. `turn` counts back from the latest, `turns` reads several at once. |
 | `read_activity` | read | What a chat's agent and its subagents are doing now: state, current step, each subagent's task, status, running time, current step or result (up to 6, running first). Without `chat`: every chat at work, idle ones with running backgrounded subagents included. |
 | `show_images` | read | The images in a chat on the user's screen (a widget) and, where ChatGPT allows, in the model's context: the newest, a turn's (`turn`) or one of them (`image` = N of `[image N]`), up to `count` 4. Without `chat`: the newest image of the 8 most recent chats. See §10. |
 | `start_chat` | write | New workspace and agent in a project, like New chat. Waits up to `wait_seconds` for the reply. `model`, `thinking`, `mode` override the site defaults for this chat. |
 | `send_message` | write | To an existing chat. If the chat is busy it asks first; `if_busy` = `steer` (add to the current work) or `interrupt`. |
 | `answer_approval` | write | Allow or deny a pending request, pressing the same action the app shows ("Implement", "Reject"). Requests are described as what will happen: "plan: …", "run: …", "edit …". |
 | `stop_chat` | write, destructive | Cancels the running turn. |
+| `archive_chat` | write, destructive | Archives a chat that is not working (outcome `archived`); a working one is `busy`, an archived one `already_archived`. Reversible by a new message. |
 | `plugin_read` | read | What Paseo plugins offer, for plugins that answer `meta.describe` (§11). Without `plugin`: every installed plugin with its reads and actions, or why it has none. With `plugin` (id, title, alias or spoken words) and no `operation`: its main read. Answers are trimmed to the fields the plugin marks, secret-looking keys redacted. |
 | `plugin_action` | write, destructive, open world | One action a plugin describes. A `low`-risk one runs at once; anything else returns `needs_confirmation` with the text to read out and a token bound to the exact arguments, and runs on the second call with it. `done` comes with `delivered: true`. |
 | `get_logs` | read | The call log; works without the pairing link. |
@@ -143,7 +154,7 @@ Variables reach the Worker only after a deploy.
 
 Permissions have three independent layers:
 1. ChatGPT's approval card for plugin actions: "Always allow" once, per account.
-2. The read-back before `answer_approval` and `stop_chat`: `PASEO_CONFIRM_RISKY`.
+2. The read-back before `answer_approval`, `stop_chat` and `archive_chat`: `PASEO_CONFIRM_RISKY`.
 3. Claude's own prompts inside Paseo: `PASEO_NEW_CHAT_MODE` for chats started from ChatGPT;
    `bypassPermissions` skips them all.
 

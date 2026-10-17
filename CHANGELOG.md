@@ -7,6 +7,20 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-17
+
+### Added
+
+- `archive_chat`: archives a chat the way Archive in Paseo does. Its history stays, and a new
+  message to it brings it back. A chat whose agent or subagents are working is left alone and the
+  answer is `busy`, since archiving would interrupt them. As with `stop_chat`, ChatGPT reads back
+  which chat it will archive and waits for a yes.
+- `read_chat` view `thinking`: the agent's reasoning in a turn, as Paseo shows it. Claude models
+  often record no thinking text, and Codex gives reasoning summaries, so a turn without any says so.
+- How full a chat's context window is: `context` (used, max and remaining tokens, percent used)
+  in every chat the tools return, and one line in `read_chat` and `read_activity`. Paseo keeps
+  this in memory only, so after Paseo restarts it is absent until the agent's next turn.
+
 ## [0.8.2] - 2026-10-17
 
 ### Fixed

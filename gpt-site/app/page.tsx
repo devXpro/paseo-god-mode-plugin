@@ -1,7 +1,7 @@
 const tools: Array<[string, string]> = [
   ["overview", "What needs you, what is running, new replies, projects."],
   ["list_chats", "Find chats by title, workspace, branch or project, archive included on request."],
-  ["read_chat", "What was said in the last N turns at once, or the commands that ran."],
+  ["read_chat", "What was said in the last N turns at once, the commands that ran, or how the agent reasoned."],
   ["read_activity", "What an agent and its subagents are doing right now."],
   ["show_images", "A screenshot or picture from a chat, on your screen and for ChatGPT to look at."],
   ["search_messages", "Where something was said, across many chats or in one, in one call."],
@@ -9,6 +9,7 @@ const tools: Array<[string, string]> = [
   ["send_message", "A follow-up or an answer to an existing chat."],
   ["answer_approval", "Allow or deny what a chat is waiting for."],
   ["stop_chat", "Cancel what a chat is doing now."],
+  ["archive_chat", "Archive a chat that is not working; a new message brings it back."],
   ["plugin_read", "What your Paseo plugins offer, and what one of them says now."],
   ["plugin_action", "Have a plugin do something; anything more than a harmless change asks you first."],
   ["update_status", "Which God Mode version is live, and whether there is an update."],
@@ -21,7 +22,7 @@ const settings: Array<[string, string]> = [
   ["PASEO_LANGUAGE", "Language to speak with you, e.g. ru. Unset: the language you use."],
   ["PASEO_NEW_CHAT_MODEL / _THINKING / _MODE", "Defaults for new chats; mode bypassPermissions skips every prompt."],
   ["PASEO_WAIT_SECONDS", "How long to wait for a reply before answering \"still working\". Default 15."],
-  ["PASEO_CONFIRM_RISKY", "on (default): read back before approvals and stops."],
+  ["PASEO_CONFIRM_RISKY", "on (default): read back before approvals, stops and archiving."],
   ["PASEO_LOG", "on (default): keep a call log in the site database."],
 ];
 

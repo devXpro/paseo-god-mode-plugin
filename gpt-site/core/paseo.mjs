@@ -17,6 +17,8 @@ import {
   chatData,
   chatLine,
   chatState,
+  contextLine,
+  contextOf,
   describePermission,
   describeRelease,
   describeStep,
@@ -152,6 +154,8 @@ function toChat({ agent, project }) {
     archived: Boolean(agent.archivedAt),
     // Where the agent works: relative image paths in its messages start here.
     cwd: agent.cwd ?? null,
+    // Context window and token counts; live in the daemon only, absent after a restart.
+    usage: agent.lastUsage ?? null,
   };
 }
 
@@ -391,7 +395,14 @@ function turnText(turn) {
     images,
     errors: items.filter((i) => i.type === "error").map((i) => i.message),
     calls: items.filter((i) => i.type === "tool_call"),
+    // What the model shared of its reasoning: Claude's thinking (often none) or Codex's summaries.
+    thinking: items.filter((i) => i.type === "reasoning").map((i) => withoutImages(i.text)),
   };
+}
+
+// The chat line read_chat opens with, and how full its context window is when Paseo knows.
+function chatHeader(target) {
+  return [chatLine(target), contextLine(contextOf(target.usage))].filter(Boolean).join("\n");
 }
 
 const OMITTED = /^\((\d+) earlier message\(s\) omitted\)\n\n/;
@@ -418,7 +429,7 @@ function renderTurnsText(target, loaded, max) {
     };
   });
   const turns = shaped.map((s) => s.data);
-  const header = chatLine(target);
+  const header = chatHeader(target);
   let text;
   if (turns.length === 1) {
     // The single-turn layout predates batch reads; kept as it was.
@@ -462,7 +473,7 @@ function renderTurnsCommands(target, loaded, max) {
       tool_calls: shown.map((c) => toolCallData(c, perCall)),
     };
   });
-  const lines = [chatLine(target)];
+  const lines = [chatHeader(target)];
   for (const t of turns) {
     const scope = t.total_tool_calls > t.tool_calls.length ? `the last ${t.tool_calls.length} of ${t.total_tool_calls} tool calls` : `${t.total_tool_calls} tool call(s)`;
     lines.push(
@@ -473,6 +484,35 @@ function renderTurnsCommands(target, loaded, max) {
   }
   return { text: lines.join("\n"), data: { chat: chatData(target), total_turns: loaded.total, turns } };
 }
+
+// The agent's reasoning in each turn, latest kept first when it does not fit. Claude often records
+// no thinking text, so an empty turn says so instead of looking like a failed read.
+function renderTurnsThinking(target, loaded, max) {
+  const perTurn = Math.floor(max / loaded.turns.length);
+  const turns = loaded.turns.map((t) => {
+    const thoughts = turnText(t).thinking;
+    const kept = latestFirstWithin(thoughts, perTurn);
+    return {
+      turn: t.turn,
+      position: t.position,
+      started_at: toIso(t.startedAt),
+      thinking: kept.replace(OMITTED, ""),
+      omitted_thoughts: Number(kept.match(OMITTED)?.[1] ?? 0),
+    };
+  });
+  const lines = [chatHeader(target)];
+  for (const t of turns) {
+    const where = `Turn ${t.turn} of ${loaded.total}, counted from the latest`;
+    lines.push(
+      t.thinking
+        ? `${where}, the agent's thinking${t.omitted_thoughts ? ` (${t.omitted_thoughts} earlier part(s) omitted)` : ""}:\n${t.thinking}`
+        : `${where}: no thinking recorded; the model shared none in this turn.`,
+    );
+  }
+  return { text: lines.join("\n"), data: { chat: chatData(target), total_turns: loaded.total, turns } };
+}
+
+const RENDERERS = { text: renderTurnsText, commands: renderTurnsCommands, thinking: renderTurnsThinking };
 
 // Searches one chat's messages; returns matches with turn numbers and snippets.
 async function searchChat(client, chat, query, perChat) {
@@ -528,7 +568,7 @@ export async function readChatOn(client, { chat, view = "text", turn = 1, turns 
   if (loaded.missing) {
     return withNote({ text: `${chatLine(target)}\n${loaded.missing}`, data: { chat: chatData(target), total_turns: loaded.total, turns: [] } }, picked.note);
   }
-  return withNote(view === "commands" ? renderTurnsCommands(target, loaded, max) : renderTurnsText(target, loaded, max), picked.note);
+  return withNote((RENDERERS[view] ?? renderTurnsText)(target, loaded, max), picked.note);
 }
 
 // The images in `count` turns of a chat starting at turn `from`, newest first: each with its turn,
@@ -886,6 +926,36 @@ export async function stopChat(pairingUrl, { chat } = {}) {
   });
 }
 
+// Archives a chat the way Paseo's Archive does: hidden from the list, history kept, and a new message
+// brings it back. Paseo would interrupt a working agent and its subagents, so a busy chat is left
+// alone and the user decides.
+export async function archiveChat(pairingUrl, { chat } = {}) {
+  return withDaemon(pairingUrl, (client) => archiveChatOn(client, { chat }));
+}
+
+// archive_chat over an open connection (tests drive it with a fake client).
+export async function archiveChatOn(client, { chat } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const ids = { chat_id: target.id, short_id: target.id.slice(0, 7) };
+  if (target.archived) {
+    return { text: `${chatLine(target)}\nIt is already archived; nothing changed.`, data: { ...ids, outcome: "already_archived", done: false } };
+  }
+  const helpers = (await listSubagents(client, target.id)).filter((s) => s.status === "running").length;
+  if (isRunning(target) || helpers > 0) {
+    const what = isRunning(target) ? "its agent is working" : `${helpers} subagent(s) are working`;
+    return {
+      text: `Not archived: ${truncate(target.title, 70)} is busy, ${what}, and archiving would interrupt it. Tell the user; it can be archived once it is done, or after stop_chat if they want it stopped.`,
+      data: { ...ids, outcome: "busy", done: false },
+    };
+  }
+  const { archivedAt } = await client.archiveAgent(target.id);
+  return {
+    text: `Archived ${truncate(target.title, 70)}. Its history is kept; a new message to it brings it back.`,
+    data: { ...ids, outcome: "archived", done: true, archived_at: toIso(archivedAt) },
+  };
+}
 
 // The God Mode plugin in Paseo runs updates and rollbacks of this Site on the Mac; these two reach
 // it through the same relay connection as every other tool.
