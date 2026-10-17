@@ -210,13 +210,25 @@ test("a release whose new tools ChatGPT has not shown yet stays live, with a not
   assert.match(result.message, /still shows the previous tool list/);
 });
 
-test("a stale tool list after publishing is fixed by deploying the same version once more", async () => {
+test("a stale tool list after publishing is refreshed by saving the settings, then deploying the same version once more", async () => {
   const sites = siteAtV5();
   let checks = 0;
+  let published = false;
+  const saved: string[] = [];
   const smoke = async () => ({ failures: [], warnings: checks++ === 0 ? ["ChatGPT does not show the new tool update_site yet"] : [] });
-  const { s } = steps(sites, { smoke });
+  const { s } = steps(sites, {
+    smoke,
+    publish: async (commit) => {
+      published = true;
+      sites.save(commit, "succeeded");
+    },
+    configure: async () => {
+      saved.push(`published ${published}, redeploys ${sites.deployCalls.length}`);
+    },
+  });
   const result = await runUpdate(s);
   assert.equal(result.outcome, "published");
+  assert.deepEqual(saved, ["published false, redeploys 0", "published true, redeploys 0"], "the settings are saved again after publishing and before the extra deploy");
   assert.deepEqual(sites.deployCalls, ["v4"], "the new version is deployed again");
   assert.doesNotMatch(result.message, /previous tool list/);
   assert.equal(sites.live(), 4);

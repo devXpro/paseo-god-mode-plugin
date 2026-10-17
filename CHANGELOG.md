@@ -7,6 +7,17 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-17
+
+### Fixed
+
+- An update that changes the tools now gets ChatGPT to show them, without a `configure` job
+  afterwards. When ChatGPT still shows the old tool list, the update saves the Site's settings
+  again before deploying the same version once more. In the Site's Worker log a plain redeploy made
+  ChatGPT re-read `server/discover` and the widget but never `tools/list`, while saving the settings
+  and then redeploying (what `configure` does) made it re-read `tools/list` within seconds. This is
+  observed behaviour, not a documented ChatGPT contract.
+
 ## [0.8.1] - 2026-10-17
 
 ### Fixed

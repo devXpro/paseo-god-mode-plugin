@@ -153,9 +153,13 @@ export async function runUpdate(s: ReleaseSteps): Promise<ReleaseResult> {
     s.step("Checking the live plugin");
     let smoke = await s.smoke(true, 2);
     if (!smoke.failures.length && smoke.warnings.length) {
-      // Sites fetches the new tool list seconds after a deploy, often from the old Worker still
-      // serving it. Deploying the same version again makes it fetch from the new one.
+      // ChatGPT still shows the old tool list. Observed in the Site's Worker log on 2026-10-17, not a
+      // documented ChatGPT contract: after a plain redeploy ChatGPT re-reads server/discover and the
+      // widget, but never tools/list; after saving the settings and then redeploying (what the
+      // configure job does) it re-reads tools/list within seconds, from the new Worker. So the
+      // settings are saved again first.
       s.step("Asking ChatGPT to pick up the new tools");
+      await s.configure();
       release = await deployAndConfirm(s, release.version, "publish");
       smoke = await s.smoke(true);
     }
