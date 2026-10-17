@@ -83,8 +83,10 @@ export async function smokeTest({ codex, checkoutDir, log, retries = 4, metadata
         // Only where the live plugin has it. The chat's newest image, or word that it has none: a valid result either way.
         if (chat && visible[`${prefix}.show_images`]) await check("show_images", { chat });
         await check("search_messages", { query: "test", limit: 1, scan: 5 });
-        // What every plugin offers: a read, and it holds even when none describes itself.
-        await check("plugin_read", {});
+        // Only where the live plugin has it: a rollback can put back a version from before 0.8.0, and
+        // right after an update ChatGPT may not show it yet (a stale list is a warning above, never a
+        // failure). A read that holds even when no plugin describes itself.
+        if (visible[`${prefix}.plugin_read`]) await check("plugin_read", {});
       }
     } finally {
       server.close();

@@ -7,6 +7,17 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-17
+
+### Fixed
+
+- The release check called `plugin_read` even when ChatGPT did not show it yet. Right after the
+  0.8.0 update ChatGPT still held the old tool list, the call failed with "Unknown tool", and the
+  release rolled back; checking the rollback failed the same way, since the version put back has
+  no `plugin_read`, and marked the job critical although version 13 was live again. Like
+  `read_activity` and `show_images`, it is now called only where the live plugin shows it, and a
+  list that has not caught up is a warning.
+
 ## [0.8.0] - 2026-10-17
 
 ### Added
