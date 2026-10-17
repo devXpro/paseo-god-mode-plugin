@@ -5,16 +5,20 @@
 //   node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
 //   node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [--max N]
 //   node core/probe.mjs activity [chat] [--max N]
+//   node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 //   node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
 //   node core/probe.mjs start <project> <prompt…> [--wait 15] [--model M] [--thinking T] [--mode M]
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
 //   node core/probe.mjs stop <chat>
 //
-// --json prints the structured data instead of the text. The pairing URL comes
+// --json prints the structured data instead of the text; images print their size, never their
+// bytes, and --save writes them to DIR to look at. The pairing URL comes
 // from PASEO_PAIRING_URL, or else from `paseo pair` on this machine. It is
 // never printed.
 import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   answerApproval,
@@ -23,6 +27,7 @@ import {
   readActivity,
   readChat,
   searchMessages,
+  showImages,
   sendMessage,
   startChat,
   stopChat,
@@ -54,6 +59,9 @@ const { values, positionals } = parseArgs({
     thinking: { type: "string" },
     mode: { type: "string" },
     "if-busy": { type: "string" },
+    image: { type: "string" },
+    count: { type: "string" },
+    save: { type: "string" },
     request: { type: "string" },
     json: { type: "boolean" },
   },
@@ -83,6 +91,8 @@ const operations = {
       maxChars: number(values.max, undefined),
     }),
   activity: () => readActivity(url, { chat: first, maxChars: number(values.max, undefined) }),
+  images: () =>
+    showImages(url, { chat: first, turn: number(values.turn, undefined), image: number(values.image, undefined), count: number(values.count, undefined) }),
   search: () =>
     searchMessages(url, {
       query: [first, ...rest].join(" "),
@@ -113,4 +123,12 @@ if (!operations[command]) {
 }
 const result = await operations[command]();
 console.log(values.json ? JSON.stringify(result.data, null, 2) : result.text);
+for (const image of result.meta?.["god-mode/images"]?.images ?? []) {
+  const bytes = Buffer.from(image.data, "base64");
+  console.log(`image: turn ${image.turn} #${image.n} ${image.mime} ${bytes.length} bytes`);
+  if (values.save) {
+    mkdirSync(values.save, { recursive: true });
+    writeFileSync(join(values.save, `turn${image.turn}-image${image.n}.${image.mime.split("/")[1]}`), bytes);
+  }
+}
 console.log(`(${Date.now() - startedAt} ms)`);

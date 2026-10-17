@@ -87,6 +87,14 @@ const UPDATE_ASKED = [
 
 const LIVE = { baseline: ["read_chat"], current: ["read_activity"] };
 
+// The fleet map chat's earlier turn has a screenshot; read_chat shows it as [image 1].
+const FLEET_IMAGE_CTX = [
+  { user: "что было в карте флота до e2e?" },
+  { call: "read_chat", args: { chat: FLEET, turn: 2 } },
+  { assistant: "В «Карте флота» агент сделал кластеризацию маркеров и фильтр по статусу судна и приложил скриншот карты." },
+];
+const IMAGES = { baseline: ["read_chat"], current: ["show_images"] };
+
 // ---- Core: routing, reading, ambiguity, risky actions, polling --------------------------------
 
 const core = [
@@ -368,6 +376,37 @@ const core = [
     lang: "ru",
     phrase: "запусти в paseo-chatgpt-voice новый чат: ответь одним словом pong, и скажи, что он ответил",
     expect: { first: ["start_chat"], args: { project: "paseo-chatgpt-voice", prompt: ["pong"] }, writes: 1, maxCalls: 1, state: "delivered" },
+  },
+
+  // Images: a picture in a chat is shown by show_images, in one call, with no read first.
+  {
+    id: "core.ru.show-screenshot",
+    group: "images",
+    lang: "ru",
+    phrase: "покажи скрин из карты флота",
+    expect: { first: IMAGES, acceptable: ["read_chat"], args: { chat: FLEET }, writes: 0, maxCalls: 1 },
+  },
+  {
+    id: "core.en.latest-screenshot",
+    group: "images",
+    lang: "en",
+    phrase: "show me the latest screenshot my agents took",
+    expect: { first: { baseline: ["overview", "read_chat"], current: ["show_images"] }, acceptable: ["overview", "read_chat", "list_chats", "search_messages"], writes: 0, maxCalls: 1 },
+  },
+  {
+    id: "core.ctx.whats-in-picture",
+    group: "images",
+    lang: "ru",
+    context: FLEET_IMAGE_CTX,
+    phrase: "а что на картинке?",
+    expect: { first: IMAGES, acceptable: ["read_chat"], args: { chat: FLEET }, writes: 0, maxCalls: 1 },
+  },
+  {
+    id: "core.ru.fleet-said-not-images",
+    group: "images",
+    lang: "ru",
+    phrase: "что агент написал в карте флота в прошлый раз?",
+    expect: { first: ["read_chat"], acceptable: ["read_activity"], args: { chat: FLEET }, writes: 0, maxCalls: 1 },
   },
 ];
 

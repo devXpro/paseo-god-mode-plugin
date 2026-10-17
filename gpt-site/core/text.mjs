@@ -269,6 +269,133 @@ export function candidatesText(kind, query, candidates) {
   ].join("\n");
 }
 
+// ---- Images -----------------------------------------------------------------------------------
+
+// A picture in a Paseo chat is markdown image syntax in an agent's message: the daemon turns an
+// image a tool returned (a screenshot, an image file the agent read) into
+// ![Image](file:///…/paseo-attachments-…/<sha256>.png), and agents link files themselves. This is
+// the pattern Paseo's own client renders.
+// Code spans and fenced blocks come first in the alternation and are kept as they are: an agent
+// writing about image syntax in `code` has not shown an image.
+const IMAGE_MARKDOWN = /(```[\s\S]*?```|`[^`\n]*`)|!\[([^\]]*)]\((<[^>]+>|[^)\n]+)\)/g;
+
+// Image types a model can look at, by file extension. Paseo serves SVG as an image too, but models
+// do not take it; BMP, TIFF and HEIC Paseo serves as plain bytes.
+const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+
+// The source inside the parentheses, without a "title" or <angle brackets>, in that order:
+// ![shot](<my shot.png> "after the fix").
+function imageSource(raw) {
+  const value = (/^(.*?)(?:\s+(['"]).*?\2)?$/.exec(String(raw ?? "").trim())?.[1] ?? "").trim();
+  return value.startsWith("<") && value.endsWith(">") ? value.slice(1, -1).trim() : value;
+}
+
+// Replaces each image in `text` with "[image N]", numbering from `first`, and returns the images
+// in reading order, so a local path never reaches speech or the model.
+export function withImagePlaceholders(text, first = 1) {
+  const images = [];
+  const replaced = String(text ?? "").replace(IMAGE_MARKDOWN, (match, code, alt, raw) => {
+    if (code) return match;
+    const n = first + images.length;
+    images.push({ n, alt: alt.trim(), source: imageSource(raw) });
+    return `[image ${n}]`;
+  });
+  return { text: replaced, images };
+}
+
+// Text with every image as "[image]", for places that do not number them.
+export function withoutImages(text) {
+  return String(text ?? "").replace(IMAGE_MARKDOWN, (match, code) => code ?? "[image]");
+}
+
+export function imageMime(path) {
+  const extension = String(path ?? "").split(/[?#]/)[0].split(".").at(-1)?.toLowerCase();
+  return IMAGE_TYPES[extension] ?? null;
+}
+
+// Where an image's bytes are. A file becomes { file: { cwd, path } } for the daemon's file read: its
+// directory as the root and its name inside it, or the agent's working directory for a relative
+// path. Inline data is used as it is. Web links stay links: the Site never fetches them.
+export function imageTarget(source, cwd) {
+  const value = String(source ?? "").trim();
+  if (/^data:/i.test(value)) {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(value);
+    const mime = match?.[1].toLowerCase().replace("image/jpg", "image/jpeg");
+    return mime && Object.values(IMAGE_TYPES).includes(mime) ? { inline: { mime, data: match[2].replace(/\s/g, "") } } : { unsupported: true };
+  }
+  if (/^https?:\/\//i.test(value)) return { link: value };
+  let path = value;
+  if (/^file:\/\//i.test(value)) {
+    try {
+      path = decodeURIComponent(new URL(value).pathname);
+    } catch {
+      return { unsupported: true };
+    }
+  }
+  if (!imageMime(path)) return { unsupported: true };
+  if (path.startsWith("/") || path.startsWith("~/")) {
+    const cut = path.lastIndexOf("/");
+    return { file: { cwd: path.slice(0, cut) || "/", path: path.slice(cut + 1) } };
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path) || !cwd) return { unsupported: true };
+  return { file: { cwd, path: path.replace(/^\.\//, "") } };
+}
+
+// How an image is named aloud: the agent's alt text when it gave one, else "image N".
+export function imageName(image) {
+  const alt = String(image.alt ?? "").trim();
+  return alt && !/^image$/i.test(alt) ? truncate(alt, 60) : `image ${image.n}`;
+}
+
+// What read_chat says about a turn's images, and the structured form of each.
+export function imageHint(turn, count) {
+  return `${count} image(s) in turn ${turn}: show_images (turn ${turn}) puts them on the user's screen.`;
+}
+
+// The agent's final message after a write, with its images as placeholders and counted.
+export function repliedOutcome(message) {
+  const { text, images } = withImagePlaceholders(message ?? "(no text)");
+  const reply = truncate(text, 1500);
+  if (images.length === 0) return { text: `Agent replied: ${reply}`, data: { outcome: "replied", reply } };
+  return {
+    text: `Agent replied: ${reply}\nThe reply has ${images.length} image(s); show_images puts them on the user's screen.`,
+    data: { outcome: "replied", reply, images: images.length },
+  };
+}
+
+export function imageRef(image, cwd) {
+  const target = imageTarget(image.source, cwd);
+  return { n: image.n, name: imageName(image), viewable: Boolean(target.file || target.inline) };
+}
+
+const SKIP_REASONS = {
+  missing: "no longer on the Mac (a temporary file that was cleaned up); the agent can take it again",
+  too_large: "larger than 1 MB",
+  too_much_at_once: "more than fits in one answer; ask for it on its own",
+  link: "a web link, not a file on the Mac",
+  unsupported: "not a PNG, JPEG, WebP or GIF image",
+  refused: "outside what Paseo lets it read",
+  error: "could not be read",
+};
+
+// show_images in words to be spoken: which chat, which turn, what is on the screen and what could
+// not be shown. Never paths or ids.
+export function imagesText({ chat, turn, found, shown, skipped }) {
+  const where = `${truncate(chat.title, 70)} (${chat.project})`;
+  if (found === 0) return `No images in ${turn ? `turn ${turn} of ` : "the latest turns of "}${where}.`;
+  const lines = [];
+  if (shown.length > 0) {
+    const turns = [...new Set(shown.map((i) => i.turn))];
+    lines.push(
+      `Showing ${shown.length} image(s) from ${where}, ${turns.length === 1 ? `turn ${turns[0]}` : `turns ${turns.join(", ")}`}: ${shown.map((i) => i.name).join(", ")}. They are on the user's screen now.`,
+      "Answer about them only from what you can see; if they are not visible to you, say they are on the screen and do not guess what they show.",
+    );
+  }
+  for (const s of skipped) lines.push(`Not shown: ${s.name}, ${SKIP_REASONS[s.reason] ?? SKIP_REASONS.error}.`);
+  if (found > shown.length + skipped.length) lines.push(`${found - shown.length - skipped.length} more image(s) in these turns; ask for them with turn or count.`);
+  return lines.join("\n");
+}
+
 // One shell command, edit, read or search from a tool call, with its output cut
 // to `max` characters.
 export function describeToolCall(item, max) {
@@ -340,7 +467,7 @@ export function describeStep(item, max = 100) {
     }
   }
   if (item.type === "reasoning") return truncate(`thinking: ${firstSentence(item.text)}`, max);
-  if (item.type === "assistant_message") return truncate(`writing: ${firstSentence(item.text)}`, max);
+  if (item.type === "assistant_message") return truncate(`writing: ${firstSentence(withoutImages(item.text))}`, max);
   return null;
 }
 

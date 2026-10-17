@@ -75,6 +75,7 @@ flowchart LR
 - See what every agent is doing, across all projects.
 - Find a chat by its name, its project or something said in it.
 - Hear the last turn, several turns at once, or the commands an agent ran.
+- See the screenshots and pictures in a chat, and ask what is on them.
 - Start a new chat in any project, with the model and mode you want.
 - Send a follow-up, or steer or interrupt a busy agent.
 - Approve or deny what an agent asks for.
@@ -102,6 +103,7 @@ flowchart LR
 - Your ChatGPT sign-in stays with the Codex CLI on your Mac. The plugin keeps no passwords or tokens of its own.
 - Approvals, stops, updates and rollbacks are confirmed before they happen.
 - When your Mac is asleep or offline, ChatGPT tells you so and changes nothing.
+- A picture you open from a chat goes to ChatGPT, like the chat's text. The Site reads only images the chat itself shows, and keeps no copy.
 
 ## Versions
 

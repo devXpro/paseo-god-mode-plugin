@@ -1,7 +1,8 @@
 # paseo-remote: design
 
-Drive Paseo's coding agents from ChatGPT, voice first. Version 0.6: twelve tools, guidance tuned
-against a measured eval (`eval/`), and `read_activity` for what agents and their subagents are doing
+Drive Paseo's coding agents from ChatGPT, voice first. Version 0.7: thirteen tools; `show_images`
+and its widget show the pictures in a chat (§10). 0.6 tuned the guidance against a measured eval
+(`eval/`) and added `read_activity` for what agents and their subagents are doing
 now. 0.3 brought structured results, batch reads and two kinds of search; 0.2 the call log and
 per-site settings; the 0.1 prototype (`list_projects`, `start_agent`) proved the path on 2026-10-16.
 
@@ -102,6 +103,7 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `limit`. |
 | `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) or `commands` (the last 8 tool calls of the turn with output, plus the total). `turn` counts back from the latest, `turns` reads several at once. |
 | `read_activity` | read | What a chat's agent and its subagents are doing now: state, current step, each subagent's task, status, running time, current step or result (up to 6, running first). Without `chat`: every chat at work, idle ones with running backgrounded subagents included. |
+| `show_images` | read | The images in a chat on the user's screen (a widget) and, where ChatGPT allows, in the model's context: the newest, a turn's (`turn`) or one of them (`image` = N of `[image N]`), up to `count` 4. Without `chat`: the newest image of the 8 most recent chats. See §10. |
 | `start_chat` | write | New workspace and agent in a project, like New chat. Waits up to `wait_seconds` for the reply. `model`, `thinking`, `mode` override the site defaults for this chat. |
 | `send_message` | write | To an existing chat. If the chat is busy it asks first; `if_busy` = `steer` (add to the current work) or `interrupt`. |
 | `answer_approval` | write | Allow or deny a pending request, pressing the same action the app shows ("Implement", "Reject"). Requests are described as what will happen: "plan: …", "run: …", "edit …". |
@@ -109,7 +111,7 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | `get_logs` | read | The call log; works without the pairing link. |
 
 Not exposed: terminals, files, git, schedules, plugins, daemon control. The pairing link can do
-all of it; the Site never will.
+all of it; the Site never will. The one file read is an image a chat already shows (§10).
 
 Results are text for speech next to `structuredContent`; chats read `<title> (<project>): <state>, <age>`,
 never with ids, which travel in the data.
@@ -168,10 +170,11 @@ No pruning yet: at a few hundred bytes a row, D1's 10 GB lasts for years.
 ```
 core/text.mjs        pure: name matching, truncation, lines for chats, tool calls, permissions
 core/paseo.mjs       relay connection and the Paseo operations
+core/widget.mjs      the show_images widget (MCP Apps), one self-contained HTML string
 eval/                the tool-selection eval: cases, stub server, runner, judge, report
 core/mcp.mjs         settings, instructions, tool metadata, JSON-RPC dispatch, logging hooks
 core/probe.mjs       runs the operations locally against the real daemon
-core/*.test.mjs      node --test, no network
+core/*.test.mjs      node --test, no network (images.test.mjs drives the operations with a fake daemon client)
 app/mcp/route.ts     wires env, core and the D1 log into the Worker
 db/                  call_log schema and access
 app/page.tsx         the Site's own page: tools and settings
@@ -185,3 +188,46 @@ The Site source must stay self-contained: Sites packages this folder only.
 fake Paseo, and a runner over `codex exec` that compares the released metadata with the working
 tree. Change one description at a time, run it, and read `eval/results/report.md`; Live voice on
 the phone is the final check.
+
+## 10. Images
+
+**Where they come from.** A picture in a Paseo chat is markdown in an agent's message. The daemon
+writes an image a tool returned (a Playwright screenshot, an image file the agent read) to
+`$TMPDIR/paseo-attachments-<random>/<sha256>.<ext>` and records `![Image](file:///…)`; agents also
+link files themselves, relative to their working directory, or link the web. Paseo's app shows
+them by reading the file through the relay (`readFile`: a `file_explorer_request` answered in binary
+frames). Until this, the Site passed that markdown on as text, so ChatGPT got a path on the Mac.
+Images the user sends from Paseo's composer never reach the daemon's timeline (only the sending
+device keeps them), so no client can show them.
+
+**Text.** Every place that reads agent text turns images into `[image N]`, numbered through a turn:
+`read_chat` (with `images` per turn and a line pointing to `show_images`), `read_activity`,
+`search_messages` snippets and the replies of `start_chat` and `send_message`.
+
+**Bytes.** `show_images` reads only sources found in that chat's timeline in the same call, never a
+path from its arguments: the file's directory as `cwd` and its name as `path`, so the daemon's own
+check keeps the read inside that directory, or the agent's `cwd` for a relative path. PNG, JPEG,
+WebP and GIF only (models take no SVG; Paseo serves BMP, TIFF and HEIC as plain bytes), `maxBytes`
+1 MB per image, 1.5 MB per answer, up to 4 images. Web links are never fetched. A daemon restart
+writes provider images to a new temporary directory, so paths are always taken from a fresh read;
+a file macOS has cleaned up reads as "no longer on the Mac".
+
+**Delivery.** ChatGPT does not treat an MCP `image` content block as vision input (OpenAI support,
+April 2026: the model may see `{}`) and does not render markdown images from tool URLs, and a
+private Site cannot serve a public link. So the bytes travel in the result's `_meta` (hidden from
+the model, never logged) to an MCP Apps widget: `_meta.ui.resourceUri` (and `openai/outputTemplate`)
+points at `ui://god-mode/images-<fingerprint>.html`, served by `resources/read` with
+`text/html;profile=mcp-app` and an empty CSP (the default allows `data:` images and no network).
+The widget shows them and, unless the host says it takes no images into the model's context (web),
+sends them with `ui/update-model-context`; the host may hold that until the next user message. The
+result's text tells the model to answer only from what it can see.
+
+**Voice.** "Show the screenshot", "what's in the picture?" route to `show_images` as the first and
+only call of the turn: ChatGPT's iOS app drew no widget for a tool chained after another one in the
+same turn (developer reports, July 2026), so the tool resolves the chat by name itself.
+
+**Still to verify live:** that a Site-hosted plugin renders the widget at all (no document says so),
+on web, iOS text and iOS Live voice, and whether the model sees the images in the same turn, the next
+one, or not at all. If Live never sees them, the fallback is a description made on the Site with the
+Responses API (`input_image`), which needs an `OPENAI_API_KEY` Site secret.
+

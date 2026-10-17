@@ -7,6 +7,33 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-17
+
+### Added
+
+- `show_images`: the screenshots and pictures in a chat, the ones Paseo's app shows inline, on
+  the screen in ChatGPT through an MCP Apps widget, and handed to the model where ChatGPT takes
+  images into its context. The newest image, a turn's images, or the N-th of a turn; without a
+  chat, the newest image of the most recent chats.
+- The Site reads those images from the Mac through the relay with Paseo's own file read. It reads
+  only images a chat's messages show, PNG, JPEG, WebP or GIF, up to 1 MB each and 1.5 MB per
+  answer, and keeps no copy.
+- The widget is served as an MCP resource (`resources/list`, `resources/read`); its address carries
+  a fingerprint of its HTML, and older addresses still load it.
+
+### Changed
+
+- A picture in a chat reads as `[image N]` instead of a file path on the Mac: in `read_chat`,
+  which also lists a turn's images and points to `show_images`, and in `read_activity`,
+  `search_messages` and the replies of `start_chat` and `send_message`.
+
+### Notes
+
+- ChatGPT offers `show_images` in chats started after the update.
+- The widget was checked against a stand-in host and the real daemon, not yet inside ChatGPT
+  itself: whether a Site-hosted plugin draws it, and whether the model then sees the images, is
+  still to be confirmed on web, iOS and in voice.
+
 ## [0.6.0] - 2026-10-17
 
 ### Added

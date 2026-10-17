@@ -11,11 +11,18 @@ import {
   describeStep,
   describeToolCall,
   duration,
+  imageName,
+  imageRef,
+  imagesText,
+  imageTarget,
   isStep,
   latestFirstWithin,
   pickActive,
   releaseData,
+  repliedOutcome,
   resolve,
+  withImagePlaceholders,
+  withoutImages,
   snippet,
   toIso,
   tokensOf,
@@ -226,4 +233,80 @@ test("activity shows running subagents first, then those finished this turn, wit
   assert.equal(idle.working, true, "a backgrounded subagent keeps an idle chat working");
   assert.equal(idle.current_step, null);
   assert.match(activityText(idle), /^Auth refactor \(jobby-jobs\) is working\./);
+});
+
+// ---- Images ----------------------------------------------------------------------------------
+
+const SHOT = "file:///var/folders/f7/xtj/T/paseo-attachments-TI5aFz/00067c18163b0105541019fff2ab8a039756c1cab995214b5fdbf4c0548cad76.png";
+
+test("images in agent text become numbered placeholders, with their sources", () => {
+  const glued = `Done, see:![Image](${SHOT})![Login page](<docs/shots/login page.png> "after the fix")`;
+  const { text, images } = withImagePlaceholders(glued);
+  assert.equal(text, "Done, see:[image 1][image 2]");
+  assert.deepEqual(images, [
+    { n: 1, alt: "Image", source: SHOT },
+    { n: 2, alt: "Login page", source: "docs/shots/login page.png" },
+  ]);
+  assert.equal(withImagePlaceholders(`![x](${SHOT})`, 3).text, "[image 3]", "numbering continues through a turn");
+  assert.deepEqual(withImagePlaceholders("plain [link](https://example.com) and no image").images, []);
+  assert.equal(withoutImages(`Shot: ![Image](${SHOT}).`), "Shot: [image].");
+});
+
+test("image syntax inside code is text about images, not an image", () => {
+  const writing = "The daemon records `![Image](file:///var/folders/…)` like this:\n```\n![Image](file:///tmp/a.png)\n```\nand here is one: ![Image](file:///tmp/b.png)";
+  const { text, images } = withImagePlaceholders(writing);
+  assert.deepEqual(images.map((i) => i.source), ["file:///tmp/b.png"]);
+  assert.equal(text, "The daemon records `![Image](file:///var/folders/…)` like this:\n```\n![Image](file:///tmp/a.png)\n```\nand here is one: [image 1]");
+  assert.equal(withoutImages("`![x](/tmp/a.png)` ![x](/tmp/b.png)"), "`![x](/tmp/a.png)` [image]");
+});
+
+test("an image source becomes a file read, a link or nothing", () => {
+  assert.deepEqual(imageTarget(SHOT), { file: { cwd: "/var/folders/f7/xtj/T/paseo-attachments-TI5aFz", path: SHOT.split("/").at(-1) } });
+  assert.deepEqual(imageTarget("file:///Users/r/My%20Shots/a.PNG"), { file: { cwd: "/Users/r/My Shots", path: "a.PNG" } });
+  assert.deepEqual(imageTarget("/tmp/b.jpeg"), { file: { cwd: "/tmp", path: "b.jpeg" } });
+  assert.deepEqual(imageTarget("~/Desktop/c.webp"), { file: { cwd: "~/Desktop", path: "c.webp" } });
+  assert.deepEqual(imageTarget("./out/chart.png", "/Users/r/proj"), { file: { cwd: "/Users/r/proj", path: "out/chart.png" } });
+  assert.deepEqual(imageTarget("out/chart.png"), { unsupported: true }, "relative without a working directory");
+  assert.deepEqual(imageTarget("https://example.com/x.png"), { link: "https://example.com/x.png" });
+  assert.deepEqual(imageTarget("data:image/png;base64,iVBORw0KGgo="), { inline: { mime: "image/png", data: "iVBORw0KGgo=" } });
+  for (const source of ["/tmp/logo.svg", "/tmp/scan.bmp", "/tmp/photo.heic", "data:image/svg+xml;base64,PHN2Zz4=", "/tmp/notes.txt"]) {
+    assert.deepEqual(imageTarget(source), { unsupported: true }, source);
+  }
+});
+
+test("images are named by their alt text, else by number, and marked viewable", () => {
+  assert.equal(imageName({ n: 2, alt: "Image" }), "image 2");
+  assert.equal(imageName({ n: 1, alt: "" }), "image 1");
+  assert.equal(imageName({ n: 1, alt: "Login page after the fix" }), "Login page after the fix");
+  assert.deepEqual(imageRef({ n: 1, alt: "Image", source: SHOT }), { n: 1, name: "image 1", viewable: true });
+  assert.deepEqual(imageRef({ n: 2, alt: "", source: "https://example.com/x.png" }), { n: 2, name: "image 2", viewable: false });
+});
+
+test("show_images reads as speech: the chat, the turn, what is on screen, what was not, never a path", () => {
+  const chat = { title: "Fleet map", project: "proxy" };
+  assert.equal(imagesText({ chat, turn: null, found: 0, shown: [], skipped: [] }), "No images in the latest turns of Fleet map (proxy).");
+  assert.equal(imagesText({ chat, turn: 2, found: 0, shown: [], skipped: [] }), "No images in turn 2 of Fleet map (proxy).");
+  const text = imagesText({
+    chat,
+    turn: null,
+    found: 3,
+    shown: [{ n: 1, turn: 1, name: "Login page" }],
+    skipped: [{ n: 2, turn: 1, name: "image 2", reason: "missing" }],
+  });
+  assert.match(text, /^Showing 1 image\(s\) from Fleet map \(proxy\), turn 1: Login page\. They are on the user's screen now\./);
+  assert.match(text, /do not guess what they show/);
+  assert.match(text, /Not shown: image 2, no longer on the Mac/);
+  assert.match(text, /1 more image\(s\) in these turns/);
+  assert.doesNotMatch(text, /\/|paseo-attachments/);
+});
+
+test("a step that is an image reads as one, not as a path", () => {
+  assert.equal(describeStep({ type: "assistant_message", text: `![Image](${SHOT})` }), "writing: [image]");
+});
+
+test("a write's reply counts its images instead of reading their paths", () => {
+  assert.deepEqual(repliedOutcome("pong"), { text: "Agent replied: pong", data: { outcome: "replied", reply: "pong" } });
+  const shot = repliedOutcome(`Done: ![Image](${SHOT})`);
+  assert.equal(shot.text, "Agent replied: Done: [image 1]\nThe reply has 1 image(s); show_images puts them on the user's screen.");
+  assert.deepEqual(shot.data, { outcome: "replied", reply: "Done: [image 1]", images: 1 });
 });

@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "readActivity", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -95,6 +95,7 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.match(text, /по SEO/);
   assert.match(text, /subagents are doing now → read_activity/);
   assert.match(text, /where something was said → search_messages/);
+  assert.match(text, /a picture or screenshot from a chat → show_images/);
   assert.match(text, /call them only when the user explicitly tells you to act now/);
   assert.match(text, /"ok" or "fine" after a draft you did not ask about/);
   assert.match(text, /never send it again unless the user says to send it again/);
@@ -128,11 +129,11 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes twelve tools, output schemas and honest annotations", async () => {
+test("tools/list exposes thirteen tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
-    ["overview", "list_chats", "read_chat", "read_activity", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "update_status", "update_site", "get_logs"],
+    ["overview", "list_chats", "read_chat", "read_activity", "show_images", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "update_status", "update_site", "get_logs"],
   );
   for (const tool of result.tools) {
     assert.equal(Boolean(tool.outputSchema), tool.name !== "get_logs", `${tool.name} outputSchema`);
@@ -140,6 +141,8 @@ test("tools/list exposes twelve tools, output schemas and honest annotations", a
   const byName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
   assert.equal(byName.read_chat.annotations.readOnlyHint, true);
   assert.equal(byName.read_activity.annotations.readOnlyHint, true);
+  assert.equal(byName.show_images.annotations.readOnlyHint, true);
+  assert.equal(byName.show_images.inputSchema.required, undefined, "show_images works without a chat");
   assert.equal(byName.search_messages.annotations.readOnlyHint, true);
   assert.equal(byName.send_message.annotations.readOnlyHint, false);
   assert.equal(byName.stop_chat.annotations.destructiveHint, true);
@@ -163,7 +166,12 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.read_chat.description, /use read_activity/);
   assert.match(byName.read_activity.description, /Leave chat empty to cover every chat/);
   assert.match(byName.search_messages.description, /pass chat to search a single chat/);
-  for (const tool of ["read_chat", "read_activity", "send_message", "answer_approval", "stop_chat"]) {
+  assert.match(byName.read_chat.description, /Images read as \[image N\]/);
+  assert.match(byName.read_chat.description, /use show_images/);
+  assert.match(byName.show_images.description, /first and only tool of the turn/);
+  assert.match(byName.show_images.description, /no read_chat or list_chats first/);
+  assert.match(byName.show_images.description, /Never describe an image you cannot see/);
+  for (const tool of ["read_chat", "read_activity", "show_images", "send_message", "answer_approval", "stop_chat"]) {
     assert.match(byName[tool].inputSchema.properties.chat.description, /Ids are for calls only/, tool);
     assert.match(byName[tool].inputSchema.properties.chat.description, /Keep the chat being discussed/, tool);
   }
@@ -315,6 +323,26 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["read_chat", { chat: sampleChat, total_turns: 4, turns: [{ turn: 1, position: 4, started_at: null, total_tool_calls: 2, tool_calls: [{ kind: "shell", name: "Bash", status: "completed", text: "$ ls" }] }] }],
     ["read_chat", { chat: sampleChat, note: '"proxy" matches 2 chats; this is the only active one.', total_turns: 1, turns: [] }],
     [
+      "read_chat",
+      {
+        chat: sampleChat,
+        total_turns: 2,
+        turns: [{ turn: 1, position: 2, started_at: null, ended_at: null, user_text: "screenshot?", agent_text: "Here: [image 1]", omitted_messages: 0, errors: [], images: [{ n: 1, name: "image 1", viewable: true }] }],
+      },
+    ],
+    [
+      "show_images",
+      {
+        chat: sampleChat,
+        total_images: 3,
+        images: [{ n: 1, turn: 1, name: "Login page", mime: "image/png", bytes: 204800 }],
+        skipped: [{ n: 2, turn: 1, name: "image 2", reason: "missing" }],
+      },
+    ],
+    ["show_images", { total_images: 0, images: [], skipped: [] }],
+    ["show_images", clarification],
+    ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "replied", reply: "Done: [image 1]", images: 1 }],
+    [
       "read_activity",
       {
         summary: "1 chat(s) working, 1 subagent(s) running.",
@@ -387,4 +415,56 @@ test("no tool declares a nullable object, which ChatGPT may refuse in a tool lis
   };
   const offenders = TOOLS.flatMap((t) => [...walk(t.inputSchema, `${t.name}.in`), ...walk(t.outputSchema, `${t.name}.out`)]);
   assert.deepEqual(offenders, []);
+});
+
+test("show_images is linked to a versioned widget that resources/read serves", async () => {
+  const handle = createMcpHandler({ config: readConfig({}), ops: fakeOps().ops });
+  const tool = TOOLS.find((t) => t.name === "show_images");
+  const uri = tool._meta.ui.resourceUri;
+  assert.match(uri, /^ui:\/\/god-mode\/images-[0-9a-f]{8}\.html$/);
+  assert.equal(tool._meta["openai/outputTemplate"], uri, "ChatGPT's alias points at the same template");
+  for (const method of ["initialize", "server/discover"]) {
+    assert.deepEqual((await handle(rpc(method))).result.capabilities, { tools: {}, resources: {} }, method);
+  }
+  const listed = (await handle(rpc("resources/list"))).result.resources;
+  assert.deepEqual(listed.map((r) => [r.uri, r.mimeType]), [[uri, "text/html;profile=mcp-app"]]);
+  assert.deepEqual((await handle(rpc("resources/templates/list"))).result.resourceTemplates, []);
+  const read = (await handle(rpc("resources/read", { uri }))).result.contents[0];
+  assert.equal(read.uri, uri);
+  assert.equal(read.mimeType, "text/html;profile=mcp-app");
+  assert.match(read.text, /^<!doctype html>/);
+  assert.match(read.text, /ui\/initialize/);
+  assert.match(read.text, /god-mode\/images/);
+  assert.match(read.text, /ui\/update-model-context/);
+  assert.doesNotMatch(read.text, /https?:\/\//, "the widget loads nothing from the network");
+  assert.deepEqual(read._meta.ui.csp, { connectDomains: [], resourceDomains: [] });
+  const older = "ui://god-mode/images-00000000.html";
+  assert.equal((await handle(rpc("resources/read", { uri: older }))).result.contents[0].text, read.text, "a result from before an update keeps its view");
+  const missing = await handle(rpc("resources/read", { uri: "ui://god-mode/other.html" }));
+  assert.equal(missing.error.code, -32602);
+  assert.deepEqual(missing.error.data, { uri: "ui://god-mode/other.html" });
+});
+
+test("show_images passes its arguments, hands the widget its _meta and keeps the bytes out of the log", async () => {
+  const bytes = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const meta = { "god-mode/images": { chat: { title: "Fleet map", project: "proxy" }, images: [{ n: 1, turn: 1, name: "image 1", mime: "image/png", data: bytes }] } };
+  const { ops, calls } = fakeOps({ showImages: () => ({ text: "Showing 1 image(s) from Fleet map (proxy), turn 1: image 1.", data: { total_images: 1, images: [], skipped: [] }, meta }) });
+  const log = fakeLog();
+  const handle = createMcpHandler({ config: configured(), ops, log });
+  const response = await handle(call("show_images", { chat: "fleet", turn: 2, image: 1 }));
+  assert.deepEqual(calls.at(-1), { name: "showImages", url: SECRET, args: { chat: "fleet", turn: 2, image: 1, count: undefined } });
+  assert.deepEqual(response.result._meta, meta);
+  assert.match(response.result.content[0].text, /^Showing 1 image/);
+  assert.ok(!response.result.content[0].text.includes(bytes), "the model-facing text carries no bytes");
+  assert.ok(!JSON.stringify(response.result.structuredContent).includes(bytes));
+  assert.ok(!JSON.stringify(log.rows).includes(bytes), "the call log keeps the text only");
+  await handle(call("show_images", {}));
+  assert.deepEqual(calls.at(-1).args, { chat: undefined, turn: undefined, image: undefined, count: undefined });
+  const before = calls.length;
+  for (const args of [{ turn: 0 }, { image: "2" }, { count: 1.5 }]) {
+    assert.equal((await handle(call("show_images", args))).error.code, -32602, JSON.stringify(args));
+  }
+  assert.equal(calls.length, before, "bad numbers run nothing");
+  const plain = await handle(call("list_chats", {}));
+  assert.equal(plain.result._meta, undefined, "other tools carry no _meta");
 });

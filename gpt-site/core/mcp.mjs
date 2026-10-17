@@ -6,6 +6,7 @@ import { PaseoOffline } from "./paseo.mjs";
 import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
 import { truncate } from "./text.mjs";
+import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 const READ_VIEWS = ["text", "commands"];
@@ -48,7 +49,7 @@ const DICTATION_HINTS = {
 export function buildInstructions(config) {
   const lines = [
     "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
-    "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; where something was said → search_messages.",
+    "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages.",
     'Write tools act on real agents: call them only when the user explicitly tells you to act now ("send it", "tell it: …", "start a chat in X …", "allow it", "stop it"), or says yes to your own "Send it?". Not commands: asking you to draft or phrase something; thinking aloud ("I think it should…", "we should tell it…"); suggestions as questions ("maybe we send it?"); "ok" or "fine" after a draft you did not ask about. For those, ask "Send it?" and wait.',
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Reuse ids from earlier results instead of listing again. Names work too: the tools resolve what the user said and offer candidates when unsure.',
     "A write result's outcome is the truth: replied or still_working = delivered, never send it again unless the user says to send it again; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
@@ -111,6 +112,15 @@ const CLARIFY_OUT = {
   properties: { kind: { type: "string" }, query: { type: "string" }, candidates: { type: "array", items: {} } },
 };
 
+const IMAGE_REF = {
+  type: "object",
+  properties: {
+    n: { type: "integer", description: "N of [image N] in the turn's text." },
+    name: { type: "string", description: 'The agent\'s alt text, or "image N".' },
+    viewable: { type: "boolean", description: "show_images can show it: a file on the Mac, not a web link." },
+  },
+};
+
 const TURN_OUT = {
   type: "object",
   properties: {
@@ -119,9 +129,10 @@ const TURN_OUT = {
     started_at: time,
     ended_at: time,
     user_text: { type: "string" },
-    agent_text: { type: "string", description: "Final message first; earlier ones dropped to fit." },
+    agent_text: { type: "string", description: "Final message first; earlier ones dropped to fit. Images read as [image N]." },
     omitted_messages: { type: "integer" },
     errors: { type: "array", items: { type: "string" } },
+    images: { type: "array", items: IMAGE_REF, description: "The images in this turn; show_images with this turn shows them." },
     total_tool_calls: { type: "integer" },
     tool_calls: {
       type: "array",
@@ -143,6 +154,7 @@ const OUTCOME_OUT = {
     project: { type: "string" },
     outcome: { type: "string", enum: ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "busy"] },
     reply: { type: "string" },
+    images: { type: "integer", description: "Images in the reply; show_images shows them." },
     approval: { type: "string" },
     error: { type: "string" },
     needs_clarification: CLARIFY_OUT,
@@ -181,7 +193,43 @@ const ACTIVITY_OUT = {
 
 const NOTE = { type: "string", description: "Why this chat was read when the name matched several." };
 
+const SHOWN_IMAGE = {
+  type: "object",
+  properties: { n: { type: "integer" }, turn: { type: "integer" }, name: { type: "string" }, mime: { type: "string" }, bytes: { type: "integer" } },
+};
+
+const SKIPPED_IMAGE = {
+  type: "object",
+  properties: {
+    n: { type: "integer" },
+    turn: { type: "integer" },
+    name: { type: "string" },
+    reason: { type: "string", enum: ["missing", "too_large", "too_much_at_once", "link", "unsupported", "refused", "error"] },
+  },
+};
+
 const object = (properties) => ({ type: "object", properties: { ...properties, needs_clarification: CLARIFY_OUT } });
+
+// ---- The show_images widget (MCP Apps) ----------------------------------------------------------
+// The URI carries a fingerprint of the HTML: ChatGPT caches a template by its URI for up to an hour.
+// Any older fingerprint still reads the current HTML, so a result earlier in a conversation keeps
+// its view after an update.
+
+const WIDGET_MIME = "text/html;profile=mcp-app";
+const WIDGET_URI = `ui://god-mode/images-${fingerprint(IMAGES_WIDGET_HTML)}.html`;
+const WIDGET_URI_PATTERN = /^ui:\/\/god-mode\/images(-[0-9a-f]{8})?\.html$/;
+const WIDGET = {
+  uri: WIDGET_URI,
+  name: "images",
+  title: "Images from a Paseo chat",
+  description: "Shows the images show_images returns and hands them to the model where the host allows.",
+  mimeType: WIDGET_MIME,
+};
+const WIDGET_META = {
+  ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
+  "openai/widgetPrefersBorder": true,
+  "openai/widgetDescription": "The images from the Paseo chat, shown to the user.",
+};
 
 // ---- Tools ------------------------------------------------------------------
 
@@ -230,7 +278,7 @@ export const TOOLS = [
   {
     name: "read_chat",
     description:
-      'Use this to tell the user what a chat said or did, in one call, with the id you already have or the name the user said. Default: the latest turn, the agent\'s final message first; turns=N reads the last N turns at once (turns=5 sums up a whole short chat), never turn by turn. view "commands": the commands and tool calls it ran, only when asked what it ran. For what it is doing right now, or its subagents, use read_activity; to find where something was said, search_messages.',
+      'Use this to tell the user what a chat said or did, in one call, with the id you already have or the name the user said. Default: the latest turn, the agent\'s final message first; turns=N reads the last N turns at once (turns=5 sums up a whole short chat), never turn by turn. view "commands": the commands and tool calls it ran, only when asked what it ran. Images read as [image N]: to show one or say what is on it, use show_images. For what it is doing right now, or its subagents, use read_activity; to find where something was said, search_messages.',
     inputSchema: {
       type: "object",
       properties: {
@@ -263,6 +311,34 @@ export const TOOLS = [
     },
     outputSchema: object({ summary: { type: "string" }, note: NOTE, chats: { type: "array", items: ACTIVITY_OUT } }),
     annotations: readOnly,
+  },
+  {
+    name: "show_images",
+    description:
+      'Use this when the user wants to see a picture, photo or screenshot from a chat, or asks what is on one ("show me the screenshot", "what\'s in the picture?"). Call it directly, as the first and only tool of the turn, with the chat being discussed; no read_chat or list_chats first. It shows the images on the user\'s screen and, where ChatGPT allows, gives them to you. [image N] in a read_chat result: pass its turn and N. Without a chat it shows the newest image of the most recent chats. Never describe an image you cannot see.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat: { ...CHAT, description: `${CHAT.description} Leave empty for the newest image in the most recent chats.` },
+        turn: { type: "integer", minimum: 1, description: "The turn the images are in, counted from the latest: 1 = latest. Unset: the newest images." },
+        image: { type: "integer", minimum: 1, description: "Which image of that turn: the N of [image N]." },
+        count: { type: "integer", minimum: 1, maximum: 4, description: "How many images. Default 1, or every image of the turn (up to 4) when turn is set." },
+      },
+    },
+    outputSchema: object({
+      chat: CHAT_OUT,
+      note: NOTE,
+      total_images: { type: "integer", description: "Images found in the turns looked at." },
+      images: { type: "array", items: SHOWN_IMAGE, description: "The images on the user's screen now." },
+      skipped: { type: "array", items: SKIPPED_IMAGE },
+    }),
+    annotations: readOnly,
+    _meta: {
+      ui: { resourceUri: WIDGET_URI },
+      "openai/outputTemplate": WIDGET_URI,
+      "openai/toolInvocation/invoking": "Getting the images…",
+      "openai/toolInvocation/invoked": "Images shown",
+    },
   },
   {
     name: "search_messages",
@@ -428,6 +504,8 @@ export const TOOLS = [
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
+// resources: the show_images widget.
+const CAPABILITIES = { tools: {}, resources: {} };
 
 function requireStrings(args, names) {
   const missing = names.filter((n) => typeof args[n] !== "string" || !args[n].trim());
@@ -456,6 +534,11 @@ async function dispatch(name, args, config, ops, log, caller) {
       return ops.readChat(url, { chat: args.chat, view: args.view ?? "text", turn: args.turn ?? 1, turns: args.turns ?? 1, maxChars: args.max_chars });
     case "read_activity":
       return ops.readActivity(url, { chat: args.chat || undefined, maxChars: args.max_chars });
+    case "show_images":
+      for (const key of ["turn", "image", "count"]) {
+        if (args[key] !== undefined && !(Number.isInteger(args[key]) && args[key] >= 1)) return { invalid: `${key} must be a whole number from 1.` };
+      }
+      return ops.showImages(url, { chat: args.chat || undefined, turn: args.turn, image: args.image, count: args.count });
     case "search_messages":
       return (
         (need("query") && { invalid: need("query") }) ||
@@ -595,16 +678,27 @@ export function createMcpHandler({ config, ops, log, caller }) {
     if (rpc.method.startsWith("notifications/") && rpc.id === undefined) return null;
     switch (rpc.method) {
       case "server/discover":
-        return reply({ supportedVersions: ["2026-07-28"], capabilities: { tools: {} }, serverInfo, instructions });
+        return reply({ supportedVersions: ["2026-07-28"], capabilities: CAPABILITIES, serverInfo, instructions });
       case "initialize": {
         const asked = rpc.params?.protocolVersion;
         const protocolVersion = PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[1];
-        return reply({ protocolVersion, capabilities: { tools: {} }, serverInfo, instructions });
+        return reply({ protocolVersion, capabilities: CAPABILITIES, serverInfo, instructions });
       }
       case "ping":
         return reply({});
       case "tools/list":
         return reply({ tools: TOOLS });
+      case "resources/list":
+        return reply({ resources: [WIDGET] });
+      case "resources/templates/list":
+        return reply({ resourceTemplates: [] });
+      case "resources/read": {
+        const uri = rpc.params?.uri;
+        if (typeof uri !== "string" || !WIDGET_URI_PATTERN.test(uri)) {
+          return { jsonrpc: "2.0", id, error: { code: -32602, message: "Resource not found", data: { uri: uri ?? null } } };
+        }
+        return reply({ contents: [{ uri, mimeType: WIDGET_MIME, text: IMAGES_WIDGET_HTML, _meta: WIDGET_META }] });
+      }
       case "tools/call": {
         const name = rpc.params?.name;
         const args = rpc.params?.arguments ?? {};
@@ -615,6 +709,8 @@ export function createMcpHandler({ config, ops, log, caller }) {
         return reply({
           content: [{ type: "text", text: outcome.text }],
           ...(outcome.data ? { structuredContent: outcome.data } : {}),
+          // For the widget only: hidden from the model, and never logged (the log keeps the text).
+          ...(outcome.meta ? { _meta: outcome.meta } : {}),
         });
       }
       default:

@@ -58,6 +58,7 @@ A spoken request can override model, thinking and mode for one new chat.
 | `list_chats` | Finds chats by title, workspace, branch or project with Paseo's own search, archive included on request; or lists a project's chats, or chats in a state. |
 | `read_chat` | `text`: what was said, final message first; `turns: N` reads the last N turns in one call. `commands`: the shell commands and tool calls with output. |
 | `read_activity` | What an agent and its subagents are doing right now: state, current step, each subagent's task, status, running time and result. Without a chat: every chat at work. |
+| `show_images` | The screenshots and pictures in a chat, shown in ChatGPT by a widget and handed to the model where ChatGPT allows it: the newest, a turn's, or the N-th of a turn (`[image N]` in `read_chat`). Without a chat: the newest image of the most recent chats. |
 | `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
 | `start_chat` | A new chat in a project with your task as the first message. |
 | `send_message` | A follow-up or an answer to an existing chat. |
@@ -70,8 +71,10 @@ A spoken request can override model, thinking and mode for one new chat.
 Every tool except `get_logs` returns readable text plus `structuredContent` that matches its
 declared `outputSchema`: chats with `id`, `short_id`, `title`, `project`, `status`, `state`,
 `updated_at` (ISO 8601, UTC) and `updated_ago`; turns with `turn` (1 = latest), `position`,
-`started_at`, `user_text`, `agent_text`. An ambiguous name returns `needs_clarification` with
-the candidates instead.
+`started_at`, `user_text`, `agent_text`, and `images` when the turn has some (pictures read as
+`[image N]` in the text, never as a path on the Mac). An ambiguous name returns
+`needs_clarification` with the candidates instead. `show_images` also returns the image bytes in
+`_meta`, which only its widget sees.
 
 Chats and projects are named the way you say them; the tools match names and ask back when
 unsure. Archived chats can be read by their full id. Terminals, files, git and daemon control

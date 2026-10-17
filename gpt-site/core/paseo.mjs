@@ -20,15 +20,24 @@ import {
   describePermission,
   describeRelease,
   describeStep,
+  imageHint,
+  imageMime,
+  imageName,
+  imageRef,
+  imagesText,
+  imageTarget,
   isStep,
   latestFirstWithin,
   pickActive,
   releaseData,
+  repliedOutcome,
   resolve,
   snippet,
   toIso,
   toolCallData,
   truncate,
+  withImagePlaceholders,
+  withoutImages,
 } from "./text.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
@@ -44,6 +53,13 @@ const ACTIVITY_SCAN = 12;
 const ACTIVITY_RECENT_MS = 3 * 3_600_000;
 const SUBAGENTS_SHOWN = 6;
 const SUBAGENT_TAIL = 12;
+// show_images: what one answer carries (a Paseo screenshot is 50-500 KB) and how far it looks.
+const IMAGE_MAX_BYTES = 1_000_000;
+const IMAGES_MAX_BYTES = 1_500_000;
+const IMAGES_SHOWN = 4;
+const IMAGE_RECENT_TURNS = 3;
+const IMAGE_SCAN_TURNS = 10;
+const IMAGE_SCAN_CHATS = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class PaseoOffline extends Error {}
@@ -118,6 +134,8 @@ function toChat({ agent, project }) {
     updatedAt: agent.updatedAt,
     createdAt: agent.createdAt,
     archived: Boolean(agent.archivedAt),
+    // Where the agent works: relative image paths in its messages start here.
+    cwd: agent.cwd ?? null,
   };
 }
 
@@ -340,11 +358,21 @@ async function loadTurns(client, agentId, from, count) {
   return { total, turns };
 }
 
+// A turn's parts. The agent's images become "[image N]", numbered through the turn, and come back
+// separately with their sources.
 function turnText(turn) {
   const items = turn.items;
+  const agent = [];
+  const images = [];
+  for (const item of items.filter((i) => i.type === "assistant_message")) {
+    const shown = withImagePlaceholders(item.text, images.length + 1);
+    agent.push(shown.text);
+    images.push(...shown.images);
+  }
   return {
     user: items.find((i) => i.type === "user_message")?.text ?? turn.preview ?? "",
-    agent: items.filter((i) => i.type === "assistant_message").map((i) => i.text),
+    agent,
+    images,
     errors: items.filter((i) => i.type === "error").map((i) => i.message),
     calls: items.filter((i) => i.type === "tool_call"),
   };
@@ -356,7 +384,7 @@ function renderTurnsText(target, loaded, max) {
   const perTurn = Math.floor(max / loaded.turns.length);
   const userMax = loaded.turns.length === 1 ? 300 : 200;
   const shaped = loaded.turns.map((t) => {
-    const { user, agent, errors } = turnText(t);
+    const { user, agent, images, errors } = turnText(t);
     const reply = latestFirstWithin(agent, perTurn);
     return {
       reply,
@@ -369,6 +397,7 @@ function renderTurnsText(target, loaded, max) {
         agent_text: reply.replace(OMITTED, ""),
         omitted_messages: Number(reply.match(OMITTED)?.[1] ?? 0),
         errors,
+        ...(images.length ? { images: images.map((i) => imageRef(i, target.cwd)) } : {}),
       },
     };
   });
@@ -384,6 +413,7 @@ function renderTurnsText(target, loaded, max) {
       `User asked: ${t.user_text}`,
       shaped[0].reply ? `Agent replied: ${shaped[0].reply}` : "Agent has not replied in this turn yet.",
       ...t.errors.map((e) => `Error: ${e}`),
+      ...(t.images ? [imageHint(t.turn, t.images.length)] : []),
     ].join("\n");
   } else {
     text = [
@@ -394,6 +424,7 @@ function renderTurnsText(target, loaded, max) {
         `  User: ${t.user_text}`,
         `  Agent: ${t.agent_text || "(no reply yet)"}${t.omitted_messages ? ` (${t.omitted_messages} earlier message(s) omitted)` : ""}`,
         ...t.errors.map((e) => `  Error: ${e}`),
+        ...(t.images ? [`  ${imageHint(t.turn, t.images.length)}`] : []),
       ]),
     ].join("\n");
   }
@@ -448,7 +479,7 @@ async function searchChat(client, chat, query, perChat) {
         turn: turnOf(location.seq),
         role: location.role,
         at: toIso(entry?.timestamp),
-        snippet: snippet(entry?.item?.text ?? "", query),
+        snippet: snippet(withoutImages(entry?.item?.text), query),
       };
     }),
   );
@@ -465,20 +496,133 @@ function withNote(result, note) {
   return { text: `${note}\n${result.text}`, data: { ...result.data, note } };
 }
 
-export async function readChat(pairingUrl, { chat, view = "text", turn = 1, turns = 1, maxChars } = {}) {
+export async function readChat(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => readChatOn(client, args));
+}
+
+// read_chat over an open connection (tests drive it with a fake client).
+export async function readChatOn(client, { chat, view = "text", turn = 1, turns = 1, maxChars } = {}) {
   const count = clamp(Math.trunc(turns) || 1, 1, MAX_TURNS);
   const from = Math.max(1, Math.trunc(turn) || 1);
   const max = clamp(maxChars ?? (count === 1 ? 1500 : Math.min(6000, 800 * count)), 200, 6000);
-  return withDaemon(pairingUrl, async (client) => {
+  const picked = await pickChat(client, chat, undefined, { read: true });
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const loaded = await loadTurns(client, target.id, from, count);
+  if (loaded.missing) {
+    return withNote({ text: `${chatLine(target)}\n${loaded.missing}`, data: { chat: chatData(target), total_turns: loaded.total, turns: [] } }, picked.note);
+  }
+  return withNote(view === "commands" ? renderTurnsCommands(target, loaded, max) : renderTurnsText(target, loaded, max), picked.note);
+}
+
+// The images in `count` turns of a chat starting at turn `from`, newest first: each with its turn,
+// its N in that turn's text and its source.
+async function imagesIn(client, chat, from, count) {
+  const loaded = await loadTurns(client, chat.id, from, count);
+  const images = loaded.turns.flatMap((t) => turnText(t).images.map((image) => ({ ...image, turn: t.turn })));
+  return { total: loaded.total, images: images.reverse() };
+}
+
+// One turn when asked for; otherwise the latest turns, and further back (deep) when they hold none.
+async function findImages(client, chat, { turn, deep }) {
+  if (turn) return imagesIn(client, chat, turn, 1);
+  const recent = await imagesIn(client, chat, 1, IMAGE_RECENT_TURNS);
+  if (!deep || recent.images.length > 0 || recent.total <= IMAGE_RECENT_TURNS) return recent;
+  return imagesIn(client, chat, IMAGE_RECENT_TURNS + 1, IMAGE_SCAN_TURNS - IMAGE_RECENT_TURNS);
+}
+
+// One image's bytes from the Mac, read through the relay the way Paseo's own client reads the
+// pictures in a chat. Only sources found in the chat's timeline get here, never a path from the
+// caller. Returns { mime, bytes, data } or { reason }.
+async function readImage(client, image, cwd) {
+  const target = imageTarget(image.source, cwd);
+  if (target.inline) {
+    const bytes = Math.floor((target.inline.data.length * 3) / 4);
+    return bytes > IMAGE_MAX_BYTES ? { reason: "too_large" } : { mime: target.inline.mime, bytes, data: target.inline.data };
+  }
+  if (target.link) return { reason: "link" };
+  if (!target.file) return { reason: "unsupported" };
+  try {
+    const file = await client.readFile(target.file.cwd, target.file.path, undefined, IMAGE_MAX_BYTES);
+    if (file.kind !== "image") return { reason: "unsupported" };
+    return { mime: imageMime(target.file.path), bytes: file.bytes.byteLength, data: Buffer.from(file.bytes).toString("base64") };
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    if (/too large/i.test(message)) return { reason: "too_large" };
+    if (/ENOENT|no such file/i.test(message)) return { reason: "missing" };
+    if (/outside of workspace/i.test(message)) return { reason: "refused" };
+    return { reason: "error" };
+  }
+}
+
+// show_images over an open connection (tests drive it with a fake client). Picks the chat, finds
+// its images, reads the wanted ones within the size budget and returns them three ways: speech in
+// `text`, metadata in `data` and the bytes in `meta`, which only the widget sees.
+export async function showImagesOn(client, { chat, turn, image, count } = {}) {
+  const from = turn || image ? Math.max(1, Math.trunc(turn) || 1) : null;
+  let target;
+  let note;
+  let found;
+  if (chat) {
     const picked = await pickChat(client, chat, undefined, { read: true });
     if (picked.ask) return picked.ask;
-    const target = picked.chat;
-    const loaded = await loadTurns(client, target.id, from, count);
-    if (loaded.missing) {
-      return withNote({ text: `${chatLine(target)}\n${loaded.missing}`, data: { chat: chatData(target), total_turns: loaded.total, turns: [] } }, picked.note);
+    target = picked.chat;
+    note = picked.note;
+    found = await findImages(client, target, { turn: from, deep: true });
+  } else {
+    // "The latest screenshot": the most recently updated chat with an image in its latest turns.
+    const chats = (await fetchChats(client)).slice(0, IMAGE_SCAN_CHATS);
+    const scanned = await mapLimit(chats, 4, (c) => findImages(client, c, { turn: from, deep: false }).catch(() => ({ images: [] })));
+    const index = scanned.findIndex((s) => s.images.length > 0);
+    if (index < 0) {
+      return { text: `No images in the latest turns of the ${chats.length} most recent chats.`, data: { total_images: 0, images: [], skipped: [] } };
     }
-    return withNote(view === "commands" ? renderTurnsCommands(target, loaded, max) : renderTurnsText(target, loaded, max), picked.note);
-  });
+    target = chats[index];
+    found = scanned[index];
+  }
+  const wanted = Math.trunc(image) || 0;
+  const limit = clamp(Math.trunc(count) || (from ? IMAGES_SHOWN : 1), 1, IMAGES_SHOWN);
+  let chosen = wanted ? found.images.filter((i) => i.n === wanted) : found.images.slice(0, limit);
+  if (wanted && chosen.length === 0 && found.images.length > 0) {
+    return {
+      text: `Turn ${from} of ${truncate(target.title, 70)} (${target.project}) has ${found.images.length} image(s), so there is no image ${wanted}.`,
+      data: { chat: chatData(target), ...(note ? { note } : {}), total_images: found.images.length, images: [], skipped: [] },
+    };
+  }
+  // A whole turn reads in its own order; "the latest images" newest first.
+  if (from) chosen = [...chosen].sort((a, b) => a.n - b.n);
+  const shown = [];
+  const skipped = [];
+  let used = 0;
+  for (const picked of chosen) {
+    const read = await readImage(client, picked, target.cwd);
+    const named = { ...picked, name: imageName(picked) };
+    if (read.reason) skipped.push({ ...named, reason: read.reason });
+    else if (used + read.bytes > IMAGES_MAX_BYTES) skipped.push({ ...named, reason: "too_much_at_once" });
+    else {
+      used += read.bytes;
+      shown.push({ ...named, ...read });
+    }
+  }
+  const text = imagesText({ chat: target, turn: from, found: found.images.length, shown, skipped });
+  const data = {
+    chat: chatData(target),
+    ...(note ? { note } : {}),
+    total_images: found.images.length,
+    images: shown.map((i) => ({ n: i.n, turn: i.turn, name: i.name, mime: i.mime, bytes: i.bytes })),
+    skipped: skipped.map((i) => ({ n: i.n, turn: i.turn, name: i.name, reason: i.reason })),
+  };
+  const meta = {
+    "god-mode/images": {
+      chat: { title: target.title, project: target.project },
+      images: shown.map((i) => ({ n: i.n, turn: i.turn, name: i.name, mime: i.mime, data: i.data })),
+    },
+  };
+  return { text: note ? `${note}\n${text}` : text, data, ...(shown.length ? { meta } : {}) };
+}
+
+export async function showImages(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => showImagesOn(client, args));
 }
 
 // What a chat's agent and its subagents are doing now. `known` saves a second listing when the
@@ -503,7 +647,7 @@ async function activityOf(client, chat, known) {
           const items = page.rows.map((r) => r.item).reverse();
           const step = items.find(isStep);
           const result = items.find((i) => i.type === "assistant_message")?.text;
-          return [s.id, { ...s, step: describeStep(step), result: result ? truncate(result, 300) : null }];
+          return [s.id, { ...s, step: describeStep(step), result: result ? truncate(withoutImages(result), 300) : null }];
         } catch {
           return [s.id, s];
         }
@@ -607,10 +751,8 @@ async function awaitReply(client, agentId, seconds) {
   if (wait === 0) return { text: "Not waiting for the reply; offer to check later.", data: { outcome: "not_waiting" } };
   const state = await client.waitForFinish(agentId, wait * 1000);
   switch (state.status) {
-    case "idle": {
-      const reply = truncate(state.lastMessage ?? "(no text)", 1500);
-      return { text: `Agent replied: ${reply}`, data: { outcome: "replied", reply } };
-    }
+    case "idle":
+      return repliedOutcome(state.lastMessage);
     case "permission": {
       const pending = state.final?.pendingPermissions?.[0];
       const approval = pending ? describePermission(pending) : "a tool call";

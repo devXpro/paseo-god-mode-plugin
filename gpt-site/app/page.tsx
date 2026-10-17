@@ -3,6 +3,7 @@ const tools: Array<[string, string]> = [
   ["list_chats", "Find chats by title, workspace, branch or project, archive included on request."],
   ["read_chat", "What was said in the last N turns at once, or the commands that ran."],
   ["read_activity", "What an agent and its subagents are doing right now."],
+  ["show_images", "A screenshot or picture from a chat, on your screen and for ChatGPT to look at."],
   ["search_messages", "Where something was said, across many chats or in one, in one call."],
   ["start_chat", "A new chat in a project, with your task as the first message."],
   ["send_message", "A follow-up or an answer to an existing chat."],

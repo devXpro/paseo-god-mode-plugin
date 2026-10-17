@@ -55,7 +55,11 @@ export function createWorld(now = Date.now()) {
           at: ago(240),
           end: ago(200),
           user: "Доводим UX фронта карты флота, этап D: кластеры маркеров и фильтр по статусу судна.",
-          agent: ["Сделал кластеризацию маркеров и фильтр по статусу судна. Осталось прогнать e2e."],
+          agent: [
+            "Сделал кластеризацию маркеров и фильтр по статусу судна. Осталось прогнать e2e.",
+            // The way the daemon records a screenshot a tool returned.
+            "![Image](file:///var/folders/f7/xtj/T/paseo-attachments-Eval01/3f2a9c4e8b7d6a5f1e0c9b8a7d6e5f4c3b2a1908f7e6d5c4b3a29180f7e6d5c4.png)",
+          ],
           calls: [read("web/src/map/FleetMap.tsx"), shell("npm run lint")],
         },
         {

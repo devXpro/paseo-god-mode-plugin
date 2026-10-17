@@ -208,23 +208,90 @@ export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersio
         picked.note,
       );
     }
-    const out = loaded.turns.map((t) => ({
-      turn: t.turn,
-      position: t.position,
-      started_at: toIso(t.at),
-      ended_at: toIso(t.end),
-      user_text: truncate(t.user, count === 1 ? 300 : 200),
-      agent_text: latestFirstWithin(t.agent, perTurn).replace(/^\(\d+ earlier message\(s\) omitted\)\n\n/, ""),
-      omitted_messages: 0,
-      errors: [],
-    }));
+    const out = loaded.turns.map((t) => {
+      const { agent, images } = shapeAgent(t);
+      return {
+        turn: t.turn,
+        position: t.position,
+        started_at: toIso(t.at),
+        ended_at: toIso(t.end),
+        user_text: truncate(t.user, count === 1 ? 300 : 200),
+        agent_text: latestFirstWithin(agent, perTurn).replace(/^\(\d+ earlier message\(s\) omitted\)\n\n/, ""),
+        omitted_messages: 0,
+        errors: [],
+        ...(images.length ? { images: images.map((i) => text.imageRef(i, c.cwd)) } : {}),
+      };
+    });
     return withNote(
       {
-        text: [header, ...out.flatMap((t) => [`Turn ${t.turn} of ${loaded.total}. User asked: ${t.user_text}`, t.agent_text ? `Agent replied: ${t.agent_text}` : "Agent has not replied in this turn yet."])].join("\n"),
+        text: [
+          header,
+          ...out.flatMap((t) => [
+            `Turn ${t.turn} of ${loaded.total}. User asked: ${t.user_text}`,
+            t.agent_text ? `Agent replied: ${t.agent_text}` : "Agent has not replied in this turn yet.",
+            ...(t.images ? [text.imageHint(t.turn, t.images.length)] : []),
+          ]),
+        ].join("\n"),
         data: { chat: chatData(c, now), total_turns: loaded.total, turns: out },
       },
       picked.note,
     );
+  }
+
+  // Since 0.7: a turn's images read as [image N], numbered through the turn; before, as the
+  // markdown the daemon records.
+  const placeholders = typeof text.withImagePlaceholders === "function";
+  function shapeAgent(t) {
+    if (!placeholders) return { agent: t.agent, images: [] };
+    const images = [];
+    const agent = t.agent.map((message) => {
+      const shaped = text.withImagePlaceholders(message, images.length + 1);
+      images.push(...shaped.images);
+      return shaped.text;
+    });
+    return { agent, images };
+  }
+
+  // A chat's images, newest first, each with its turn (1 = latest) and its N in that turn.
+  const imagesOf = (c) =>
+    c.turns
+      .flatMap((t, i) => shapeAgent(t).images.map((image) => ({ ...image, turn: c.turns.length - i })))
+      .reverse();
+
+  // show_images over the fake world; the bytes are a 1x1 PNG. Versions before 0.7 lack the tool.
+  const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  async function showImages(_url, { chat, turn, image, count } = {}) {
+    log("showImages", { chat, turn, image, count });
+    let c;
+    let note;
+    if (chat) {
+      const picked = pickChat(chat, { read: true });
+      if (picked.ask) return picked.ask;
+      c = picked.chat;
+      note = picked.note;
+    } else {
+      c = active().find((x) => imagesOf(x).length > 0);
+      if (!c) return { text: "No images in the latest turns of the 8 most recent chats.", data: { total_images: 0, images: [], skipped: [] } };
+    }
+    const from = turn || image ? Math.max(1, Math.trunc(turn) || 1) : null;
+    const all = imagesOf(c).filter((i) => !from || i.turn === from);
+    const limit = Math.min(Math.max(Math.trunc(count) || (from ? 4 : 1), 1), 4);
+    const chosen = image ? all.filter((i) => i.n === image) : all.slice(0, limit);
+    const shown = chosen.map((i) => ({ ...i, name: text.imageName(i), mime: "image/png", bytes: 70 }));
+    const reply = text.imagesText({ chat: c, turn: from, found: all.length, shown, skipped: [] });
+    return {
+      text: note ? `${note}\n${reply}` : reply,
+      data: {
+        chat: chatData(c, now),
+        ...(note ? { note } : {}),
+        total_images: all.length,
+        images: shown.map((i) => ({ n: i.n, turn: i.turn, name: i.name, mime: i.mime, bytes: i.bytes })),
+        skipped: [],
+      },
+      ...(shown.length
+        ? { meta: { "god-mode/images": { chat: { title: c.title, project: c.project }, images: shown.map((i) => ({ n: i.n, turn: i.turn, name: i.name, mime: i.mime, data: PIXEL })) } } }
+        : {}),
+    };
   }
 
   function searchIn(c, query, perChat) {
@@ -381,6 +448,6 @@ export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersio
 
   return {
     state,
-    ops: { overview, listChats, readChat, readActivity, searchMessages, startChat, sendMessage, answerApproval, stopChat, releaseStatus, releaseStart },
+    ops: { overview, listChats, readChat, readActivity, showImages, searchMessages, startChat, sendMessage, answerApproval, stopChat, releaseStatus, releaseStart },
   };
 }
