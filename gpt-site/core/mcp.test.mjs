@@ -398,12 +398,21 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["update_status", { site_version: "0.1.0", build: null, installed_version: null, update_available: null, latest_release: null, latest_is_newer: null, live_release: null, mac_online: false }],
     ["update_site", { started: true, action: "update", job_id: "j1", message: "update started" }],
   ];
-  const lampAction = { id: "dim", title: "Dim the lamp", args: "level: 10 | 50 (required)", asks_first: false };
+  const lampAction = { id: "dim", title: "Dim the lamp", description: "", args: "level: 10 | 50 (required)", risk: "low", asks_first: false };
+  const lampRead = { id: "state", title: "Lamp state", description: "On or off.", args: "no arguments", main: true };
   cases.push(
-    ["plugin_read", { plugins: [{ id: "lamp", title: "Desk lamp", summary: "The lamp.", available: true, reads: ["state"], actions: [lampAction] }, { id: "voice", title: "voice", available: false, reason: "does not describe itself to ChatGPT" }] }],
-    ["plugin_read", { plugin: "lamp", title: "Desk lamp", operation: "state", result: { on: true, level: 50 }, actions: [lampAction] }],
+    [
+      "plugin_read",
+      {
+        plugins: [
+          { id: "lamp", title: "Desk lamp", summary: "The lamp.", available: true, reads: [lampRead], actions: [lampAction], skipped: [{ id: "Bad", reason: "id must be lower case" }] },
+          { id: "voice", title: "voice", available: false, reason: "does not describe itself to ChatGPT" },
+        ],
+      },
+    ],
+    ["plugin_read", { plugin: "lamp", title: "Desk lamp", operation: "state", about: "On or off.", result: { on: true, level: 50 }, actions: [lampAction] }],
     ["plugin_read", { needs_clarification: { kind: "plugin", query: "light", candidates: [] } }],
-    ["plugin_action", { plugin: "lamp", title: "Desk lamp", operation: "off", outcome: "needs_confirmation", delivered: false, confirm_text: "Turn the lamp off.", confirmation: "abc.def", expires_at: "2026-10-17T12:02:00.000Z" }],
+    ["plugin_action", { plugin: "lamp", title: "Desk lamp", operation: "off", outcome: "needs_confirmation", delivered: false, risk: "disruptive", confirm_text: "Turn the lamp off.", confirmation: "abc.def", expires_at: "2026-10-17T12:02:00.000Z" }],
     ["plugin_action", { plugin: "lamp", title: "Desk lamp", operation: "dim", outcome: "done", delivered: true, result: { on: true, level: 10 } }],
   );
   for (const [tool, data] of cases) {

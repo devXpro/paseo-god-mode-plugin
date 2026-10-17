@@ -26,11 +26,11 @@ const text = (value, max) => (typeof value === "string" ? value.trim().slice(0, 
 // destructive, and only a low-risk action may skip the confirmation.
 function parseOperation(raw) {
   if (!isObject(raw)) return { skip: "not an object" };
-  const id = text(raw.id, 64);
-  if (!OPERATION_ID.test(id)) return { skip: "id must be lower case letters, digits and _" };
+  const id = text(raw.id, Infinity);
+  if (!OPERATION_ID.test(id) || id.length > 64) return { skip: "id must be lower case letters, digits and _, at most 64" };
   if (raw.kind !== "read" && raw.kind !== "action") return { skip: 'kind must be "read" or "action"' };
-  const method = text(raw.method, 120);
-  if (!RPC_NAME.test(method)) return { skip: "method is not an RPC name" };
+  const method = text(raw.method, Infinity);
+  if (!RPC_NAME.test(method) || method.length > 120) return { skip: "method is not an RPC name" };
   if (method.startsWith("meta.")) return { skip: "meta.* methods describe the plugin and are never operations" };
   const title = text(raw.title, 80);
   if (!title) return { skip: "title is missing" };
@@ -60,10 +60,11 @@ export function parseCapabilities(raw) {
   const operations = [];
   const skipped = [];
   let hasDefault = false;
-  for (const entry of raw.operations.slice(0, MAX_OPERATIONS)) {
+  for (const entry of raw.operations) {
     const { op, skip } = parseOperation(entry);
-    const id = typeof entry?.id === "string" ? entry.id : "?";
+    const id = typeof entry?.id === "string" ? entry.id.slice(0, 64) : "?";
     if (skip) skipped.push({ id, reason: skip });
+    else if (operations.length >= MAX_OPERATIONS) skipped.push({ id, reason: `over the limit of ${MAX_OPERATIONS} operations` });
     else if (operations.some((o) => o.id === op.id)) skipped.push({ id, reason: "duplicate id" });
     else {
       // The first default read wins; a second one is only a read.
@@ -147,9 +148,12 @@ export function checkValue(schema, value, path = "args") {
     for (const key of Array.isArray(schema.required) ? schema.required : []) {
       if (value[key] === undefined) errors.push(`${path}.${key} is required`);
     }
+    // One rule at every level: a key the schema does not name is refused unless it opens the
+    // object (additionalProperties true or a schema). zod's plain objects would drop it anyway.
     for (const [key, item] of Object.entries(value)) {
       if (properties[key]) errors.push(...checkValue(properties[key], item, `${path}.${key}`));
-      else if (schema.additionalProperties === false) errors.push(`${path}.${key} is not an argument`);
+      else if (isObject(schema.additionalProperties)) errors.push(...checkValue(schema.additionalProperties, item, `${path}.${key}`));
+      else if (schema.additionalProperties !== true) errors.push(`${path}.${key} is not an argument`);
     }
   }
   if (actual === "array" && isObject(schema.items)) value.forEach((item, i) => errors.push(...checkValue(schema.items, item, `${path}[${i}]`)));
@@ -201,7 +205,7 @@ export function prepareArgs(op, args) {
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
   if (!isObject(value)) return value;
-  return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, SECRET_KEY.test(key) && typeof v !== "boolean" ? "[redacted]" : redact(v)]));
+  return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, SECRET_KEY.test(key) && typeof v === "string" ? "[redacted]" : redact(v)]));
 }
 
 // The answer as structuredContent: the fields the plugin marked worth reading, secrets out, and
@@ -221,9 +225,12 @@ export function resultLines(value, max = 1500) {
   return truncate(lines.join("\n") || "(empty)", max);
 }
 
+export function readSummary(op) {
+  return { id: op.id, title: op.title, description: op.description, args: signature(op), main: op.default === true };
+}
+
 export function actionSummary(op) {
-  const args = signature(op);
-  return { id: op.id, title: op.title, args, asks_first: op.confirm === "always" };
+  return { id: op.id, title: op.title, description: op.description, args: signature(op), risk: op.risk, asks_first: op.confirm === "always" };
 }
 
 export function actionsLine(capabilities) {
@@ -233,6 +240,24 @@ export function actionsLine(capabilities) {
 }
 
 // ---- Confirmation -----------------------------------------------------------------------------
+
+const spoken = (value) => (typeof value === "string" ? value : JSON.stringify(value));
+
+// What the user hears before an action that asks first: the plugin's confirmText with each
+// {argument} filled in, else the plugin and operation titles; then, in brackets, every argument the
+// caller chose that the text did not name, so no value goes unsaid.
+export function confirmationText(capabilities, op, args) {
+  const named = new Set();
+  const base = op.confirmText
+    ? op.confirmText.replace(/\{([a-zA-Z0-9_]+)\}/g, (whole, key) => {
+        if (!(key in args)) return whole;
+        named.add(key);
+        return spoken(args[key]);
+      })
+    : `${capabilities.title}: ${op.title}.`;
+  const rest = Object.entries(args).filter(([key]) => !(key in op.fixed) && !named.has(key));
+  return rest.length ? `${base} (${rest.map(([key, value]) => `${key}: ${spoken(value)}`).join(", ")})` : base;
+}
 // An action that asks first runs only with a token God Mode issued for exactly these arguments a
 // moment ago. HMAC-SHA256 over the plugin, operation, method and canonical arguments, keyed from
 // the pairing link (the Site's one secret), for two minutes. The token proves what was put to the

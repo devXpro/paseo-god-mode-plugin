@@ -219,13 +219,28 @@ const SKIPPED_IMAGE = {
 
 const object = (properties) => ({ type: "object", properties: { ...properties, needs_clarification: CLARIFY_OUT } });
 
+const PLUGIN_RISK = { type: "string", enum: ["low", "outward", "disruptive", "destructive"], description: "low: local and undone with one more call; outward: reaches people or services; disruptive: interrupts work or cuts the computer off; destructive: loses something for good." };
+
 const PLUGIN_ACTION_OUT = {
   type: "object",
   properties: {
     id: { type: "string", description: "The operation to pass to plugin_action." },
     title: { type: "string" },
+    description: { type: "string" },
     args: { type: "string", description: 'What it takes, e.g. "minutes: 30 | 60 (required)", or "no arguments".' },
+    risk: PLUGIN_RISK,
     asks_first: { type: "boolean", description: "It returns needs_confirmation first; it runs after the user's yes." },
+  },
+};
+
+const PLUGIN_READ_OUT = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "The operation to pass to plugin_read." },
+    title: { type: "string" },
+    description: { type: "string" },
+    args: { type: "string" },
+    main: { type: "boolean", description: "What plugin_read does when no operation is given." },
   },
 };
 
@@ -237,8 +252,13 @@ const PLUGIN_OUT = {
     summary: { type: "string" },
     available: { type: "boolean", description: "false: installed, but it offers nothing to ChatGPT (see reason)." },
     reason: { type: "string" },
-    reads: { type: "array", items: { type: "string" } },
+    reads: { type: "array", items: PLUGIN_READ_OUT },
     actions: { type: "array", items: PLUGIN_ACTION_OUT },
+    skipped: {
+      type: "array",
+      description: "Operations its description offered that God Mode could not use, with the reason; for the plugin's author.",
+      items: { type: "object", properties: { id: { type: "string" }, reason: { type: "string" } } },
+    },
   },
 };
 
@@ -493,6 +513,7 @@ export const TOOLS = [
       plugin: { type: "string" },
       title: { type: "string" },
       operation: { type: "string" },
+      about: { type: "string", description: "What the read reports, as the plugin describes it: how to read result." },
       result: PLUGIN_RESULT,
       actions: { type: "array", items: PLUGIN_ACTION_OUT },
     }),
@@ -518,6 +539,7 @@ export const TOOLS = [
       operation: { type: "string" },
       outcome: { type: "string", enum: ["done", "needs_confirmation"] },
       delivered: { type: "boolean", description: "true: the action ran, never repeat it. false: nothing happened yet." },
+      risk: PLUGIN_RISK,
       confirm_text: { type: "string", description: "What to tell the user before they say yes." },
       confirmation: { type: "string", description: "Pass back with the same arguments after the user's yes." },
       expires_at: time,

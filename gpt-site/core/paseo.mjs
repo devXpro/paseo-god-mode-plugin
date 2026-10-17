@@ -43,6 +43,7 @@ import {
   actionsLine,
   actionSummary,
   checkConfirmation,
+  confirmationText,
   DESCRIBE_METHOD,
   issueConfirmation,
   parseCapabilities,
@@ -50,6 +51,7 @@ import {
   pickPlugin,
   prepareArgs,
   projectResult,
+  readSummary,
   resultLines,
   signature,
 } from "./capabilities.mjs";
@@ -965,8 +967,10 @@ function pluginData(entry) {
     title: caps.title,
     summary: caps.summary,
     available: true,
-    reads: caps.operations.filter((op) => op.kind === "read").map((op) => op.id),
+    reads: caps.operations.filter((op) => op.kind === "read").map(readSummary),
     actions: caps.operations.filter((op) => op.kind === "action").map(actionSummary),
+    // For the plugin's author: what its description offered that God Mode could not use, and why.
+    ...(caps.skipped.length ? { skipped: caps.skipped } : {}),
   };
 }
 
@@ -980,6 +984,7 @@ function catalogText(entries) {
     lines.push(`  Reads (plugin_read): ${reads.join(", ") || "none"}.`);
     const actions = actionsLine(caps);
     if (actions) lines.push(`  ${actions}`);
+    if (caps.skipped.length) lines.push(`  Dropped from its description: ${caps.skipped.map((s) => `${s.id} (${s.reason})`).join("; ")}.`);
   }
   if (others.length) lines.push(`Installed, nothing for ChatGPT: ${others.map((e) => `${e.name} (${e.reason})`).join("; ")}.`);
   return lines.join("\n");
@@ -1026,14 +1031,23 @@ export async function pluginReadOn(client, { plugin, operation, args } = {}) {
   const caps = entry.capabilities;
   const found = pickOperation(caps, operation, "read");
   if (found.wrongKind) return { invalid: `${found.wrongKind.id} is an action of ${caps.title}: use plugin_action.` };
+  // A plugin with no main read answers with what it offers rather than with a question.
+  if (!found.match && !operation) return { text: catalogText([entry]), data: { plugins: [pluginData(entry)] } };
   if (!found.match) return operationQuestion(entry, operation, found.candidates, "read");
   const op = found.match;
   const prepared = prepareArgs(op, args);
   if (prepared.invalid) return { invalid: prepared.invalid };
   const result = projectResult(op, await client.invokePluginRpc(entry.id, op.method, prepared.args));
   return {
-    text: [`${caps.title} · ${op.title}`, resultLines(result), actionsLine(caps)].filter(Boolean).join("\n"),
-    data: { plugin: entry.id, title: caps.title, operation: op.id, result, actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary) },
+    text: [`${caps.title} · ${op.title}`, op.description && truncate(op.description, 300), resultLines(result), actionsLine(caps)].filter(Boolean).join("\n"),
+    data: {
+      plugin: entry.id,
+      title: caps.title,
+      operation: op.id,
+      ...(op.description ? { about: op.description } : {}),
+      result,
+      actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary),
+    },
   };
 }
 
@@ -1061,12 +1075,11 @@ export async function pluginActionOn(client, { plugin, operation, args, confirma
     const verdict = confirmation ? await checkConfirmation(secret, confirmation, subject, now) : "none";
     if (verdict !== "ok") {
       const { token, expiresAt } = await issueConfirmation(secret, subject, now);
-      const given = Object.entries(prepared.args).filter(([key]) => !(key in op.fixed));
-      const say = op.confirmText || `${caps.title}: ${op.title}${given.length ? ` (${given.map(([k, v]) => `${k} ${JSON.stringify(v)}`).join(", ")})` : ""}.`;
+      const say = confirmationText(caps, op, prepared.args);
       const why = { none: "", expired: "That confirmation expired. ", mismatch: "That confirmation was for something else. " }[verdict];
       return {
         text: `${why}Not done: this action asks first. Tell the user: "${say}" Only after they say yes, call plugin_action again with the same plugin, operation and args plus this confirmation.`,
-        data: { ...base, outcome: "needs_confirmation", delivered: false, confirm_text: say, confirmation: token, expires_at: expiresAt },
+        data: { ...base, outcome: "needs_confirmation", delivered: false, risk: op.risk, confirm_text: say, confirmation: token, expires_at: expiresAt },
       };
     }
   }

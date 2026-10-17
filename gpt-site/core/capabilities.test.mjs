@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   canonical,
   checkConfirmation,
+  confirmationText,
   CONFIRMATION_TTL_MS,
   issueConfirmation,
   parseCapabilities,
@@ -151,7 +152,9 @@ test("plugin_read without a plugin lists every installed plugin, with what each 
   const client = fakeClient(installed());
   const { text, data } = await pluginReadOn(client, {});
   assert.deepEqual(data.plugins.map((p) => [p.id, p.available]), [["lamp", true], ["voice", false], ["notes", false]]);
-  assert.deepEqual(data.plugins[0].reads, ["state", "history"]);
+  assert.deepEqual(data.plugins[0].reads.map((r) => [r.id, r.main]), [["state", true], ["history", false]]);
+  assert.equal(data.plugins[0].reads[0].description, "On or off, and how bright.");
+  assert.deepEqual(data.plugins[0].actions.map((a) => a.risk), ["low", "disruptive"]);
   assert.deepEqual(data.plugins[0].actions.map((a) => [a.id, a.asks_first]), [["dim", false], ["off", true]]);
   assert.equal(data.plugins[1].reason, "does not describe itself to ChatGPT");
   assert.match(data.plugins[2].reason, /not running \(failed\)/);
@@ -264,4 +267,66 @@ test("a plugin whose description breaks or hangs is reported, and the others sti
   assert.equal(byId.lamp.available, true);
   assert.match(byId.odd.reason, /meta.describe is not usable: no usable operations/);
   assert.match(byId.broken.reason, /boom/);
+});
+
+test("a long id or method is refused, never cut into another name, and the limit counts usable operations", () => {
+  const raw = lamp();
+  raw.operations.unshift({ id: "long", kind: "read", method: `lamp.${"x".repeat(120)}`, title: "Long" });
+  for (let i = 0; i < 40; i += 1) raw.operations.push({ id: `extra_${i}`, kind: "read", method: "lamp.get", title: `Extra ${i}` });
+  const { capabilities } = parseCapabilities(raw);
+  assert.equal(capabilities.operations.length, 40);
+  assert.deepEqual(capabilities.skipped[0], { id: "long", reason: "method is not an RPC name" });
+  assert.deepEqual(
+    capabilities.skipped.slice(1).map((s) => s.id),
+    ["extra_36", "extra_37", "extra_38", "extra_39"],
+    "the lamp's four plus 36 extras fit; the rest are listed, not lost",
+  );
+  assert.match(capabilities.skipped.at(-1).reason, /over the limit of 40 operations/);
+});
+
+test("an argument a nested object does not name is refused, as at the top", () => {
+  const op = parseCapabilities({
+    ...lamp(),
+    operations: [{ id: "scene", kind: "action", method: "lamp.set", title: "Scene", risk: "low", input: { type: "object", properties: { opts: { type: "object", properties: { level: { type: "number" } } } } } }],
+  }).capabilities.operations[0];
+  assert.deepEqual(prepareArgs(op, { opts: { level: 1 } }), { args: { opts: { level: 1 } } });
+  assert.match(prepareArgs(op, { opts: { level: 1, colour: "red" } }).invalid, /args\.opts\.colour is not an argument/);
+});
+
+test("only text is a secret: a count or a flag under a secret-sounding name stays", () => {
+  const history = described().operations.find((op) => op.id === "history");
+  assert.deepEqual(projectResult(history, { tokenCount: 3, hasToken: true, token: "t0k", nested: { maxTokens: 10, secret: "s" } }), {
+    tokenCount: 3,
+    hasToken: true,
+    token: "[redacted]",
+    nested: { maxTokens: 10, secret: "[redacted]" },
+  });
+});
+
+test("what the user hears names every argument they chose: in the plugin's text or after it", () => {
+  const caps = described();
+  const op = (extra) => ({ id: "x", title: "Send", fixed: { mode: "send" }, confirmText: "", ...extra });
+  assert.equal(confirmationText(caps, op({ confirmText: "Send «{text}» to {to}." }), { text: "on my way", to: "Oleg", mode: "send" }), "Send «on my way» to Oleg.");
+  assert.equal(confirmationText(caps, op({ confirmText: "Send «{text}»." }), { text: "on my way", urgent: true, mode: "send" }), "Send «on my way». (urgent: true)");
+  assert.equal(confirmationText(caps, op({ confirmText: "Send {missing} now." }), { mode: "send" }), "Send {missing} now.", "an unknown name stays as written");
+  assert.equal(confirmationText(caps, op({}), { level: 10, mode: "send" }), "Desk lamp: Send. (level: 10)");
+});
+
+test("a plugin with no main read answers with what it offers, and shows what was dropped", async () => {
+  const raw = lamp();
+  raw.operations = raw.operations.filter((op) => op.kind === "action");
+  raw.operations.push({ id: "Broken", kind: "read", method: "lamp.get", title: "x" });
+  const client = fakeClient([{ id: "lamp", rpc: { "meta.describe": () => raw } }]);
+  const { text, data } = await pluginReadOn(client, { plugin: "lamp" });
+  assert.deepEqual(data.plugins[0].reads, []);
+  assert.deepEqual(data.plugins[0].actions.map((a) => a.id), ["dim", "off"]);
+  assert.deepEqual(data.plugins[0].skipped, [{ id: "Broken", reason: "id must be lower case letters, digits and _, at most 64" }]);
+  assert.match(text, /Dropped from its description: Broken \(id must be/);
+  assert.ok(!client.calls.some(([, method]) => method === "lamp.set"));
+});
+
+test("a read says what it reports, as the plugin describes it", async () => {
+  const { text, data } = await pluginReadOn(fakeClient(installed()), { plugin: "lamp" });
+  assert.equal(data.about, "On or off, and how bright.");
+  assert.match(text, /^Desk lamp · Lamp state\nOn or off, and how bright\.\n/);
 });
