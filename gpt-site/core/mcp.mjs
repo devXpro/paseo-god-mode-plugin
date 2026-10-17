@@ -44,15 +44,22 @@ const DICTATION_HINTS = {
   ru: 'Speech recognition often writes "Paseo" as "по SEO", "посыл" or "пасео".',
 };
 
+// Which words of a given language send and which only discuss: English examples do not carry
+// over to every phrasing (in Russian, "можешь закинуть" was read as an order).
+const COMMAND_HINTS = {
+  ru: 'In Russian, sending needs a direct command: «отправь», «отправляй», «закидывай», «скажи ему сейчас», or «да» to your «Отправить?». Not commands, ask «Отправить?» first: «можешь закинуть», «попроси агента …», «давай ему скажем …», «надо бы ему сказать …», «напиши промпт … и потом закинем».',
+};
+
 // Server-level guidance. OpenAI: keep the essentials in the first 512
 // characters and do not repeat the tool descriptions.
 export function buildInstructions(config) {
   const lines = [
     "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
     "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages.",
-    'Write tools act on real agents: call them only when the user explicitly tells you to act now ("send it", "tell it: …", "start a chat in X …", "allow it", "stop it"), or says yes to your own "Send it?". Not commands: asking you to draft or phrase something; thinking aloud ("I think it should…", "we should tell it…"); suggestions as questions ("maybe we send it?"); "ok" or "fine" after a draft you did not ask about. For those, ask "Send it?" and wait.',
+    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
+    "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Reuse ids from earlier results instead of listing again. Names work too: the tools resolve what the user said and offer candidates when unsure.',
-    "A write result's outcome is the truth: replied or still_working = delivered, never send it again unless the user says to send it again; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
+    "A write result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived, so never send it again unless the user asks for another message; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
     "If an agent is still working, say so and offer to check later; do not poll.",
     "Name chats by their title; never read ids, hashes or links aloud.",
     config.confirmRisky
@@ -61,6 +68,7 @@ export function buildInstructions(config) {
     config.language
       ? `Speak to the user in ${languageName(config.language)}. Keep answers to one or two sentences unless they ask for more.`
       : "Answer in the user's language, in one or two sentences unless they ask for more.",
+    COMMAND_HINTS[config.language],
     DICTATION_HINTS[config.language],
   ];
   return lines.filter(Boolean).join("\n");
@@ -153,6 +161,7 @@ const OUTCOME_OUT = {
     short_id: { type: "string" },
     project: { type: "string" },
     outcome: { type: "string", enum: ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "busy"] },
+    delivered: { type: "boolean", description: "true: it reached the agent, never send it again. false: nothing was sent (busy)." },
     reply: { type: "string" },
     images: { type: "integer", description: "Images in the reply; show_images shows them." },
     approval: { type: "string" },
@@ -381,7 +390,7 @@ export const TOOLS = [
   {
     name: "start_chat",
     description:
-      "Use this to start a new chat (a new agent) in a project when the user explicitly tells you to start one now, with their task as its first message, like New chat in Paseo. Drafting or discussing a task is not a command: prepare the text and ask \"Start it?\". To continue or answer an existing chat, use send_message instead. Waits briefly: outcome still_working means the chat started and its agent is working — tell the user and offer to check later; do not poll, and never start the same task twice. Set model, thinking or mode only when the user asks for them.",
+      "Use this to start one new chat (a new agent) in a project when the user's latest words tell you to start it now, with their task as its first message, like New chat in Paseo. One instruction = one chat: never start it twice, not even reworded. Drafting or discussing a task is not a command: prepare the text and ask \"Start it?\". To continue or answer an existing chat, use send_message instead. delivered=true means the chat started and got the task — tell the user and offer to check later; do not poll. Set model, thinking or mode only when the user asks for them.",
     inputSchema: {
       type: "object",
       properties: {
@@ -400,7 +409,7 @@ export const TOOLS = [
   {
     name: "send_message",
     description:
-      "Use this to send something to an existing chat only when the user explicitly tells you to send it now (\"send it\", \"tell it: …\", \"continue\", their answer to the agent's question, or yes to your own \"Send it?\"). Not commands: drafting, thinking aloud (\"I think it should…\"), suggestions as questions (\"maybe we send it?\"), or \"ok\" after a draft you did not ask about — ask \"Send it?\" first. Use the chat being discussed unless the user names another. The outcome is the truth: replied or still_working = delivered, so never send it again unless the user says to send it again; busy = NOT delivered: ask whether to add it to the current work or interrupt, then call again with if_busy; an error = not confirmed, never say it was sent. If the agent is still working, offer to check later; do not poll.",
+      "Use this to send one message to an existing chat when the user's latest words tell you to send now: \"send it\", \"send it now\", \"tell it now: …\", \"continue\", their answer to the agent's question, or \"yes\" to your own \"Send it?\". One instruction = one call: never split it into several messages, never send it again or a reworded copy. Not commands, so ask \"Send it?\" first: \"write/draft a prompt\" (also \"…and then we'll send it\"), \"ask the agent to …\", \"let's tell it …\", \"you can/could send it\", \"I think it should…\", \"maybe we send it?\", \"ok\" after a draft you did not ask about. Use the chat being discussed unless the user names another. The result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived — say so and stop; busy means NOT delivered: ask whether to add it to the current work or interrupt, then call again with if_busy; an error is not confirmed, never say it was sent. If the agent is still working, offer to check later; do not poll.",
     inputSchema: {
       type: "object",
       properties: {

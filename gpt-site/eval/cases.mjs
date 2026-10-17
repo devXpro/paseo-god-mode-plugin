@@ -359,7 +359,8 @@ const core = [
     lang: "ru",
     context: REL_CTX,
     phrase: "а потом пусть добавит раздел про миграции",
-    expect: { first: ["send_message"], args: { chat: REL, text: ["миграц"] }, writes: 1, maxCalls: 1, state: "delivered" },
+    // Since 0.6.1 "пусть …" counts like "ask the agent to …": not a command to send, so it asks first.
+    expect: { first: [], writes: 0, maxCalls: 0, final: "ask" },
   },
   {
     id: "core.ctx.done-yet",
@@ -484,6 +485,67 @@ const write = [
   { id: "w.dup.ru.start-again", group: "duplicate", lang: "ru", context: STARTED, phrase: "запускай", expect: { first: [], acceptable: ["read_chat", "read_activity"], writes: 0, maxCalls: 0, final: "already_done" } },
 ];
 
+// ---- Regression, 2026-10-17: one explicit "yes, send it" produced two send_message calls -------
+// Live ChatGPT sent the drafted task with wait_seconds 0 (outcome not_waiting), then 9 s later sent a
+// reworded copy of the same task; only busy stopped it. Plus the send/no-send wording Roman listed.
+
+const IMG = "b7c07333-6b31-45d1-b43f-e81cc5333c1a";
+const TASK = "Подтяни свежий код после релиза God Mode 0.6.0, перечитай текущее состояние gpt-site и продолжай работу по картинкам.";
+const IMG_CTX = [
+  { user: "что с агентом по картинкам?" },
+  { call: "read_chat", args: { chat: IMG } },
+  { assistant: "Агент по картинкам закончил исследование: нашёл, где теряются картинки, предлагает show_images с виджетом и ждёт решения." },
+];
+const IMG_DRAFT_ASKED = [
+  ...IMG_CTX,
+  { user: "надо ему сказать подтянуть свежий код после релиза 0.6.0, перечитать gpt-site и продолжать по картинкам. Собери промпт." },
+  { assistant: `Промпт: «${TASK}» Отправить?` },
+];
+const IMG_DRAFT_NOASK = [
+  ...IMG_CTX,
+  { user: "собери ему промпт: подтянуть свежий код после релиза 0.6.0, перечитать gpt-site и продолжать по картинкам" },
+  { assistant: `Промпт: «${TASK}»` },
+];
+const IMG_TWO_PART = [
+  ...IMG_CTX,
+  { user: "собери ему задачу: сначала пусть подтянет свежий код и перечитает gpt-site, потом продолжает по картинкам, а в конце прогонит тесты" },
+  { assistant: "Промпт: «Сначала подтяни свежий код после релиза God Mode 0.6.0 и перечитай gpt-site. Потом продолжай работу по картинкам. В конце прогони тесты.» Отправить?" },
+];
+const IMG_SENT = [...IMG_DRAFT_ASKED, { user: "Да, закидывай" }, { call: "send_message", args: { chat: IMG, text: TASK, wait_seconds: 0 } }, { assistant: "Отправил агенту по картинкам." }];
+const TASK_WORDS = ["подтян", "картин", "gpt-site", "pull", "image"];
+const IMG_UNKNOWN = [
+  ...IMG_DRAFT_ASKED,
+  { user: "Да, закидывай" },
+  { call: "send_message", args: { chat: IMG, text: TASK } },
+  { assistant: "Не уверен, что сообщение дошло: Paseo не ответил вовремя." },
+];
+
+const regression = [
+  { id: "r.dup.ru.incident", group: "regression-dup", lang: "ru", context: IMG_DRAFT_ASKED, phrase: "Да, закидывай", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.dup.ru.incident-nowait", group: "regression-dup", lang: "ru", context: IMG_DRAFT_ASKED, scenario: { defaults: { send_message: "not_waiting" } }, phrase: "Да, закидывай", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.dup.en.incident", group: "regression-dup", lang: "en", context: IMG_DRAFT_ASKED, scenario: { defaults: { send_message: "not_waiting" } }, phrase: "yes, send it", expect: { first: ["send_message"], args: { chat: IMG }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.dup.ru.two-part", group: "regression-dup", lang: "ru", context: IMG_TWO_PART, scenario: { defaults: { send_message: "not_waiting" } }, phrase: "да, закидывай", expect: { first: ["send_message"], args: { chat: IMG, text: ["тест"] }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.dup.ru.after-sent-narrate", group: "regression-dup", lang: "ru", context: IMG_SENT, phrase: "ок, и что он теперь будет делать?", expect: { first: [], acceptable: ["read_activity", "read_chat"], writes: 0, delivered: 0, maxCalls: 1 } },
+  { id: "r.dup.ru.after-sent-go-again", group: "regression-dup", lang: "ru", context: IMG_SENT, phrase: "ну давай, закидывай", expect: { first: [], acceptable: ["read_activity", "read_chat"], writes: 0, delivered: 0, maxCalls: 0, final: "already_done" } },
+  { id: "r.dup.ru.after-sent-followup", group: "regression-dup", lang: "ru", context: IMG_SENT, phrase: "и ещё скажи ему: в конце прогони тесты", expect: { first: ["send_message"], args: { chat: IMG, text: ["тест"] }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  // Two different explicit commands seconds apart: the second must go through as is.
+  { id: "r.two.ru.second-command", group: "regression-two", lang: "ru", context: IMG_SENT, phrase: "отправь ему ещё одно: после этого обнови README про картинки", expect: { first: ["send_message"], args: { chat: IMG, text: ["readme"] }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.two.en.second-command", group: "regression-two", lang: "en", context: IMG_SENT, phrase: "also send it this: update the README about images afterwards", expect: { first: ["send_message"], args: { chat: IMG, text: ["readme"] }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  // An unclear delivery result: never claimed as sent, not retried on its own; a status question reads, a retry needs the user.
+  { id: "r.unclear.ru.timeout", group: "regression-unclear", lang: "ru", context: IMG_DRAFT_ASKED, scenario: { outcomes: { send_message: ["unknown", "unknown"] } }, phrase: "Да, закидывай", expect: { first: ["send_message"], args: { chat: IMG }, writes: 1, maxCalls: 1, state: "failed" } },
+  { id: "r.unclear.ru.ask-status", group: "regression-unclear", lang: "ru", context: IMG_UNKNOWN, scenario: { outcomes: { send_message: ["unknown"] } }, phrase: "так дошло или нет?", expect: { first: ["read_chat", "read_activity"], args: { chat: IMG }, writes: 0, delivered: 0, maxCalls: 1 } },
+  { id: "r.unclear.ru.retry", group: "regression-unclear", lang: "ru", context: IMG_UNKNOWN, scenario: { outcomes: { send_message: ["unknown", "still_working"] } }, phrase: "давай ещё раз", expect: { first: ["send_message"], args: { chat: IMG }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.neg.ru.prompt-then-send", group: "regression-neg", lang: "ru", context: IMG_CTX, phrase: "напиши ему промпт, и потом закинем в чат", expect: { first: [], writes: 0, delivered: 0, maxCalls: 0, final: "draft" } },
+  { id: "r.neg.ru.ask-agent", group: "regression-neg", lang: "ru", context: IMG_CTX, phrase: "попроси агента подтянуть свежий код", expect: { first: [], writes: 0, delivered: 0, maxCalls: 0, final: "ask" } },
+  { id: "r.neg.ru.lets-tell", group: "regression-neg", lang: "ru", context: IMG_CTX, phrase: "давай ему скажем, чтобы прогнал тесты", expect: { first: [], writes: 0, delivered: 0, maxCalls: 0, final: "ask" } },
+  { id: "r.neg.ru.can-drop", group: "regression-neg", lang: "ru", context: IMG_DRAFT_NOASK, phrase: "можешь закинуть", expect: { first: [], writes: 0, delivered: 0, maxCalls: 0, final: "ask" } },
+  { id: "r.neg.en.write-then-send", group: "regression-neg", lang: "en", context: IMG_CTX, phrase: "write a prompt for it, we'll send it later", expect: { first: [], writes: 0, delivered: 0, maxCalls: 0, final: "draft" } },
+  { id: "r.pos.ru.zakidyvay", group: "regression-pos", lang: "ru", context: IMG_DRAFT_NOASK, phrase: "закидывай", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.pos.ru.otprav", group: "regression-pos", lang: "ru", context: IMG_DRAFT_NOASK, phrase: "отправь", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.pos.ru.tell-now", group: "regression-pos", lang: "ru", context: IMG_CTX, phrase: "скажи ему сейчас: подтяни свежий код и перечитай gpt-site", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "r.pos.ru.yes", group: "regression-pos", lang: "ru", context: IMG_DRAFT_ASKED, phrase: "да", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -493,5 +555,6 @@ const probe = [
 export const CASES = [
   ...core.map((c) => ({ block: "core", ...c })),
   ...write.map((c) => ({ block: "write", ...c })),
+  ...regression.map((c) => ({ block: "regression", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];

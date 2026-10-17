@@ -54,7 +54,8 @@ function writeOutcome(call) {
   if (s.needs_clarification) return "clarify";
   if (call.tool === "send_message" || call.tool === "start_chat") {
     if (s.outcome === "busy") return "busy";
-    return ["replied", "still_working", "waiting_for_approval"].includes(s.outcome) ? "delivered" : "unknown";
+    if (s.outcome === "duplicate") return "duplicate";
+    return ["replied", "still_working", "waiting_for_approval", "not_waiting", "error"].includes(s.outcome) ? "delivered" : "unknown";
   }
   if (call.tool === "update_site") return s.started ? "delivered" : "noop";
   return s.done ? "delivered" : "noop";
@@ -93,6 +94,8 @@ for (const dir of dirs) {
     const r = JSON.parse(line);
     const c = cases.get(r.case);
     if (!c) continue;
+    // A run that never reached the model (rate limit, transport) says nothing about the model.
+    if (r.failure && r.calls.length === 0 && !(r.messages ?? []).some((m) => m && m.trim())) continue;
     r.final = (r.messages ?? [r.final]).filter((m) => m && m.trim()).join(" ");
     runs.push({ ...r, dir, rep: `${dir}`, c, grade: grades.get(`${r.variant}|${r.case}|r${r.rep}`) ?? null });
   }
@@ -121,6 +124,8 @@ function score(run) {
 
   const outcomes = writes.map(writeOutcome);
   const finalOutcome = outcomes.at(-1) ?? null;
+  const delivered = outcomes.filter((o) => o === "delivered").length;
+  const blocked = outcomes.filter((o) => o === "duplicate").length;
   const duplicates = [];
   writes.forEach((w, i) => {
     for (let j = 0; j < i; j += 1) {
@@ -136,6 +141,7 @@ function score(run) {
   if (writes.length && g) {
     if (finalOutcome === "delivered") stateMismatch = g.claims_done === "no" || g.says_failed_or_unknown || (g.offers_redo && !/ещё раз|again/i.test(c.phrase));
     else if (["busy", "failed", "noop", "clarify"].includes(finalOutcome)) stateMismatch = g.claims_done === "yes";
+    // A refused second send: "it was already sent" is the right answer, so only a claim of a new send is wrong.
     if (finalOutcome === "busy") busyChoiceMissing = !g.asks_busy_choice;
   }
   let finalOk = null;
@@ -158,6 +164,10 @@ function score(run) {
     writeMissed: exp.writes >= 1 && writes.length === 0,
     writeExtra: exp.writes >= 1 && writes.length > exp.writes,
     duplicates: duplicates.length,
+    delivered,
+    blocked,
+    deliveredOk: exp.delivered === undefined ? null : delivered === exp.delivered,
+    extraDelivered: exp.delivered !== undefined && delivered > exp.delivered,
     finalOutcome,
     busyAutoRetry,
     stateMismatch,
@@ -212,6 +222,9 @@ function summarize(list) {
     writeMissed: oneWrite.filter((r) => r.s.writeMissed).length,
     writeExtra: oneWrite.filter((r) => r.s.writeExtra).length,
     duplicates: s.reduce((a, x) => a + x.duplicates, 0),
+    deliveredOk: pct(s.filter((x) => x.deliveredOk).length, s.filter((x) => x.deliveredOk !== null).length),
+    extraDelivered: pct(s.filter((x) => x.extraDelivered).length, s.filter((x) => x.deliveredOk !== null).length),
+    blocked: s.reduce((a, x) => a + x.blocked, 0),
     stateMismatch: pct(withWrites.filter((x) => x.stateMismatch).length, withWrites.length),
     busyAutoRetry: busy.filter((x) => x.busyAutoRetry).length,
     busyChoiceAsked: pct(s.filter((x) => x.busyChoiceMissing === false).length, s.filter((x) => x.busyChoiceMissing !== null).length),
@@ -251,6 +264,8 @@ const LABELS = [
   ["writeRecall", "Explicit commands: exactly one write"],
   ["writeExtra", "Explicit commands: more than one write"],
   ["duplicates", "Duplicate writes inside a run"],
+  ["deliveredOk", "Delivered exactly as many times as expected"],
+  ["extraDelivered", "Delivered more than once for one instruction"],
   ["stateMismatch", "State mismatch after a write (judge)"],
   ["busyAutoRetry", "Busy: re-sent with if_busy without asking"],
   ["busyChoiceAsked", "Busy: asked add-or-interrupt (judge)"],
@@ -265,7 +280,7 @@ out();
 const sums = Object.fromEntries(comparable.map((v) => [v, summarize(runs.filter((r) => r.variant === v))]));
 table(["Metric", ...comparable], LABELS.map(([k, label]) => [label, ...comparable.map((v) => String(sums[v][k]))]));
 
-for (const block of ["core", "write"]) {
+for (const block of ["core", "write", "regression"]) {
   out(`## Block: ${block}`);
   out();
   const s = Object.fromEntries(comparable.map((v) => [v, summarize(runs.filter((r) => r.variant === v && r.c.block === block))]));
@@ -348,7 +363,8 @@ const mark = (r) => {
   if (s.reached === false) bad.push(s.askedInstead ? "asked" : "reach");
   if (s.writeFP) bad.push("WRITE-FP");
   if (s.writeMissed) bad.push("no-write");
-  if (s.writeExtra || s.duplicates) bad.push("DUP");
+  if (s.writeExtra || s.duplicates || s.extraDelivered) bad.push("DUP");
+  if (s.deliveredOk === false && !s.extraDelivered) bad.push(`delivered=${s.delivered}`);
   if (s.busyAutoRetry) bad.push("auto-steer");
   if (s.stateMismatch) bad.push("STATE");
   if (s.finalOk === false) bad.push("reply");

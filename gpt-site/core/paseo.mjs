@@ -748,7 +748,7 @@ export async function searchMessages(pairingUrl, { query, project, chat, include
 // Waits up to `seconds` for the agent's turn to end and describes the outcome.
 async function awaitReply(client, agentId, seconds) {
   const wait = clamp(seconds, 0, MAX_WAIT_SECONDS);
-  if (wait === 0) return { text: "Not waiting for the reply; offer to check later.", data: { outcome: "not_waiting" } };
+  if (wait === 0) return { text: "Not waiting for the reply; offer to check later.", data: { outcome: "not_waiting", delivered: true } };
   const state = await client.waitForFinish(agentId, wait * 1000);
   switch (state.status) {
     case "idle":
@@ -756,14 +756,14 @@ async function awaitReply(client, agentId, seconds) {
     case "permission": {
       const pending = state.final?.pendingPermissions?.[0];
       const approval = pending ? describePermission(pending) : "a tool call";
-      return { text: `Agent is waiting for approval: ${approval}.`, data: { outcome: "waiting_for_approval", approval } };
+      return { text: `Agent is waiting for approval: ${approval}.`, data: { outcome: "waiting_for_approval", delivered: true, approval } };
     }
     case "error": {
       const error = truncate(state.error ?? "unknown", 300);
-      return { text: `Agent stopped with an error: ${error}`, data: { outcome: "error", error } };
+      return { text: `Agent stopped with an error: ${error}`, data: { outcome: "error", delivered: true, error } };
     }
     default:
-      return { text: "Agent is still working. Tell the user and offer to check later; do not poll.", data: { outcome: "still_working" } };
+      return { text: "Agent is still working. Tell the user and offer to check later; do not poll.", data: { outcome: "still_working", delivered: true } };
   }
 }
 
@@ -782,7 +782,7 @@ export async function startChat(pairingUrl, { project, prompt, model, thinking, 
     });
     const outcome = await awaitReply(client, agent.id, waitSeconds);
     return {
-      text: `Started a new chat in ${picked.project.name}; the task arrived.\n${outcome.text}`,
+      text: `Started a new chat in ${picked.project.name}; the task arrived. Do not start it again.\n${outcome.text}`,
       data: { chat_id: agent.id, short_id: agent.id.slice(0, 7), project: picked.project.name, ...outcome.data },
     };
   });
@@ -793,18 +793,19 @@ export async function sendMessage(pairingUrl, { chat, text, ifBusy, waitSeconds 
     const picked = await pickChat(client, chat);
     if (picked.ask) return picked.ask;
     const target = picked.chat;
+    const ids = { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project };
     const busy = isRunning(target);
     if (busy && !ifBusy) {
       return {
         text: `Not sent: ${truncate(target.title, 70)} is busy. Ask the user whether to add this to its current work or interrupt it, then call again with if_busy.`,
-        data: { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, outcome: "busy" },
+        data: { ...ids, outcome: "busy", delivered: false },
       };
     }
     await client.sendAgentMessage(target.id, text, busy ? { activeTurnBehavior: ifBusy } : undefined);
     const outcome = await awaitReply(client, target.id, waitSeconds);
     return {
-      text: `Sent to ${truncate(target.title, 70)}; it arrived.\n${outcome.text}`,
-      data: { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, ...outcome.data },
+      text: `Sent to ${truncate(target.title, 70)}; it arrived. Do not send it again.\n${outcome.text}`,
+      data: { ...ids, ...outcome.data },
     };
   });
 }

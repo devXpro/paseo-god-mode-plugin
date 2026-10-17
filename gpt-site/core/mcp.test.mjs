@@ -93,12 +93,16 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.match(text, /^Paseo runs the user's coding agents \(Claude, Codex…\)/);
   assert.match(text, /Speak to the user in Russian/);
   assert.match(text, /по SEO/);
+  assert.match(text, /Not commands, ask «Отправить\?» first: «можешь закинуть»/);
   assert.match(text, /subagents are doing now → read_activity/);
   assert.match(text, /where something was said → search_messages/);
   assert.match(text, /a picture or screenshot from a chat → show_images/);
-  assert.match(text, /call them only when the user explicitly tells you to act now/);
-  assert.match(text, /"ok" or "fine" after a draft you did not ask about/);
-  assert.match(text, /never send it again unless the user says to send it again/);
+  assert.match(text, /call one only when the user's latest words tell you to act now/);
+  assert.match(text, /"ok" after a draft you did not ask about/);
+  for (const phrase of ["write/draft a prompt", "…and then we'll send it", "ask the agent to …", "let's tell it …", "you can/could send it"]) assert.ok(text.includes(phrase), phrase);
+  assert.match(text, /One instruction from the user is one write call/);
+  assert.match(text, /never send it again or a reworded copy, not even after you described or planned what happens next/);
+  assert.match(text, /delivered=true \(replied, still_working, not_waiting\) means it arrived/);
   assert.match(text, /busy = not delivered/);
   assert.match(text, /a plain "send it" means add it \(if_busy steer\)/);
   assert.match(text, /do not poll/);
@@ -107,6 +111,7 @@ test("instructions follow the language and the confirmation setting, and route e
   const plain = await createMcpHandler({ config: readConfig({ PASEO_CONFIRM_RISKY: "off" }), ops })(rpc("server/discover"));
   assert.match(plain.result.instructions, /Answer in the user's language/);
   assert.doesNotMatch(plain.result.instructions, /по SEO/);
+  assert.doesNotMatch(plain.result.instructions, /закинуть/, "language hints only for their language");
   assert.match(plain.result.instructions, /no read-back needed/);
   const marker = "→ search_messages.";
   const routingEnd = text.indexOf(marker) + marker.length;
@@ -176,14 +181,18 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
     assert.match(byName[tool].inputSchema.properties.chat.description, /Keep the chat being discussed/, tool);
   }
   // Write tools: only on an explicit command, the outcome is the truth, no duplicates, no polling.
-  assert.match(byName.send_message.description, /only when the user explicitly tells you to send it now/);
+  assert.match(byName.send_message.description, /when the user's latest words tell you to send now/);
+  assert.match(byName.send_message.description, /One instruction = one call: never split it into several messages, never send it again or a reworded copy/);
   assert.match(byName.send_message.description, /ask "Send it\?" first/);
-  assert.match(byName.send_message.description, /busy = NOT delivered/);
-  assert.match(byName.send_message.description, /never send it again unless the user says to send it again/);
+  assert.match(byName.send_message.description, /delivered=true \(replied, still_working, not_waiting\) means it arrived/);
+  assert.match(byName.send_message.description, /busy means NOT delivered/);
   assert.match(byName.send_message.description, /never say it was sent/);
   assert.match(byName.send_message.inputSchema.properties.if_busy.description, /a plain "send it"/);
-  assert.match(byName.start_chat.description, /explicitly tells you to start one now/);
-  assert.match(byName.start_chat.description, /never start the same task twice/);
+  assert.equal(byName.send_message.inputSchema.properties.again, undefined, "no dedupe switch: a new command always sends");
+  assert.equal(byName.start_chat.inputSchema.properties.again, undefined);
+  assert.deepEqual(byName.send_message.outputSchema.properties.outcome.enum, ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "busy"]);
+  assert.match(byName.start_chat.description, /tell you to start it now/);
+  assert.match(byName.start_chat.description, /One instruction = one chat: never start it twice/);
   assert.match(byName.start_chat.description, /do not poll/);
   assert.match(byName.answer_approval.description, /wait for their yes first/);
   assert.match(byName.answer_approval.description, /use send_message/);
@@ -375,7 +384,8 @@ test("the shapes the operations produce match the declared output schemas", () =
       },
     ],
     ["start_chat", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "replied", reply: "pong" }],
-    ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy" }],
+    ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy", delivered: false }],
+    ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "not_waiting", delivered: true }],
     ["answer_approval", { chat_id: sampleChat.id, done: false, what: null }],
     ["stop_chat", { chat_id: sampleChat.id, done: true }],
     ["update_status", { site_version: "0.1.0", build: "v0.1.0-2-gabc1234", installed_version: "0.1.1", update_available: true, latest_release: "0.2.0", latest_is_newer: true, live_release: 7, mac_online: true, job: { action: "update", state: "running", step: "Publishing", started_at: "2026-10-16T19:00:00.000Z", finished_at: null, message: null, error: null } }],

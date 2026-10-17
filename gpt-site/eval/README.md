@@ -13,7 +13,7 @@ instructions, tool list and argument checks — on top of fake Paseo operations 
 
 | File | What it is |
 | --- | --- |
-| `cases.mjs` | About 90 phrases in Russian and English: direct, indirect, elliptic with an earlier conversation, negative, and a write-safety block (preparing, sending, unclear, discussion, outcome after a call, duplicates). Each has the ideal first call, acceptable ones, arguments, the number of writes and calls. |
+| `cases.mjs` | About 120 phrases in Russian and English: direct, indirect, elliptic with an earlier conversation, negative, a write-safety block (preparing, sending, unclear, discussion, outcome after a call, duplicates) and a regression block from real incidents (`--block regression`). Each has the ideal first call, acceptable ones, arguments, the number of writes, deliveries and calls. |
 | `world.mjs` | The fake Paseo: projects, chats, turns, an approval, subagents, a backgrounded workflow. |
 | `ops.mjs` | The fake operations, built on the version's own `text.mjs` helpers. |
 | `stub.mjs` | The MCP server Codex starts over stdio, one per run. |
@@ -27,13 +27,14 @@ instructions, tool list and argument checks — on top of fake Paseo operations 
 
 ```sh
 node eval/quota.mjs                                                    # before and between runs
-node eval/run.mjs --out after --variants current --filter '^(core|w)\.' --parallel 4
+node eval/run.mjs --out after --variants current --filter '^(core|w|r)\.' --parallel 2
 node eval/judge.mjs after
 node eval/report.mjs before after                                      # → eval/results/report.md
 ```
 
-One run of the whole set is about 92 short Codex sessions, ~14k input tokens each (most of it
-cached), roughly 10% of a Plus 5-hour window with `gpt-6.1-sol` at low effort.
+One run of the whole set is about 117 short Codex sessions, ~14k input tokens each (most of it
+cached), roughly 12% of a Plus 5-hour window with `gpt-6.1-sol` at low effort; run it with
+`--parallel 1` or 2, since that model answers 429 to bursts.
 
 ## Isolation
 

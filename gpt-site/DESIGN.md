@@ -34,6 +34,11 @@ model, the 0.5.0 metadata against the new one (`eval/README.md`, `eval/results/r
   count and was mixed up with it; `search` duplicated `search_messages(chat=…)` and went unused.
 - **Text for speech:** chats by title, project and state, no ids or hashes; ids stay in
   `structuredContent`, which the model also sees.
+- **One instruction, one message (0.7.2).** After a send with `wait_seconds` 0 the model read
+  `not_waiting` as unconfirmed and sent a reworded copy. Results now say `delivered`, `not_waiting`
+  counts as delivered, and the rules forbid sending again after `delivered: true`. There is on
+  purpose no server-side cooldown or dedupe (decided 2026-10-17): a time window blocked a second,
+  different command, and ChatGPT passes no id of the user's instruction to build idempotency on.
 
 ## 0.3: what changed, and why this way
 

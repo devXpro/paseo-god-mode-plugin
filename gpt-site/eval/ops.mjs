@@ -25,6 +25,9 @@ export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersio
   const { resolve, chatData, chatLine, candidatesText, describePermission, latestFirstWithin, toIso, toolCallData, truncate, snippet, releaseData, describeRelease, chatState } = text;
   // Since 0.6.0: reads pick the one active chat, read_activity and subagent counts exist.
   const modern = typeof text.activityData === "function";
+  // Since 0.7.2 send results say whether the message arrived; earlier versions do not.
+  const saysDelivered = text.repliedOutcome?.("x")?.data?.delivered === true;
+  const flag = (delivered) => (saysDelivered ? { delivered } : {});
   const now = world.now;
   const queues = Object.fromEntries(Object.entries(scenario.outcomes ?? {}).map(([k, v]) => [k, [...v]]));
   const state = { recording: true, created: 0 };
@@ -339,15 +342,20 @@ export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersio
   }
 
   function outcomeOf(outcome) {
-    if (outcome === "replied") return { text: "Agent replied: Принял, делаю.", data: { outcome: "replied", reply: "Принял, делаю." } };
-    return { text: "Agent is still working. Tell the user and offer to check later; do not poll.", data: { outcome: "still_working" } };
+    if (outcome === "replied") return { text: "Agent replied: Принял, делаю.", data: { outcome: "replied", ...flag(true), reply: "Принял, делаю." } };
+    if (outcome === "not_waiting") return { text: "Not waiting for the reply; offer to check later.", data: { outcome: "not_waiting", ...flag(true) } };
+    return { text: "Agent is still working. Tell the user and offer to check later; do not poll.", data: { outcome: "still_working", ...flag(true) } };
   }
 
   async function startChat(_url, { project, prompt, model, thinking, mode, waitSeconds } = {}) {
-    const outcome = takeOutcome("start_chat");
-    log("startChat", { project, prompt, model, thinking, mode, waitSeconds }, outcome);
     const picked = pickProject(project);
-    if (picked.ask) return picked.ask;
+    if (picked.ask) {
+      log("startChat", { project, prompt, model, thinking, mode, waitSeconds }, "needs_clarification");
+      return picked.ask;
+    }
+    let outcome = takeOutcome("start_chat");
+    if (outcome === "still_working" && waitSeconds === 0) outcome = "not_waiting";
+    log("startChat", { project, prompt, model, thinking, mode, waitSeconds }, outcome);
     fail(outcome);
     state.created += 1;
     const id = state.created === 1 ? NEW_CHAT_ID : `${NEW_CHAT_ID.slice(0, 35)}${state.created}`;
@@ -370,22 +378,24 @@ export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersio
   }
 
   async function sendMessage(_url, { chat, text: message, ifBusy, waitSeconds } = {}) {
+    const args = { chat, text: message, ifBusy, waitSeconds };
     const picked = pickChat(chat);
     if (picked.ask) {
-      log("sendMessage", { chat, text: message, ifBusy, waitSeconds }, "needs_clarification");
+      log("sendMessage", args, "needs_clarification");
       return picked.ask;
     }
     const target = picked.chat;
+    const ids = { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project };
     if (isRunning(target) && !ifBusy) {
-      log("sendMessage", { chat, text: message, ifBusy, waitSeconds }, "busy");
+      log("sendMessage", args, "busy");
       return {
         text: `Not sent: ${truncate(target.title, 70)} is busy. Ask the user whether to add this to its current work or interrupt it, then call again with if_busy.`,
-        data: { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, outcome: "busy" },
+        data: { ...ids, outcome: "busy", ...flag(false) },
       };
     }
     let outcome = takeOutcome("send_message");
-    if (outcome === "auto") outcome = "still_working";
-    log("sendMessage", { chat, text: message, ifBusy, waitSeconds }, outcome);
+    if (outcome === "auto") outcome = waitSeconds === 0 ? "not_waiting" : "still_working";
+    log("sendMessage", args, outcome);
     fail(outcome);
     const result = outcomeOf(outcome);
     target.turns.push({ at: new Date(now).toISOString(), end: null, user: message, agent: result.data.reply ? [result.data.reply] : [], calls: [] });

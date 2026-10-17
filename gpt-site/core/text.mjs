@@ -356,10 +356,10 @@ export function imageHint(turn, count) {
 export function repliedOutcome(message) {
   const { text, images } = withImagePlaceholders(message ?? "(no text)");
   const reply = truncate(text, 1500);
-  if (images.length === 0) return { text: `Agent replied: ${reply}`, data: { outcome: "replied", reply } };
+  if (images.length === 0) return { text: `Agent replied: ${reply}`, data: { outcome: "replied", delivered: true, reply } };
   return {
     text: `Agent replied: ${reply}\nThe reply has ${images.length} image(s); show_images puts them on the user's screen.`,
-    data: { outcome: "replied", reply, images: images.length },
+    data: { outcome: "replied", delivered: true, reply, images: images.length },
   };
 }
 

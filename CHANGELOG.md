@@ -7,6 +7,20 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-17
+
+### Fixed
+
+- One explicit "yes, send it" could reach an agent twice. With `wait_seconds` 0 the result said
+  `not_waiting`, which the rules did not name as delivered; the model took the send as unconfirmed
+  and sent a reworded copy 9 s later. Now every `send_message` and `start_chat` result says
+  `delivered: true|false`, `not_waiting` counts as delivered, and the rules say one instruction is
+  one write call, never split and never sent again after `delivered: true`. There is no
+  server-side cooldown or dedupe: a new explicit command always goes through.
+- The rules name which words are a command to send ("send it", "send it now", "tell it now", yes
+  to "Send it?") and which are not ("write a prompt… and then we'll send it", "ask the agent to…",
+  "let's tell it…", "you can/could send it"), with a Russian hint for the Russian phrasings.
+
 ## [0.7.1] - 2026-10-17
 
 ### Fixed

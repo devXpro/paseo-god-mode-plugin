@@ -244,6 +244,25 @@ export function createWorld(now = Date.now()) {
         },
       ],
     }),
+    chat({
+      id: "b7c07333-6b31-45d1-b43f-e81cc5333c1a",
+      title: "Исследуй отдельную проблему в Paseo God Mode: изображения",
+      project: "jobby-jobs",
+      workspace: "images",
+      status: "idle",
+      attention: "finished",
+      updatedAt: ago(7 * 60),
+      createdAt: ago(8 * 60),
+      turns: [
+        {
+          at: ago(8 * 60),
+          end: ago(7 * 60),
+          user: "Исследуй, почему картинки из чатов Paseo не доходят до ChatGPT через God Mode.",
+          agent: ["Путь на стороне Paseo разобрал целиком, место потери нашёл: сайт не читает файлы картинок. Предлагаю show_images с виджетом. Жду решения."],
+          calls: [read("gpt-site/core/paseo.mjs")],
+        },
+      ],
+    }),
   ];
 
   return { now, projects, chats, ago };

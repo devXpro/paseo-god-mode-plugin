@@ -76,7 +76,7 @@ function runBatch(items, outFile) {
   const lastFile = `${outFile}.last-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
   const args = [
     "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
-    "-C", join(HERE, "workdir"), "-s", "read-only", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"',
+    "-C", join(HERE, "workdir"), "-s", "read-only", "-m", process.env.JUDGE_MODEL ?? "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"',
     ...DISABLED.flatMap((f) => ["--disable", f]),
     "-c", 'web_search="disabled"', "-c", "project_root_markers=[]", "-c", "skills.include_instructions=false",
     "-c", "include_permissions_instructions=false", "-c", "include_environment_context=false", "-c", "include_apps_instructions=false",

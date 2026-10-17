@@ -305,8 +305,8 @@ test("a step that is an image reads as one, not as a path", () => {
 });
 
 test("a write's reply counts its images instead of reading their paths", () => {
-  assert.deepEqual(repliedOutcome("pong"), { text: "Agent replied: pong", data: { outcome: "replied", reply: "pong" } });
+  assert.deepEqual(repliedOutcome("pong"), { text: "Agent replied: pong", data: { outcome: "replied", delivered: true, reply: "pong" } });
   const shot = repliedOutcome(`Done: ![Image](${SHOT})`);
   assert.equal(shot.text, "Agent replied: Done: [image 1]\nThe reply has 1 image(s); show_images puts them on the user's screen.");
-  assert.deepEqual(shot.data, { outcome: "replied", reply: "Done: [image 1]", images: 1 });
+  assert.deepEqual(shot.data, { outcome: "replied", delivered: true, reply: "Done: [image 1]", images: 1 });
 });
