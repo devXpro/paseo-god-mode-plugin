@@ -7,6 +7,22 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-17
+
+### Added
+
+- `plugin_read` and `plugin_action`: ChatGPT reads and drives Paseo plugins that describe
+  themselves. A plugin answers the RPC `meta.describe` with the `paseo.capabilities/1` shape (its
+  operations, the real RPC behind each, the arguments as JSON Schema, fixed arguments, and a risk);
+  God Mode lists them, resolves spoken names, checks arguments before the call and trims answers
+  to the fields the plugin marks. No plugin is known to God Mode by name: a new plugin that
+  implements the contract needs no God Mode release. The contract is in
+  [docs/plugin-capabilities.md](docs/plugin-capabilities.md).
+- Actions above `low` risk return `needs_confirmation` with the text to read out and a token bound
+  to the exact arguments for two minutes; they run on the second call, after the user's yes.
+  `plugin_action` needs a signed-in ChatGPT user.
+- The release check calls `plugin_read` through the live plugin.
+
 ## [0.7.2] - 2026-10-17
 
 ### Fixed

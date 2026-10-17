@@ -11,6 +11,9 @@
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
 //   node core/probe.mjs stop <chat>
+//   node core/probe.mjs plugins
+//   node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
+//   node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
 //
 // --json prints the structured data instead of the text; images print their size, never their
 // bytes, and --save writes them to DIR to look at. The pairing URL comes
@@ -24,6 +27,8 @@ import {
   answerApproval,
   listChats,
   overview,
+  pluginAction,
+  pluginRead,
   readActivity,
   readChat,
   searchMessages,
@@ -63,6 +68,8 @@ const { values, positionals } = parseArgs({
     count: { type: "string" },
     save: { type: "string" },
     request: { type: "string" },
+    args: { type: "string" },
+    confirm: { type: "string" },
     json: { type: "boolean" },
   },
 });
@@ -115,6 +122,10 @@ const operations = {
     sendMessage(url, { chat: first, text: rest.join(" "), ifBusy: values["if-busy"], waitSeconds: number(values.wait, 15) }),
   approve: () => answerApproval(url, { chat: first, decision: rest[0], request: values.request }),
   stop: () => stopChat(url, { chat: first }),
+  plugins: () => pluginRead(url, {}),
+  "plugin-read": () => pluginRead(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined }),
+  "plugin-act": () =>
+    pluginAction(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined, confirmation: values.confirm }),
 };
 
 if (!operations[command]) {
@@ -122,7 +133,7 @@ if (!operations[command]) {
   process.exit(2);
 }
 const result = await operations[command]();
-console.log(values.json ? JSON.stringify(result.data, null, 2) : result.text);
+console.log(values.json ? JSON.stringify(result.data ?? result, null, 2) : (result.text ?? result.invalid ?? result.error));
 for (const image of result.meta?.["god-mode/images"]?.images ?? []) {
   const bytes = Buffer.from(image.data, "base64");
   console.log(`image: turn ${image.turn} #${image.n} ${image.mime} ${bytes.length} bytes`);

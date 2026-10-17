@@ -113,10 +113,13 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | `send_message` | write | To an existing chat. If the chat is busy it asks first; `if_busy` = `steer` (add to the current work) or `interrupt`. |
 | `answer_approval` | write | Allow or deny a pending request, pressing the same action the app shows ("Implement", "Reject"). Requests are described as what will happen: "plan: …", "run: …", "edit …". |
 | `stop_chat` | write, destructive | Cancels the running turn. |
+| `plugin_read` | read | What Paseo plugins offer, for plugins that answer `meta.describe` (§11). Without `plugin`: every installed plugin with its reads and actions, or why it has none. With `plugin` (id, title, alias or spoken words) and no `operation`: its main read. Answers are trimmed to the fields the plugin marks, secret-looking keys redacted. |
+| `plugin_action` | write, destructive, open world | One action a plugin describes. A `low`-risk one runs at once; anything else returns `needs_confirmation` with the text to read out and a token bound to the exact arguments, and runs on the second call with it. `done` comes with `delivered: true`. |
 | `get_logs` | read | The call log; works without the pairing link. |
 
-Not exposed: terminals, files, git, schedules, plugins, daemon control. The pairing link can do
-all of it; the Site never will. The one file read is an image a chat already shows (§10).
+Not exposed: terminals, files, git, schedules, plugin management, daemon control. The pairing
+link can do all of it; the Site never will. The one file read is an image a chat already shows
+(§10), and plugins are reached only through the operations they describe themselves (§11).
 
 Results are text for speech next to `structuredContent`; chats read `<title> (<project>): <state>, <age>`,
 never with ids, which travel in the data.
@@ -175,6 +178,7 @@ No pruning yet: at a few hundred bytes a row, D1's 10 GB lasts for years.
 ```
 core/text.mjs        pure: name matching, truncation, lines for chats, tool calls, permissions
 core/paseo.mjs       relay connection and the Paseo operations
+core/capabilities.mjs pure: plugins' meta.describe checked, names resolved, arguments checked, answers trimmed, confirmation tokens
 core/widget.mjs      the show_images widget (MCP Apps), one self-contained HTML string
 eval/                the tool-selection eval: cases, stub server, runner, judge, report
 core/mcp.mjs         settings, instructions, tool metadata, JSON-RPC dispatch, logging hooks
@@ -236,3 +240,26 @@ on web, iOS text and iOS Live voice, and whether the model sees the images in th
 one, or not at all. If Live never sees them, the fallback is a description made on the Site with the
 Responses API (`input_image`), which needs an `OPENAI_API_KEY` Site secret.
 
+## 11. Plugins
+
+Paseo gives a remote client plugin ids and a blind `invokePluginRpc`: no method list, no schemas,
+nothing that says which call reads and which one acts. So a plugin opts in by answering the RPC
+`meta.describe` with the `paseo.capabilities/1` shape, specified for plugin authors in
+[docs/plugin-capabilities.md](../docs/plugin-capabilities.md). The Site knows no plugin by name.
+
+- **Discovery, per call.** `plugin.list`, then `meta.describe` on every running plugin at once,
+  4 s each; a plugin that has no such RPC is reported as offering nothing to ChatGPT. An exact
+  plugin id asks that plugin alone. No cache: it adds about 0.3 s to the relay connection, and a
+  plugin updated a minute ago is described as it is now (measured live: the catalog in 0.97 s,
+  a read in 1.1 s).
+- **Checked, not trusted blindly.** `core/capabilities.mjs` drops a broken operation with its
+  reason and keeps the rest; `meta.*` is never an operation; a fixed argument may not also be
+  offered. An action without a known risk counts as destructive, and only `low` may skip asking.
+- **Arguments.** The schema each operation advertises is checked before the call (type, const,
+  enum, anyOf, bounds, required); unknown arguments are refused with what the operation takes,
+  and `fixed` ones are merged in and cannot be changed. The plugin's own zod contract checks again.
+- **Confirmation.** `needs_confirmation` carries `confirm_text` (the plugin's, else its title)
+  and a token: HMAC-SHA256 over plugin, operation, method and canonical arguments, keyed from the
+  pairing link, valid two minutes. It proves what was put to the user; their yes is ChatGPT's
+  part. It is not spent on use: `done` says `delivered: true`, and the rules say never repeat it.
+- **Who.** `plugin_action` needs a signed-in ChatGPT user, like `update_site`.

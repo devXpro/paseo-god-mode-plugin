@@ -9,6 +9,8 @@ const tools: Array<[string, string]> = [
   ["send_message", "A follow-up or an answer to an existing chat."],
   ["answer_approval", "Allow or deny what a chat is waiting for."],
   ["stop_chat", "Cancel what a chat is doing now."],
+  ["plugin_read", "What your Paseo plugins offer, and what one of them says now."],
+  ["plugin_action", "Have a plugin do something; anything more than a harmless change asks you first."],
   ["update_status", "Which God Mode version is live, and whether there is an update."],
   ["update_site", "Update God Mode from the Mac, or roll it back."],
   ["get_logs", "This plugin's own call log, for troubleshooting."],

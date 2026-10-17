@@ -10,8 +10,8 @@ import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 const READ_VIEWS = ["text", "commands"];
-// Tools that act on agents: when one fails, nobody knows whether it took effect.
-const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site"]);
+// Tools that act on agents or plugins: when one fails, nobody knows whether it took effect.
+const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site", "plugin_action"]);
 const CALL_DEADLINE_MS = 45_000;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
@@ -55,7 +55,7 @@ const COMMAND_HINTS = {
 export function buildInstructions(config) {
   const lines = [
     "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
-    "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages.",
+    "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages. Paseo plugins (beyond agent chats) → plugin_read.",
     'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
     "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Reuse ids from earlier results instead of listing again. Names work too: the tools resolve what the user said and offer candidates when unsure.',
@@ -218,6 +218,31 @@ const SKIPPED_IMAGE = {
 };
 
 const object = (properties) => ({ type: "object", properties: { ...properties, needs_clarification: CLARIFY_OUT } });
+
+const PLUGIN_ACTION_OUT = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "The operation to pass to plugin_action." },
+    title: { type: "string" },
+    args: { type: "string", description: 'What it takes, e.g. "minutes: 30 | 60 (required)", or "no arguments".' },
+    asks_first: { type: "boolean", description: "It returns needs_confirmation first; it runs after the user's yes." },
+  },
+};
+
+const PLUGIN_OUT = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    title: { type: "string" },
+    summary: { type: "string" },
+    available: { type: "boolean", description: "false: installed, but it offers nothing to ChatGPT (see reason)." },
+    reason: { type: "string" },
+    reads: { type: "array", items: { type: "string" } },
+    actions: { type: "array", items: PLUGIN_ACTION_OUT },
+  },
+};
+
+const PLUGIN_RESULT = { type: "object", description: "The plugin's answer, trimmed to the fields it marked worth reading; a list or a bare value comes as value." };
 
 // ---- The show_images widget (MCP Apps) ----------------------------------------------------------
 // The URI carries a fingerprint of the HTML: ChatGPT caches a template by its URI for up to an hour.
@@ -452,6 +477,56 @@ export const TOOLS = [
     annotations: { ...write, destructiveHint: true },
   },
   {
+    name: "plugin_read",
+    description:
+      "Use this for what the user's Paseo plugins know or can do, beyond agent chats. Without plugin: the plugins that offer something to ChatGPT, each with its reads and actions. With a plugin (its id, or the name the user said) and no operation: its main status; or pass a read from that list, with args when it takes any. One call answers, and it also lists the plugin's actions with their arguments, so plugin_action needs no lookup first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        plugin: { type: "string", description: "The plugin: its id from earlier results, or the name the user said. Leave empty to list the plugins." },
+        operation: { type: "string", description: "A read of that plugin, by id; leave empty for its main status." },
+        args: { type: "object", description: "The read's arguments, when it takes any." },
+      },
+    },
+    outputSchema: object({
+      plugins: { type: "array", items: PLUGIN_OUT, description: "Without plugin: every installed plugin, the ones ChatGPT cannot use with the reason." },
+      plugin: { type: "string" },
+      title: { type: "string" },
+      operation: { type: "string" },
+      result: PLUGIN_RESULT,
+      actions: { type: "array", items: PLUGIN_ACTION_OUT },
+    }),
+    annotations: readOnly,
+  },
+  {
+    name: "plugin_action",
+    description:
+      "Use this only when the user's latest words tell a plugin to do something now. Pass plugin, operation and args as plugin_read lists them. An action that asks first returns needs_confirmation: say confirm_text to the user and, only after their yes, call again with the same plugin, operation and args plus confirmation. outcome done (delivered=true) means it ran: never call it again for that request.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        plugin: { type: "string", description: "The plugin: its id from plugin_read, or the name the user said." },
+        operation: { type: "string", description: "The action's id from plugin_read." },
+        args: { type: "object", description: "The action's arguments as plugin_read lists them; the ones the action fixes itself are left out." },
+        confirmation: { type: "string", description: "From needs_confirmation, and only after the user said yes to its confirm_text." },
+      },
+      required: ["plugin", "operation"],
+    },
+    outputSchema: object({
+      plugin: { type: "string" },
+      title: { type: "string" },
+      operation: { type: "string" },
+      outcome: { type: "string", enum: ["done", "needs_confirmation"] },
+      delivered: { type: "boolean", description: "true: the action ran, never repeat it. false: nothing happened yet." },
+      confirm_text: { type: "string", description: "What to tell the user before they say yes." },
+      confirmation: { type: "string", description: "Pass back with the same arguments after the user's yes." },
+      expires_at: time,
+      result: PLUGIN_RESULT,
+    }),
+    // A plugin action can reach anything the plugin reaches, people included.
+    annotations: { ...write, destructiveHint: true, openWorldHint: true },
+  },
+  {
     name: "update_status",
     description:
       "Use this when the user asks which version of God Mode (this plugin) is live, whether there is an update, or how an update or rollback is going; and once before update_site. One call; it also tells how the last one ended.",
@@ -521,6 +596,8 @@ function requireStrings(args, names) {
   return missing.length ? `Missing ${missing.join(", ")}.` : null;
 }
 
+const isArgs = (value) => value === undefined || (value !== null && typeof value === "object" && !Array.isArray(value));
+
 // Maps a tool call to its operation. Returns the operation's { text, data },
 // or { invalid } for bad arguments.
 async function dispatch(name, args, config, ops, log, caller) {
@@ -581,6 +658,15 @@ async function dispatch(name, args, config, ops, log, caller) {
       return (need("chat", "decision") && { invalid: need("chat", "decision") }) || ops.answerApproval(url, { chat: args.chat, decision: args.decision, request: args.request });
     case "stop_chat":
       return (need("chat") && { invalid: need("chat") }) || ops.stopChat(url, { chat: args.chat });
+    case "plugin_read":
+      if (!isArgs(args.args)) return { invalid: "args must be an object." };
+      return ops.pluginRead(url, { plugin: args.plugin || undefined, operation: args.operation || undefined, args: args.args });
+    case "plugin_action":
+      if (need("plugin", "operation")) return { invalid: need("plugin", "operation") };
+      if (!isArgs(args.args)) return { invalid: "args must be an object." };
+      // Like update_site: Sites marks a signed-in ChatGPT user, and service access carries no one.
+      if (!caller?.identified) return { error: "plugin_action needs a signed-in ChatGPT user; it is not available to service access." };
+      return ops.pluginAction(url, { plugin: args.plugin, operation: args.operation, args: args.args, confirmation: args.confirmation || undefined });
     case "update_status":
       return ops.releaseStatus(url, { siteVersion: VERSION, build: BUILD.source });
     case "update_site":

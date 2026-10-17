@@ -80,6 +80,9 @@ flowchart LR
 - Send a follow-up, or steer or interrupt a busy agent.
 - Approve or deny what an agent asks for.
 - Stop an agent.
+- Read and use your other Paseo plugins, the ones that describe themselves to ChatGPT with
+  `meta.describe` ([the contract](docs/plugin-capabilities.md)); anything beyond a harmless,
+  undoable change is read back to you and runs after your yes.
 - Check which version of God Mode is live, update it or roll it back.
 
 ## Updates and rollback

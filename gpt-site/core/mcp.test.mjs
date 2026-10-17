@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -134,11 +134,11 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes thirteen tools, output schemas and honest annotations", async () => {
+test("tools/list exposes fifteen tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
-    ["overview", "list_chats", "read_chat", "read_activity", "show_images", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "update_status", "update_site", "get_logs"],
+    ["overview", "list_chats", "read_chat", "read_activity", "show_images", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "plugin_read", "plugin_action", "update_status", "update_site", "get_logs"],
   );
   for (const tool of result.tools) {
     assert.equal(Boolean(tool.outputSchema), tool.name !== "get_logs", `${tool.name} outputSchema`);
@@ -154,7 +154,13 @@ test("tools/list exposes thirteen tools, output schemas and honest annotations",
   assert.equal(byName.update_status.annotations.readOnlyHint, true);
   assert.equal(byName.update_site.annotations.destructiveHint, true);
   assert.match(byName.update_site.description, /wait for the user's yes before calling/);
-  assert.ok(TOOLS.every((t) => t.annotations.openWorldHint === false));
+  assert.equal(byName.plugin_read.annotations.readOnlyHint, true);
+  assert.equal(byName.plugin_action.annotations.readOnlyHint, false);
+  assert.equal(byName.plugin_action.annotations.destructiveHint, true);
+  assert.equal(byName.plugin_action.annotations.openWorldHint, true, "a plugin can reach people and services");
+  assert.ok(TOOLS.filter((t) => t.name !== "plugin_action").every((t) => t.annotations.openWorldHint === false));
+  assert.equal(byName.plugin_read.inputSchema.required, undefined, "plugin_read without a plugin lists them");
+  assert.deepEqual(byName.plugin_action.inputSchema.required, ["plugin", "operation"]);
   assert.match(byName.read_chat.description, /turns=5/);
   assert.match(byName.search_messages.description, /Do not read chats one by one/);
   assert.deepEqual(byName.read_chat.inputSchema.properties.view.enum, ["text", "commands"]);
@@ -392,6 +398,14 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["update_status", { site_version: "0.1.0", build: null, installed_version: null, update_available: null, latest_release: null, latest_is_newer: null, live_release: null, mac_online: false }],
     ["update_site", { started: true, action: "update", job_id: "j1", message: "update started" }],
   ];
+  const lampAction = { id: "dim", title: "Dim the lamp", args: "level: 10 | 50 (required)", asks_first: false };
+  cases.push(
+    ["plugin_read", { plugins: [{ id: "lamp", title: "Desk lamp", summary: "The lamp.", available: true, reads: ["state"], actions: [lampAction] }, { id: "voice", title: "voice", available: false, reason: "does not describe itself to ChatGPT" }] }],
+    ["plugin_read", { plugin: "lamp", title: "Desk lamp", operation: "state", result: { on: true, level: 50 }, actions: [lampAction] }],
+    ["plugin_read", { needs_clarification: { kind: "plugin", query: "light", candidates: [] } }],
+    ["plugin_action", { plugin: "lamp", title: "Desk lamp", operation: "off", outcome: "needs_confirmation", delivered: false, confirm_text: "Turn the lamp off.", confirmation: "abc.def", expires_at: "2026-10-17T12:02:00.000Z" }],
+    ["plugin_action", { plugin: "lamp", title: "Desk lamp", operation: "dim", outcome: "done", delivered: true, result: { on: true, level: 10 } }],
+  );
   for (const [tool, data] of cases) {
     assert.deepEqual(validate(schemaOf(tool), data), [], tool);
   }
@@ -408,6 +422,39 @@ test("update_site runs only for a signed-in ChatGPT user, with a known action", 
   assert.equal((await signedIn(call("update_site", { action: "deploy-anything" }))).error.code, -32602);
   await signedIn(call("update_site", { action: "rollback" }));
   assert.deepEqual(calls.map((c) => [c.name, c.args]), [["releaseStart", { action: "rollback" }]]);
+});
+
+test("plugin_read and plugin_action pass their arguments; actions need a signed-in ChatGPT user", async () => {
+  const { ops, calls } = fakeOps();
+  const anonymous = createMcpHandler({ config: configured(), ops });
+  await anonymous(call("plugin_read", {}));
+  await anonymous(call("plugin_read", { plugin: "lamp", operation: "state", args: { room: "desk" } }));
+  assert.equal((await anonymous(call("plugin_read", { plugin: "lamp", args: [1] }))).error.code, -32602);
+  const refused = await anonymous(call("plugin_action", { plugin: "lamp", operation: "dim", args: { level: 10 } }));
+  assert.equal(refused.result.isError, true);
+  assert.match(refused.result.content[0].text, /signed-in ChatGPT user/);
+  const signedIn = createMcpHandler({ config: configured(), ops, caller: { identified: true } });
+  assert.equal((await signedIn(call("plugin_action", { plugin: "lamp" }))).error.code, -32602, "an action needs its operation");
+  await signedIn(call("plugin_action", { plugin: "lamp", operation: "off", confirmation: "abc.def" }));
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.args]),
+    [
+      ["pluginRead", { plugin: undefined, operation: undefined, args: undefined }],
+      ["pluginRead", { plugin: "lamp", operation: "state", args: { room: "desk" } }],
+      ["pluginAction", { plugin: "lamp", operation: "off", args: undefined, confirmation: "abc.def" }],
+    ],
+  );
+});
+
+test("a failed plugin action never reads as done", async () => {
+  const { ops } = fakeOps({
+    pluginAction: () => {
+      throw new Error("Request failed: lamp is unplugged");
+    },
+  });
+  const outcome = await createMcpHandler({ config: configured(), ops, caller: { identified: true } })(call("plugin_action", { plugin: "lamp", operation: "dim" }));
+  assert.equal(outcome.result.isError, true);
+  assert.match(outcome.result.content[0].text, /Unknown whether it took effect/);
 });
 
 test("update_status asks the Mac with the version this Site is built from", async () => {

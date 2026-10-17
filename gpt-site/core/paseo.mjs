@@ -39,6 +39,20 @@ import {
   withImagePlaceholders,
   withoutImages,
 } from "./text.mjs";
+import {
+  actionsLine,
+  actionSummary,
+  checkConfirmation,
+  DESCRIBE_METHOD,
+  issueConfirmation,
+  parseCapabilities,
+  pickOperation,
+  pickPlugin,
+  prepareArgs,
+  projectResult,
+  resultLines,
+  signature,
+} from "./capabilities.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const MAX_WAIT_SECONDS = 25;
@@ -902,4 +916,163 @@ export async function releaseStart(pairingUrl, { action }) {
       throw error;
     }
   });
+}
+
+// ---- Plugins that describe themselves (meta.describe) ----------------------------------------
+// Every running plugin is asked for its paseo.capabilities/1 description; the ones that answer are
+// what plugin_read and plugin_action offer, and nothing here knows a plugin by name. No cache: the
+// list and the descriptions add about 0.3 s to the relay connection, and a plugin updated a minute
+// ago is described as it is now.
+
+const DESCRIBE_TIMEOUT_MS = 4_000;
+
+function within(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what}: no answer within ${ms / 1000} s`)), ms);
+    }),
+  ]);
+}
+
+// The installed plugins, each with its capabilities or the reason it has none. A query that is
+// exactly a plugin's id asks that plugin alone.
+async function describePlugins(client, query) {
+  const listed = await client.listPlugins();
+  const wanted = String(query ?? "").trim().toLowerCase();
+  const exact = wanted ? listed.find((p) => p.id.toLowerCase() === wanted) : null;
+  return Promise.all(
+    (exact ? [exact] : listed).map(async (plugin) => {
+      const entry = { id: plugin.id, name: plugin.name ?? plugin.id, capabilities: null, reason: "" };
+      if (plugin.status !== "running") return { ...entry, reason: `not running (${plugin.status})` };
+      try {
+        const parsed = parseCapabilities(await within(client.invokePluginRpc(plugin.id, DESCRIBE_METHOD, {}), DESCRIBE_TIMEOUT_MS, DESCRIBE_METHOD));
+        return parsed.invalid ? { ...entry, reason: `its ${DESCRIBE_METHOD} is not usable: ${parsed.invalid}` } : { ...entry, capabilities: parsed.capabilities };
+      } catch (error) {
+        const message = String(error?.message ?? error);
+        return { ...entry, reason: /does not contribute RPC/i.test(message) ? "does not describe itself to ChatGPT" : truncate(message, 160) };
+      }
+    }),
+  );
+}
+
+function pluginData(entry) {
+  const caps = entry.capabilities;
+  if (!caps) return { id: entry.id, title: entry.name, available: false, reason: entry.reason };
+  return {
+    id: entry.id,
+    title: caps.title,
+    summary: caps.summary,
+    available: true,
+    reads: caps.operations.filter((op) => op.kind === "read").map((op) => op.id),
+    actions: caps.operations.filter((op) => op.kind === "action").map(actionSummary),
+  };
+}
+
+function catalogText(entries) {
+  const usable = entries.filter((e) => e.capabilities);
+  const others = entries.filter((e) => !e.capabilities);
+  const lines = [usable.length ? "Plugins ChatGPT can use:" : "No installed plugin offers anything to ChatGPT yet."];
+  for (const { id, capabilities: caps } of usable) {
+    const reads = caps.operations.filter((op) => op.kind === "read").map((op) => `${op.id}${op.default ? " (main)" : ""}`);
+    lines.push(`- ${caps.title} (${id}): ${caps.summary}`.trimEnd());
+    lines.push(`  Reads (plugin_read): ${reads.join(", ") || "none"}.`);
+    const actions = actionsLine(caps);
+    if (actions) lines.push(`  ${actions}`);
+  }
+  if (others.length) lines.push(`Installed, nothing for ChatGPT: ${others.map((e) => `${e.name} (${e.reason})`).join("; ")}.`);
+  return lines.join("\n");
+}
+
+// A plugin the user named, among those that describe themselves, or the question to ask.
+async function pickDescribed(client, query) {
+  const entries = await describePlugins(client, query);
+  const found = pickPlugin(entries, query);
+  if (found.match && !found.match.capabilities) {
+    return { ask: { text: `${found.match.name} is installed but offers nothing to ChatGPT: ${found.match.reason}.`, data: { plugins: [pluginData(found.match)] } } };
+  }
+  if (found.match) return { entry: found.match };
+  const usable = entries.filter((e) => e.capabilities);
+  const names = found.candidates.length ? found.candidates : usable;
+  const lines = names.map((e) => `${e.capabilities?.title ?? e.name} (${e.id})`);
+  const text = found.candidates.length
+    ? candidatesText("plugin", query, lines)
+    : `No plugin matches "${query}". ${usable.length ? `Plugins ChatGPT can use: ${lines.join(", ")}.` : "No installed plugin offers anything to ChatGPT."}`;
+  return { ask: clarification("plugin", query, text, names.map(pluginData)) };
+}
+
+function operationQuestion(entry, query, candidates, kind) {
+  const caps = entry.capabilities;
+  const lines = candidates.map((op) => `${op.id}: ${op.title}${kind === "action" ? ` (${signature(op)})` : ""}`);
+  const text = query ? candidatesText(`${caps.title} ${kind}`, query, lines) : `Name the ${kind} of ${caps.title} to use:\n${lines.map((l) => `- ${l}`).join("\n")}`;
+  return clarification("operation", query, text, candidates.map((op) => ({ id: op.id, title: op.title })));
+}
+
+export async function pluginRead(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => pluginReadOn(client, args));
+}
+
+// plugin_read over an open connection: without a plugin, what every plugin offers; with one, one
+// of its reads (its main one unless named), trimmed to the fields it marked worth reading.
+export async function pluginReadOn(client, { plugin, operation, args } = {}) {
+  if (!String(plugin ?? "").trim()) {
+    const entries = await describePlugins(client);
+    return { text: catalogText(entries), data: { plugins: entries.map(pluginData) } };
+  }
+  const picked = await pickDescribed(client, plugin);
+  if (picked.ask) return picked.ask;
+  const { entry } = picked;
+  const caps = entry.capabilities;
+  const found = pickOperation(caps, operation, "read");
+  if (found.wrongKind) return { invalid: `${found.wrongKind.id} is an action of ${caps.title}: use plugin_action.` };
+  if (!found.match) return operationQuestion(entry, operation, found.candidates, "read");
+  const op = found.match;
+  const prepared = prepareArgs(op, args);
+  if (prepared.invalid) return { invalid: prepared.invalid };
+  const result = projectResult(op, await client.invokePluginRpc(entry.id, op.method, prepared.args));
+  return {
+    text: [`${caps.title} · ${op.title}`, resultLines(result), actionsLine(caps)].filter(Boolean).join("\n"),
+    data: { plugin: entry.id, title: caps.title, operation: op.id, result, actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary) },
+  };
+}
+
+export async function pluginAction(pairingUrl, args = {}) {
+  // The pairing link is the Site's one secret, so confirmations are signed with it.
+  return withDaemon(pairingUrl, (client) => pluginActionOn(client, { ...args, secret: pairingUrl }));
+}
+
+// plugin_action over an open connection. A low-risk action runs at once; anything else runs only
+// with the confirmation issued for exactly these arguments, after ChatGPT read its text to the user.
+export async function pluginActionOn(client, { plugin, operation, args, confirmation, secret, now = Date.now() } = {}) {
+  const picked = await pickDescribed(client, plugin);
+  if (picked.ask) return picked.ask;
+  const { entry } = picked;
+  const caps = entry.capabilities;
+  const found = pickOperation(caps, operation, "action");
+  if (found.wrongKind) return { invalid: `${found.wrongKind.id} is a read of ${caps.title}: use plugin_read.` };
+  if (!found.match) return operationQuestion(entry, operation, found.candidates, "action");
+  const op = found.match;
+  const prepared = prepareArgs(op, args);
+  if (prepared.invalid) return { invalid: prepared.invalid };
+  const base = { plugin: entry.id, title: caps.title, operation: op.id };
+  if (op.confirm === "always") {
+    const subject = { plugin: entry.id, operation: op.id, method: op.method, args: prepared.args };
+    const verdict = confirmation ? await checkConfirmation(secret, confirmation, subject, now) : "none";
+    if (verdict !== "ok") {
+      const { token, expiresAt } = await issueConfirmation(secret, subject, now);
+      const given = Object.entries(prepared.args).filter(([key]) => !(key in op.fixed));
+      const say = op.confirmText || `${caps.title}: ${op.title}${given.length ? ` (${given.map(([k, v]) => `${k} ${JSON.stringify(v)}`).join(", ")})` : ""}.`;
+      const why = { none: "", expired: "That confirmation expired. ", mismatch: "That confirmation was for something else. " }[verdict];
+      return {
+        text: `${why}Not done: this action asks first. Tell the user: "${say}" Only after they say yes, call plugin_action again with the same plugin, operation and args plus this confirmation.`,
+        data: { ...base, outcome: "needs_confirmation", delivered: false, confirm_text: say, confirmation: token, expires_at: expiresAt },
+      };
+    }
+  }
+  const result = projectResult(op, await client.invokePluginRpc(entry.id, op.method, prepared.args));
+  return {
+    text: `Done: ${caps.title} · ${op.title}. It ran once; never repeat it for this request.\n${resultLines(result, 800)}`,
+    data: { ...base, outcome: "done", delivered: true, result },
+  };
 }
