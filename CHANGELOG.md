@@ -7,6 +7,14 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-17
+
+### Fixed
+
+- The first publish of a Site made with the sidebar's Create button no longer fails at "Preparing
+  the release" with "Remote branch main not found". A new Site's repository has no commits yet;
+  the first release now makes the first one, and its push creates the branch (#1).
+
 ## [0.7.0] - 2026-10-17
 
 ### Added
