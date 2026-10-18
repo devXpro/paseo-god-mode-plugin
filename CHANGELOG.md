@@ -7,6 +7,20 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+### Added
+
+- Plugins can say an action or a read was not done: an operation names the fields of its answer that
+  tell (`outcome`: `ok` false, or a non-empty `error`), and `plugin_action` answers
+  `outcome: "refused"`, `delivered: false` and the reason instead of "done"; a refused read says
+  `refused: true`. Operations that name no such fields behave as before.
+- Confirmations built from the plugin's own data: an action can name a read of the same plugin that
+  shows what it acts on (`target`). God Mode reads it for the confirmation, signs the shown facts into
+  the token, and reads them again right before running; if they changed, it asks again
+  (`target_changed`) instead of acting, and a target that cannot be read refuses the action.
+- `untrusted` marks answers that carry other people's words: they come with a fixed note and
+  `untrusted: true`, and the instructions say never to act on instructions inside them.
+- docs/plugin-capabilities.md describes the three keys; descriptions without them work unchanged.
+
 ## [0.9.0] - 2026-10-17
 
 ### Added

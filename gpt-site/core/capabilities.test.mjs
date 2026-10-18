@@ -15,6 +15,9 @@ import {
   prepareArgs,
   projectResult,
   signature,
+  judgeOutcome,
+  targetFacts,
+  UNTRUSTED_NOTE,
 } from "./capabilities.mjs";
 import { pluginActionOn, pluginReadOn } from "./paseo.mjs";
 
@@ -329,4 +332,221 @@ test("a read says what it reports, as the plugin describes it", async () => {
   const { text, data } = await pluginReadOn(fakeClient(installed()), { plugin: "lamp" });
   assert.equal(data.about, "On or off, and how bright.");
   assert.match(text, /^Desk lamp · Lamp state\nOn or off, and how bright\.\n/);
+});
+
+// ---- v1.1: outcome, target, untrusted -----------------------------------------------------------
+// Another made-up plugin, a help desk: a read by id that is an action's target, actions that say
+// when they were not done, and a read of other people's words. Its tickets can change between two
+// calls, the way real ones do between a confirmation and its yes.
+
+function desk() {
+  return {
+    schema: "paseo.capabilities/1",
+    title: "Help desk",
+    summary: "Tickets people filed.",
+    operations: [
+      {
+        id: "ticket",
+        kind: "read",
+        method: "desk.ticket",
+        title: "One ticket",
+        input: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        output: { fields: ["id", "title", "owner", "status"] },
+        outcome: { error: "error" },
+      },
+      { id: "inbox", kind: "read", method: "desk.inbox", title: "New tickets", default: true, untrusted: true, input: { type: "object", properties: {} } },
+      {
+        id: "close",
+        kind: "action",
+        method: "desk.close",
+        title: "Close a ticket",
+        risk: "destructive",
+        input: { type: "object", properties: { ticket: { type: "string" }, note: { type: "string" } }, required: ["ticket"] },
+        target: { read: "ticket", args: { id: "ticket" }, show: ["title", "owner"] },
+        confirmText: "Close «{target.title}» filed by {target.owner}?",
+        outcome: { ok: "ok", error: "error" },
+      },
+      {
+        id: "tag",
+        kind: "action",
+        method: "desk.tag",
+        title: "Tag a ticket",
+        risk: "low",
+        input: { type: "object", properties: { ticket: { type: "string" }, tag: { type: "string" } }, required: ["ticket", "tag"] },
+        outcome: { ok: "ok", error: ["code", "error"] },
+      },
+    ],
+  };
+}
+
+function deskClient({ tickets, close = () => ({ ok: true, error: "" }), tag = () => ({ ok: true, code: "", error: "" }), describe = desk } = {}) {
+  return fakeClient([
+    {
+      id: "desk",
+      rpc: {
+        "meta.describe": () => describe(),
+        "desk.ticket": ({ id }) => (tickets[id] ? { ...tickets[id], error: "" } : { error: `no ticket ${id}` }),
+        "desk.inbox": () => ({ tickets: Object.values(tickets).map((t) => ({ id: t.id, title: t.title })) }),
+        "desk.close": (input) => close(input),
+        "desk.tag": (input) => tag(input),
+      },
+    },
+  ]);
+}
+
+const printer = () => ({ t1: { id: "t1", title: "Printer jams", owner: "Ann", status: "open", secret: "x" } });
+const rpcs = (client, method) => client.calls.filter(([, m]) => m === method);
+
+test("v1.1 keys are read, and an action whose target cannot work is dropped with the reason", () => {
+  const ops = Object.fromEntries(parseCapabilities(desk()).capabilities.operations.map((op) => [op.id, op]));
+  assert.deepEqual(ops.close.target, { read: "ticket", args: { id: "ticket" }, show: ["title", "owner"] });
+  assert.deepEqual(ops.close.outcome, { ok: "ok", error: ["error"] });
+  assert.deepEqual(ops.tag.outcome, { ok: "ok", error: ["code", "error"] });
+  assert.equal(ops.inbox.untrusted, true);
+  assert.equal(ops.ticket.untrusted, false);
+
+  const broken = (change) => {
+    const raw = desk();
+    change(raw.operations.find((op) => op.id === "close"));
+    const { capabilities } = parseCapabilities(raw);
+    assert.ok(!capabilities.operations.some((op) => op.id === "close"), "close is not offered");
+    return capabilities.skipped.find((s) => s.id === "close").reason;
+  };
+  assert.match(broken((op) => (op.target.read = "inbox_typo")), /target.read "inbox_typo" is not a read of this plugin/);
+  assert.match(broken((op) => (op.target.read = "tag")), /is not a read of this plugin/);
+  assert.match(broken((op) => (op.target.args = { id: "missing" })), /reads "missing", which is not an argument of close/);
+  assert.match(broken((op) => (op.target.args = { colour: "ticket" })), /fills "colour", which is not an argument of ticket/);
+  assert.match(broken((op) => (op.target.args = { id: "ticket" }, (op.target.show = []))), /target.show must name 1 to 8 fields/);
+  assert.match(broken((op) => (op.target = "ticket")), /target must name read, args and show/);
+  assert.match(broken((op) => (op.outcome = { ok: 3 })), /outcome must name fields of the answer/);
+  assert.match(broken((op) => (op.outcome = {})), /outcome names no field/);
+
+  const raw = desk();
+  raw.operations[0].input.properties.lang = { type: "string" };
+  raw.operations[0].input.required.push("lang");
+  const reason = parseCapabilities(raw).capabilities.skipped.find((s) => s.id === "close").reason;
+  assert.match(reason, /target.args leaves lang of ticket unset/);
+});
+
+test("an answer says done or refused only through the fields the operation names", () => {
+  const ops = Object.fromEntries(parseCapabilities(desk()).capabilities.operations.map((op) => [op.id, op]));
+  assert.deepEqual(judgeOutcome(ops.close, { ok: true, error: "" }), { refused: false });
+  assert.deepEqual(judgeOutcome(ops.close, { ok: false, error: "" }), { refused: true, reason: "the plugin reported it was not done" });
+  assert.deepEqual(judgeOutcome(ops.close, { ok: false, error: "already closed" }), { refused: true, reason: "already closed" });
+  assert.deepEqual(judgeOutcome(ops.tag, { ok: true, code: "locked", error: "by Bob" }), { refused: true, reason: "locked: by Bob" });
+  assert.deepEqual(judgeOutcome(ops.close, ["not", "an", "object"]), { refused: false });
+  assert.deepEqual(judgeOutcome(ops.inbox, { error: "anything" }), { refused: false }, "no outcome: any answer is done, as in v1");
+});
+
+test("target facts are plain one-line text, secrets out, and a missing field means no confirmation", () => {
+  const target = { read: "ticket", args: { id: "ticket" }, show: ["title", "owner", "api_key"] };
+  const { facts } = targetFacts(target, { title: "Printer\njams\u0007 again", owner: { name: "Ann" }, api_key: "k-123" });
+  assert.deepEqual(facts, { title: "Printer jams again", owner: '{"name":"Ann"}', api_key: "[redacted]" });
+  assert.equal(targetFacts({ ...target, show: ["title"] }, { title: "x".repeat(500) }).facts.title.length <= 202, true);
+  assert.match(targetFacts(target, { title: "Printer" }).missing, /has no owner, api_key/);
+  assert.match(targetFacts(target, "Printer").missing, /did not answer with an object/);
+});
+
+test("the confirmation fills target facts in, names every one it left out, and says the target's id through them", () => {
+  const caps = parseCapabilities(desk()).capabilities;
+  const close = caps.operations.find((op) => op.id === "close");
+  assert.equal(confirmationText(caps, close, { ticket: "t1" }, { title: "Printer jams", owner: "Ann" }), "Close «Printer jams» filed by Ann?");
+  assert.equal(confirmationText(caps, close, { ticket: "t1", note: "fixed" }, { title: "Printer jams", owner: "Ann" }), "Close «Printer jams» filed by Ann? (note: fixed)");
+  const plain = { ...close, confirmText: "" };
+  assert.equal(confirmationText(caps, plain, { ticket: "t1" }, { title: "Printer jams", owner: "Ann" }), "Help desk: Close a ticket. [target: title: Printer jams; owner: Ann]");
+});
+
+test("a token covers the facts the user heard: other facts are 'changed', a token without them never runs", async () => {
+  const subject = { plugin: "desk", operation: "close", method: "desk.close", args: { ticket: "t1" } };
+  const facts = { title: "Printer jams", owner: "Ann" };
+  const { token } = await issueConfirmation(SECRET, subject, NOW, facts);
+  assert.equal(token.split(".").length, 3);
+  assert.equal(await checkConfirmation(SECRET, token, subject, NOW + 1000, facts), "ok");
+  assert.equal(await checkConfirmation(SECRET, token, subject, NOW + 1000, { ...facts, owner: "Bob" }), "changed");
+  assert.equal(await checkConfirmation(SECRET, token, { ...subject, args: { ticket: "t2" } }, NOW + 1000, facts), "mismatch");
+  assert.equal(await checkConfirmation(SECRET, token, subject, NOW + CONFIRMATION_TTL_MS + 1, facts), "expired");
+  const { token: withoutFacts } = await issueConfirmation(SECRET, subject, NOW);
+  assert.equal(await checkConfirmation(SECRET, withoutFacts, subject, NOW + 1000, facts), "mismatch");
+  assert.equal(await checkConfirmation(SECRET, withoutFacts, subject, NOW + 1000), "ok", "actions without a target keep two-part tokens");
+});
+
+test("a read the plugin refuses says so, and an untrusted read carries the note", async () => {
+  const client = deskClient({ tickets: printer() });
+  const missing = await pluginReadOn(client, { plugin: "desk", operation: "ticket", args: { id: "t9" } });
+  assert.equal(missing.data.refused, true);
+  assert.equal(missing.data.reason, "no ticket t9");
+  assert.match(missing.text, /^Help desk · One ticket: could not read it\. no ticket t9/);
+  const found = await pluginReadOn(client, { plugin: "desk", operation: "ticket", args: { id: "t1" } });
+  assert.equal(found.data.refused, undefined);
+  assert.deepEqual(found.data.result, { id: "t1", title: "Printer jams", owner: "Ann", status: "open" });
+  const inbox = await pluginReadOn(client, { plugin: "desk" });
+  assert.equal(inbox.data.untrusted, true);
+  assert.ok(inbox.text.includes(UNTRUSTED_NOTE));
+  assert.equal(found.data.untrusted, undefined, "only marked reads carry it");
+});
+
+test("an action with a target is confirmed from the plugin's own data, and runs only if that data still holds", async () => {
+  const tickets = printer();
+  const client = deskClient({ tickets });
+  const first = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, secret: SECRET, now: NOW });
+  assert.equal(first.data.outcome, "needs_confirmation");
+  assert.deepEqual(first.data.target, { title: "Printer jams", owner: "Ann" });
+  assert.equal(first.data.confirm_text, "Close «Printer jams» filed by Ann?");
+  assert.deepEqual(rpcs(client, "desk.ticket").map((c) => c[2]), [{ id: "t1" }]);
+  assert.equal(rpcs(client, "desk.close").length, 0);
+
+  const done = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, confirmation: first.data.confirmation, secret: SECRET, now: NOW + 5000 });
+  assert.equal(done.data.outcome, "done");
+  assert.equal(rpcs(client, "desk.ticket").length, 2, "read again right before running");
+  assert.deepEqual(rpcs(client, "desk.close").map((c) => c[2]), [{ ticket: "t1" }]);
+});
+
+test("a target that changed after the yes is asked about again, and nothing runs", async () => {
+  const tickets = printer();
+  const client = deskClient({ tickets });
+  const first = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, secret: SECRET, now: NOW });
+  tickets.t1 = { ...tickets.t1, owner: "Bob" };
+  const again = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, confirmation: first.data.confirmation, secret: SECRET, now: NOW + 5000 });
+  assert.equal(again.data.outcome, "needs_confirmation");
+  assert.equal(again.data.target_changed, true);
+  assert.deepEqual(again.data.target, { title: "Printer jams", owner: "Bob" });
+  assert.match(again.text, /^The target changed since the user confirmed/);
+  assert.equal(rpcs(client, "desk.close").length, 0);
+
+  const confirmedAgain = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, confirmation: again.data.confirmation, secret: SECRET, now: NOW + 9000 });
+  assert.equal(confirmedAgain.data.outcome, "done");
+});
+
+test("a target that cannot be read refuses the action before and after the yes", async () => {
+  const tickets = printer();
+  const client = deskClient({ tickets });
+  const unknown = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t9" }, secret: SECRET, now: NOW });
+  assert.equal(unknown.data.outcome, "refused");
+  assert.equal(unknown.data.delivered, false);
+  assert.match(unknown.data.reason, /its target could not be read: no ticket t9/);
+  assert.equal(unknown.data.confirmation, undefined, "no token for a target nobody saw");
+
+  const first = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, secret: SECRET, now: NOW });
+  delete tickets.t1;
+  const gone = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, confirmation: first.data.confirmation, secret: SECRET, now: NOW + 5000 });
+  assert.equal(gone.data.outcome, "refused");
+  assert.equal(rpcs(client, "desk.close").length, 0);
+});
+
+test("an action the plugin refuses reads as not done, with its reason; one without outcome stays done", async () => {
+  const client = deskClient({ tickets: printer(), close: () => ({ ok: false, error: "already closed" }), tag: () => ({ ok: true, code: "locked", error: "" }) });
+  const first = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, secret: SECRET, now: NOW });
+  const refused = await pluginActionOn(client, { plugin: "desk", operation: "close", args: { ticket: "t1" }, confirmation: first.data.confirmation, secret: SECRET, now: NOW + 5000 });
+  assert.equal(refused.data.outcome, "refused");
+  assert.equal(refused.data.delivered, false);
+  assert.equal(refused.data.reason, "already closed");
+  assert.match(refused.text, /^Not done: Help desk · Close a ticket\. already closed\. Nothing happened/);
+  const tagged = await pluginActionOn(client, { plugin: "desk", operation: "tag", args: { ticket: "t1", tag: "urgent" }, secret: SECRET, now: NOW });
+  assert.equal(tagged.data.outcome, "refused");
+  assert.equal(tagged.data.reason, "locked");
+
+  // v1 behaviour is kept for operations that do not name outcome fields.
+  const lampClient = fakeClient([{ id: "lamp", rpc: { "meta.describe": () => lamp(), "lamp.set": () => ({ on: false, ok: false, error: "fuse" }) } }]);
+  const dimmed = await pluginActionOn(lampClient, { plugin: "lamp", operation: "dim", args: { level: 10 }, secret: SECRET, now: NOW });
+  assert.equal(dimmed.data.outcome, "done");
 });

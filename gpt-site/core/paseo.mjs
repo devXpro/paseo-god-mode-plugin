@@ -48,6 +48,7 @@ import {
   confirmationText,
   DESCRIBE_METHOD,
   issueConfirmation,
+  judgeOutcome,
   parseCapabilities,
   pickOperation,
   pickPlugin,
@@ -56,6 +57,8 @@ import {
   readSummary,
   resultLines,
   signature,
+  targetFacts,
+  UNTRUSTED_NOTE,
 } from "./capabilities.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
@@ -1107,18 +1110,43 @@ export async function pluginReadOn(client, { plugin, operation, args } = {}) {
   const op = found.match;
   const prepared = prepareArgs(op, args);
   if (prepared.invalid) return { invalid: prepared.invalid };
-  const result = projectResult(op, await client.invokePluginRpc(entry.id, op.method, prepared.args));
+  const output = await client.invokePluginRpc(entry.id, op.method, prepared.args);
+  const verdict = judgeOutcome(op, output);
+  const result = projectResult(op, output);
+  const marked = op.untrusted ? { untrusted: true } : {};
+  const data = { plugin: entry.id, title: caps.title, operation: op.id, ...(op.description ? { about: op.description } : {}), ...marked };
+  if (verdict.refused) {
+    return {
+      text: [`${caps.title} · ${op.title}: could not read it. ${verdict.reason}`, op.untrusted && UNTRUSTED_NOTE].filter(Boolean).join("\n"),
+      data: { ...data, refused: true, reason: verdict.reason, result },
+    };
+  }
   return {
-    text: [`${caps.title} · ${op.title}`, op.description && truncate(op.description, 300), resultLines(result), actionsLine(caps)].filter(Boolean).join("\n"),
-    data: {
-      plugin: entry.id,
-      title: caps.title,
-      operation: op.id,
-      ...(op.description ? { about: op.description } : {}),
-      result,
-      actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary),
-    },
+    text: [`${caps.title} · ${op.title}`, op.description && truncate(op.description, 300), op.untrusted && UNTRUSTED_NOTE, resultLines(result), actionsLine(caps)]
+      .filter(Boolean)
+      .join("\n"),
+    data: { ...data, result, actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary) },
   };
+}
+
+// The facts about an action's target, read from the plugin with the read the action names, its
+// arguments taken from the action's. Any failure (the arguments, the call, the read's own outcome,
+// a missing field) means the target cannot be shown, so nothing may run.
+async function readTarget(client, entry, op, args) {
+  const read = entry.capabilities.operations.find((candidate) => candidate.id === op.target.read);
+  const mapped = Object.fromEntries(Object.entries(op.target.args).filter(([, from]) => args[from] !== undefined).map(([to, from]) => [to, args[from]]));
+  const prepared = prepareArgs(read, mapped);
+  if (prepared.invalid) return { unavailable: prepared.invalid };
+  let output;
+  try {
+    output = await client.invokePluginRpc(entry.id, read.method, prepared.args);
+  } catch (error) {
+    return { unavailable: truncate(String(error?.message ?? error), 200) };
+  }
+  const verdict = judgeOutcome(read, output);
+  if (verdict.refused) return { unavailable: verdict.reason };
+  const shown = targetFacts(op.target, output);
+  return shown.missing ? { unavailable: shown.missing } : { facts: shown.facts };
 }
 
 export async function pluginAction(pairingUrl, args = {}) {
@@ -1141,21 +1169,56 @@ export async function pluginActionOn(client, { plugin, operation, args, confirma
   if (prepared.invalid) return { invalid: prepared.invalid };
   const base = { plugin: entry.id, title: caps.title, operation: op.id };
   if (op.confirm === "always") {
+    // The target is read on both calls: once to show it, once more right before running, so a
+    // target that changed in between is asked about again instead of acted on.
+    let facts = null;
+    if (op.target) {
+      const shown = await readTarget(client, entry, op, prepared.args);
+      if (shown.unavailable) {
+        const reason = `its target could not be read: ${shown.unavailable}`;
+        return { text: `Not done: ${caps.title} · ${op.title}, ${reason}. Nothing happened.`, data: { ...base, outcome: "refused", delivered: false, reason } };
+      }
+      facts = shown.facts;
+    }
     const subject = { plugin: entry.id, operation: op.id, method: op.method, args: prepared.args };
-    const verdict = confirmation ? await checkConfirmation(secret, confirmation, subject, now) : "none";
+    const verdict = confirmation ? await checkConfirmation(secret, confirmation, subject, now, facts) : "none";
     if (verdict !== "ok") {
-      const { token, expiresAt } = await issueConfirmation(secret, subject, now);
-      const say = confirmationText(caps, op, prepared.args);
-      const why = { none: "", expired: "That confirmation expired. ", mismatch: "That confirmation was for something else. " }[verdict];
+      const { token, expiresAt } = await issueConfirmation(secret, subject, now, facts);
+      const say = confirmationText(caps, op, prepared.args, facts);
+      const why = {
+        none: "",
+        expired: "That confirmation expired. ",
+        mismatch: "That confirmation was for something else. ",
+        changed: "The target changed since the user confirmed; tell them what it is now. ",
+      }[verdict];
       return {
         text: `${why}Not done: this action asks first. Tell the user: "${say}" Only after they say yes, call plugin_action again with the same plugin, operation and args plus this confirmation.`,
-        data: { ...base, outcome: "needs_confirmation", delivered: false, risk: op.risk, confirm_text: say, confirmation: token, expires_at: expiresAt },
+        data: {
+          ...base,
+          outcome: "needs_confirmation",
+          delivered: false,
+          risk: op.risk,
+          confirm_text: say,
+          confirmation: token,
+          expires_at: expiresAt,
+          ...(facts ? { target: facts } : {}),
+          ...(verdict === "changed" ? { target_changed: true } : {}),
+        },
       };
     }
   }
-  const result = projectResult(op, await client.invokePluginRpc(entry.id, op.method, prepared.args));
+  const output = await client.invokePluginRpc(entry.id, op.method, prepared.args);
+  const verdict = judgeOutcome(op, output);
+  const result = projectResult(op, output);
+  const marked = op.untrusted ? { untrusted: true } : {};
+  if (verdict.refused) {
+    return {
+      text: [`Not done: ${caps.title} · ${op.title}. ${verdict.reason}. Nothing happened; tell the user why.`, op.untrusted && UNTRUSTED_NOTE].filter(Boolean).join("\n"),
+      data: { ...base, outcome: "refused", delivered: false, reason: verdict.reason, result, ...marked },
+    };
+  }
   return {
-    text: `Done: ${caps.title} · ${op.title}. It ran once; never repeat it for this request.\n${resultLines(result, 800)}`,
-    data: { ...base, outcome: "done", delivered: true, result },
+    text: [`Done: ${caps.title} · ${op.title}. It ran once; never repeat it for this request.`, op.untrusted && UNTRUSTED_NOTE, resultLines(result, 800)].filter(Boolean).join("\n"),
+    data: { ...base, outcome: "done", delivered: true, result, ...marked },
   };
 }

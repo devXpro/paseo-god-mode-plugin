@@ -274,3 +274,14 @@ nothing that says which call reads and which one acts. So a plugin opts in by an
   pairing link, valid two minutes. It proves what was put to the user; their yes is ChatGPT's
   part. It is not spent on use: `done` says `delivered: true`, and the rules say never repeat it.
 - **Who.** `plugin_action` needs a signed-in ChatGPT user, like `update_site`.
+- **Not done (`outcome`).** An operation may name the fields that say it was not done (`ok` false, or
+  a non-empty `error`); God Mode then answers `outcome: "refused"`, `delivered: false` and the reason
+  instead of "done". Without it any answer is done; a thrown error stays "unknown".
+- **Confirmed against the plugin's data (`target`).** An action may name a read of the same plugin
+  that shows what it acts on, its arguments filled from the action's. God Mode reads it for the
+  confirmation (`confirm_text` and `target`) and signs those facts into a third part of the token;
+  before running it reads them again, and different facts mean a new confirmation
+  (`target_changed`), not a run. A target that cannot be read refuses the action. There is no name
+  search here: finding a chat or a thing stays with the tools and reads that list them.
+- **Other people's words (`untrusted`).** Marked answers carry a fixed note and `untrusted: true`;
+  the instructions repeat the rule.
