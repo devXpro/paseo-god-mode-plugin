@@ -83,6 +83,8 @@ More: [architecture](docs/architecture.md).
   or reasoned, and see its screenshots.
 - **Put agents to work** — start a chat in any project, send a follow-up, steer or interrupt one.
 - **Decide for them** — approve or deny what an agent asks for, stop or archive a chat.
+- **Run their slash commands** — `/compact`, `/code-review`, your own commands, in Claude Code and
+  Codex chats; anything risky is read back to you first, and what cannot run says why.
 - **Drive your other Paseo plugins** — anything beyond a harmless change is read back to you first.
 - **Keep God Mode current** — see which version is live, update it or roll it back.
 
@@ -124,6 +126,7 @@ can take minutes to show them: open a new chat. More: [operations](docs/operatio
 | [Architecture](docs/architecture.md) | The parts and how one call, one plugin action and one release flow. |
 | [Configuration](docs/configuration.md) | Every setting and what Paseo and ChatGPT need. |
 | [Tools](docs/tools.md) | What ChatGPT can call. |
+| [Slash commands](docs/slash-commands.md) | What runs for Claude Code and Codex, and what does not. |
 | [Plugin tools](docs/plugin-tools.md) | `plugin_read` and `plugin_action` in detail. |
 | [Plugin contract](docs/plugin-capabilities.md) | `meta.describe` and `paseo.capabilities/1`, with `outcome`, `target`, `untrusted`. |
 | [Writing a plugin](docs/plugin-authoring.md) | Implementing and testing `meta.describe`. |

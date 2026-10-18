@@ -23,8 +23,9 @@ flowchart LR
 | --- | --- | --- |
 | MCP endpoint | `gpt-site/app/mcp/route.ts` | Stateless JSON-RPC over `POST /mcp`; reads the Site's variables, marks whether a signed-in ChatGPT user is calling, and hands the message to `core/`. |
 | Tools and rules | `gpt-site/core/mcp.mjs` | Settings, server instructions, tool metadata, dispatch, deadlines, logging hooks. |
-| Paseo operations | `gpt-site/core/paseo.mjs` | One relay connection per call; chats, turns, activity, images, writes, plugins, release status. |
+| Paseo operations | `gpt-site/core/paseo.mjs` | One relay connection per call; chats, turns, activity, images, writes, slash commands, plugins, release status. |
 | Plugin contract | `gpt-site/core/capabilities.mjs` | Checks `meta.describe` answers, resolves names, checks arguments, trims answers, signs confirmations. |
+| Slash commands | `gpt-site/core/slash.mjs` | The provider adapters: which of a chat's commands run, at what risk and how; arguments; what a run did. |
 | Text | `gpt-site/core/text.mjs` | Name matching and the short text ChatGPT reads or speaks. |
 | Images widget | `gpt-site/core/widget.mjs` | The MCP Apps widget `show_images` uses. |
 | Call log | `gpt-site/db/` | D1 table `call_log`, read by `get_logs`. |

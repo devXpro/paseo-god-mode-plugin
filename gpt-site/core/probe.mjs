@@ -15,6 +15,8 @@
 //   node core/probe.mjs plugins
 //   node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 //   node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
+//   node core/probe.mjs commands <chat> [--query Q] [--limit 60]
+//   node core/probe.mjs command <chat> <name> [args…] [--if-busy interrupt] [--confirm TOKEN] [--wait 15]
 //
 // --json prints the structured data instead of the text; images print their size, never their
 // bytes, and --save writes them to DIR to look at. The pairing URL comes
@@ -28,11 +30,13 @@ import {
   answerApproval,
   archiveChat,
   listChats,
+  listSlashCommands,
   overview,
   pluginAction,
   pluginRead,
   readActivity,
   readChat,
+  runSlashCommand,
   searchMessages,
   showImages,
   sendMessage,
@@ -129,6 +133,16 @@ const operations = {
   "plugin-read": () => pluginRead(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined }),
   "plugin-act": () =>
     pluginAction(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined, confirmation: values.confirm }),
+  commands: () => listSlashCommands(url, { chat: first, query: values.query, limit: number(values.limit, 60) }),
+  command: () =>
+    runSlashCommand(url, {
+      chat: first,
+      command: rest[0],
+      args: rest.slice(1).join(" "),
+      ifBusy: values["if-busy"],
+      confirmation: values.confirm,
+      waitSeconds: number(values.wait, 15),
+    }),
 };
 
 if (!operations[command]) {

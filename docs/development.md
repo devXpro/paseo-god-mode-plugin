@@ -26,8 +26,9 @@ It runs, in order:
 3. the Site's check in `gpt-site/`: its hosting file, `node --test core/*.test.mjs` and its typecheck.
 
 Every test runs without network or Paseo. The Site's operations are tested against fake daemon
-clients (`core/images.test.mjs`, `core/capabilities.test.mjs`) and the tool layer against fake
-operations (`core/mcp.test.mjs`). CI runs `npm run check` and `npm run build` on every push to `main`
+clients (`core/images.test.mjs`, `core/capabilities.test.mjs`, `core/slash-flow.test.mjs`, which plays
+Paseo's Claude and Codex providers as they behaved on live chats) and the tool layer against fake
+operations (`core/mcp.test.mjs`); the slash command adapters on their own in `core/slash.test.mjs`. CI runs `npm run check` and `npm run build` on every push to `main`
 and on pull requests.
 
 ## Running the Site's code against your Paseo
@@ -47,10 +48,12 @@ node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--s
 node core/probe.mjs plugins
 node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
+node core/probe.mjs commands <chat> [--query Q] [--limit 60]
+node core/probe.mjs command <chat> <name> [args…] [--if-busy interrupt] [--confirm TOKEN] [--wait 15]
 ```
 
-The write commands (`start`, `send`, `approve`, `stop`, `plugin-act`) act on your real agents and
-plugins. `--json` prints the structured data instead of the text.
+The write commands (`start`, `send`, `approve`, `stop`, `plugin-act`, `command`) act on your real
+agents and plugins. `--json` prints the structured data instead of the text.
 
 ## The tool-selection eval
 

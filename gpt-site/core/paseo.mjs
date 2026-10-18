@@ -60,6 +60,24 @@ import {
   targetFacts,
   UNTRUSTED_NOTE,
 } from "./capabilities.mjs";
+import {
+  adapterFor,
+  afterCommand,
+  commandData,
+  commandResult,
+  commandText,
+  compactionNote,
+  confirmText,
+  contextChange,
+  describeCommands,
+  filterCommands,
+  findCommand,
+  listText,
+  prepareCommandArgs,
+  runRisk,
+  splitCommand,
+  withoutRepeatAfterCompaction,
+} from "./slash.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const MAX_WAIT_SECONDS = 25;
@@ -159,6 +177,10 @@ function toChat({ agent, project }) {
     cwd: agent.cwd ?? null,
     // Context window and token counts; live in the daemon only, absent after a restart.
     usage: agent.lastUsage ?? null,
+    // Which runtime the chat runs on (claude, codex…) and its permission mode: slash commands
+    // depend on both.
+    provider: agent.provider ?? null,
+    mode: agent.currentModeId ?? null,
   };
 }
 
@@ -384,10 +406,13 @@ async function loadTurns(client, agentId, from, count) {
 // A turn's parts. The agent's images become "[image N]", numbered through the turn, and come back
 // separately with their sources.
 function turnText(turn) {
-  const items = turn.items;
+  const items = withoutRepeatAfterCompaction(turn.items);
   const agent = [];
   const images = [];
-  for (const item of items.filter((i) => i.type === "assistant_message")) {
+  for (const item of items) {
+    // A done compaction (a /compact, or Claude's own when the context fills up) reads as a line.
+    if (item.type === "compaction" && item.status === "completed") agent.push(compactionNote(item));
+    if (item.type !== "assistant_message") continue;
     const shown = withImagePlaceholders(item.text, images.length + 1);
     agent.push(shown.text);
     images.push(...shown.images);
@@ -958,6 +983,215 @@ export async function archiveChatOn(client, { chat } = {}) {
     text: `Archived ${truncate(target.title, 70)}. Its history is kept; a new message to it brings it back.`,
     data: { ...ids, outcome: "archived", done: true, archived_at: toIso(archivedAt) },
   };
+}
+
+// ---- Slash commands -----------------------------------------------------------------------------
+// list_slash_commands and run_slash_command. Which commands each provider runs, and how, is in
+// slash.mjs; this part asks Paseo for a chat's commands, sends one as the message its provider
+// interprets, and reads back what that message did.
+
+const COMMAND_ENTRIES = 200;
+const COMMAND_POLL_MS = 1_000;
+
+const pause = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+
+// The chat's commands with God Mode's verdict on each, or { error } when Paseo could not list them
+// (an agent that cannot start, a provider that is not installed).
+async function chatCommands(client, chat) {
+  const payload = await client.listCommands({ agentId: chat.id });
+  if (payload?.error) return { error: String(payload.error) };
+  return { catalog: describeCommands(chat.provider, payload?.commands ?? []) };
+}
+
+export async function listSlashCommands(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => listSlashCommandsOn(client, args));
+}
+
+// list_slash_commands over an open connection (tests drive it with a fake client). Listing starts
+// the chat's agent when Paseo has not yet (after a restart of Paseo), as Paseo's own command menu does.
+export async function listSlashCommandsOn(client, { chat, query, limit = 60 } = {}) {
+  const picked = await pickChat(client, chat, undefined, { read: true });
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const base = { chat: chatData(target), provider: target.provider ?? "unknown", runtime: adapterFor(target.provider).label };
+  const empty = { total: 0, shown: 0, commands: [] };
+  if (target.archived) {
+    return withNote({ text: `${chatLine(target)}\nIt is archived, and Paseo lists the commands of active chats only. A new message to it brings it back.`, data: { ...base, ...empty } }, picked.note);
+  }
+  const listed = await chatCommands(client, target);
+  if (listed.error) {
+    const error = truncate(listed.error, 300);
+    return withNote({ text: `${chatLine(target)}\nPaseo could not list its commands: ${error}`, data: { ...base, ...empty, error } }, picked.note);
+  }
+  const { catalog } = listed;
+  const words = String(query ?? "").trim();
+  const matching = words ? filterCommands(catalog, words) : catalog.entries;
+  const shown = matching.slice(0, clamp(Math.trunc(limit) || 60, 1, 100));
+  const text = listText({ chatLine: chatLine(target), catalog, shown, total: matching.length, query: words, mode: target.mode });
+  return withNote(
+    {
+      text: shown.length < matching.length ? `${text}\n${matching.length - shown.length} more not shown; narrow it with a query.` : text,
+      data: {
+        ...base,
+        runs_commands: catalog.runs,
+        ...(catalog.reason ? { reason: catalog.reason } : {}),
+        total: matching.length,
+        runs_at_once: matching.filter((e) => e.available && !e.asks_first).length,
+        asks_first: matching.filter((e) => e.available && e.asks_first).length,
+        unavailable: matching.filter((e) => !e.available).length,
+        shown: shown.length,
+        commands: shown.map(commandData),
+      },
+    },
+    picked.note,
+  );
+}
+
+export async function runSlashCommand(pairingUrl, args = {}) {
+  // The pairing link is the Site's one secret, so confirmations are signed with it.
+  return withDaemon(pairingUrl, (client) => runSlashCommandOn(client, { ...args, secret: pairingUrl }));
+}
+
+// What the timeline gained after the command God Mode sent, read against the chat's state now.
+// The command's own message is found by its client message id; until it shows up, nothing is known.
+async function readCommandResult(client, target, entry, cursor, messageId) {
+  const page = await client.fetchAgentTimeline(target.id, { direction: "after", cursor, limit: COMMAND_ENTRIES, projection: "projected" }).catch(() => null);
+  let items = page ? afterCommand(page.entries.map((e) => e.item), messageId) : null;
+  if (!items) {
+    // A timeline Paseo rebuilt (a new epoch) answers the old cursor with nothing: look at the latest.
+    const tail = await client.fetchAgentTimeline(target.id, { direction: "tail", limit: COMMAND_ENTRIES, projection: "projected" });
+    items = afterCommand(tail.entries.map((e) => e.item), messageId);
+  }
+  if (!items) return { outcome: "still_working", settled: false };
+  const fetched = await client.fetchAgent(target.id);
+  const now = fetched ? toChat(fetched) : null;
+  const pending = now?.permissions?.[0];
+  return commandResult(entry, {
+    items,
+    status: now?.status ?? null,
+    usageBefore: target.usage,
+    usageAfter: now?.usage ?? null,
+    approval: pending ? describePermission(pending) : null,
+  });
+}
+
+function commandQuestion(target, catalog, query, candidates) {
+  if (candidates.length) {
+    return clarification("command", query, candidatesText("command", query, candidates.map((e) => `${e.usage}: ${truncate(e.effect, 100)}`)), candidates.map((e) => e.name));
+  }
+  const runnable = catalog.entries.filter((e) => e.available).map((e) => e.name);
+  return clarification(
+    "command",
+    query,
+    `No command of ${truncate(target.title, 70)} matches "${query}", so nothing was sent. ${runnable.length ? `Its commands: ${runnable.join(", ")}.` : "It offers none God Mode can run."} Ask the user which one they mean.`,
+    [],
+  );
+}
+
+// The answer to a command that reached the chat: what it did, as far as the wait allowed.
+function commandAnswer(title, text, entry, result, sent) {
+  const once = "It ran once; never run it again for this request.";
+  switch (result.outcome) {
+    case "done": {
+      const change = contextChange(result.context);
+      return { text: `Ran ${text} in ${title}: the context was compacted${change ? ` (${change})` : ""}. ${once}`, data: { ...sent, outcome: "done", context: result.context } };
+    }
+    case "refused":
+      return { text: `${text} reached ${title} but did not run: ${result.reason} Nothing changed.`, data: { ...sent, outcome: "refused", reason: result.reason } };
+    case "replied": {
+      if (!result.reply) return { text: `Ran ${text} in ${title}; it finished without output. ${once}`, data: { ...sent, outcome: "replied", reply: "" } };
+      const { text: shown, images } = withImagePlaceholders(result.reply);
+      const reply = truncate(shown, 1500);
+      const extra = images.length ? `\nThe result has ${images.length} image(s); show_images puts them on the user's screen.` : "";
+      return { text: `Ran ${text} in ${title}. ${once} Result:\n${reply}${extra}`, data: { ...sent, outcome: "replied", reply, ...(images.length ? { images: images.length } : {}) } };
+    }
+    case "waiting_for_approval":
+      return { text: `Sent ${text} to ${title}; it arrived and is waiting for approval: ${result.approval}. ${once}`, data: { ...sent, outcome: "waiting_for_approval", approval: result.approval } };
+    case "error":
+      return { text: `Sent ${text} to ${title}; it arrived and ended with an error: ${result.error}`, data: { ...sent, outcome: "error", error: result.error } };
+    default: {
+      const doing = entry.compaction ? " (compacting the context)" : "";
+      return { text: `Sent ${text} to ${title}; it arrived and is still running${doing}. ${once} Offer to check later with read_chat; do not poll.`, data: { ...sent, outcome: "still_working" } };
+    }
+  }
+}
+
+// run_slash_command over an open connection (tests drive it with a fake client): the chat's own
+// list decides what exists, the adapter what may run and how, the confirmation what the user agreed
+// to; then one message, and what it did.
+export async function runSlashCommandOn(client, { chat, command, args, ifBusy, confirmation, waitSeconds = 15, secret, now = Date.now(), pollMs = COMMAND_POLL_MS } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const title = truncate(target.title, 70);
+  const ids = { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, provider: target.provider ?? "unknown" };
+  const notRun = (reason, extra = {}) => ({ text: `Not run: ${reason} Nothing was sent.`, data: { ...ids, ...extra, outcome: "unavailable", delivered: false, reason } });
+  if (target.archived) return notRun(`${title} is archived; a new message to it brings it back first.`);
+  const adapter = adapterFor(target.provider);
+  if (!adapter.runs) return notRun(adapter.reason);
+  const split = splitCommand(command, args);
+  if (split.invalid) return { invalid: split.invalid };
+  const listed = await chatCommands(client, target);
+  if (listed.error) return notRun(`Paseo could not list this chat's commands: ${truncate(listed.error, 200)}`);
+  const found = findCommand(listed.catalog, split.name);
+  if (!found.match) return commandQuestion(target, listed.catalog, split.name, found.candidates);
+  const entry = found.match;
+  if (!entry.available) return notRun(`/${entry.name} cannot run in ${title} from here. ${entry.reason}`, { command: `/${entry.name}` });
+  const prepared = prepareCommandArgs(entry, split.args);
+  if (prepared.invalid) return { invalid: prepared.invalid };
+  const text = commandText(entry, prepared.args);
+  const base = { ...ids, command: text };
+
+  // A command sent to a working chat replaces its turn (Paseo does so even for steer), so it waits
+  // for the user's word; Codex's /goal runs beside the turn and need not.
+  const working = isRunning(target) || target.permissions.length > 0;
+  const alongside = entry.when_busy === "alongside";
+  if (working && !alongside && ifBusy !== "interrupt") {
+    const what = target.permissions.length ? "waiting for an approval" : "working";
+    return {
+      text: `Not sent: ${title} is ${what}, and ${text} would stop that work. Ask the user whether to interrupt it; only on their explicit yes call again with if_busy interrupt.`,
+      data: { ...base, outcome: "busy", delivered: false },
+    };
+  }
+  const interrupting = working && !alongside;
+
+  const risk = runRisk(entry, prepared.args);
+  if (risk.asksFirst) {
+    const subject = { tool: "run_slash_command", chat: target.id, command: text, interrupt: interrupting };
+    const verdict = confirmation ? await checkConfirmation(secret, confirmation, subject, now) : "none";
+    if (verdict !== "ok") {
+      const { token, expiresAt } = await issueConfirmation(secret, subject, now);
+      const say = confirmText(entry, { chatTitle: target.title, label: adapter.label, args: prepared.args, notes: risk.notes, interrupting, mode: target.mode });
+      const why = { expired: "That confirmation expired. ", mismatch: "That confirmation was for something else. " }[verdict] ?? "";
+      return {
+        text: `${why}Not run yet: ${text} asks first. Tell the user: "${say}" Only after they say yes, call run_slash_command again with the same chat, command and args plus this confirmation.`,
+        data: { ...base, outcome: "needs_confirmation", delivered: false, risk: risk.risk, confirm_text: say, confirmation: token, expires_at: expiresAt },
+      };
+    }
+  }
+
+  const tail = await client.fetchAgentTimeline(target.id, { direction: "tail", limit: 1, projection: "projected" });
+  const cursor = { epoch: tail.epoch, seq: tail.entries.at(-1)?.seqStart ?? 0 };
+  const messageId = crypto.randomUUID();
+  await client.sendAgentMessage(target.id, text, { messageId, ...(interrupting ? { activeTurnBehavior: "interrupt" } : {}) });
+  const sent = { ...base, delivered: true, risk: risk.risk };
+  const wait = clamp(waitSeconds, 0, MAX_WAIT_SECONDS);
+  if (wait === 0) {
+    return { text: `Sent ${text} to ${title}; it arrived. It ran once; never run it again for this request. Not waiting for the result; offer to check later.`, data: { ...sent, outcome: "not_waiting" } };
+  }
+  const deadline = Date.now() + wait * 1000;
+  let result = null;
+  if (!entry.outOfBand) {
+    // A turn of its own: wait for it to end. A command Paseo runs outside any turn (Codex's
+    // /compact and /goal) has no turn to wait for, so its result is polled from the timeline.
+    await client.waitForFinish(target.id, wait * 1000);
+    result = await readCommandResult(client, target, entry, cursor, messageId);
+  }
+  while (!result?.settled && Date.now() + pollMs < deadline) {
+    if (result) await pause(pollMs);
+    result = await readCommandResult(client, target, entry, cursor, messageId);
+  }
+  return commandAnswer(title, text, entry, result ?? { outcome: "still_working" }, sent);
 }
 
 // The God Mode plugin in Paseo runs updates and rollbacks of this Site on the Mac; these two reach

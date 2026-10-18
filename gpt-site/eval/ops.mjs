@@ -7,7 +7,7 @@
 
 import { NEW_CHAT_ID } from "./world.mjs";
 
-const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", stop_chat: "ok", update_site: "ok" };
+const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", stop_chat: "ok", update_site: "ok", run_slash_command: "auto" };
 
 // Release fixtures relative to the Site version under test: the Mac has the same, a newer one, or
 // GitHub has a newer one than the Mac.
@@ -21,7 +21,21 @@ const RELEASES = {
   github_newer: (v) => ({ installed: v, live: { versionNumber: 11 }, latest: { version: nextMinor(v), newer: true }, job: null }),
 };
 
-export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersion = "0.5.0", record = () => {} }) {
+// What a live Claude Code 2.1.296 chat listed through Paseo (2026-10-18), trimmed: the commands
+// the slash cases ask for, a project's own one, and some God Mode refuses.
+const CLAUDE_COMMANDS = [
+  { name: "clear", description: "Start a new session with empty context; previous session stays on disk", argumentHint: "[name]", kind: "command" },
+  { name: "code-review", description: "Review the current diff, or a PR number/branch/path target, for correctness bugs", argumentHint: "[low|medium|high|xhigh|max] [--fix] [--comment] [<pr#>|<branch>|<path>]", kind: "skill" },
+  { name: "compact", description: "Free up context by summarizing the conversation so far", argumentHint: "<optional custom summarization instructions>", kind: "command" },
+  { name: "context", description: "Show current context usage", argumentHint: "", kind: "command" },
+  { name: "init", description: "Initialize a new CLAUDE.md file with codebase documentation", argumentHint: "", kind: "command" },
+  { name: "model", description: "Set the AI model for Claude Code", argumentHint: "<model>", kind: "skill" },
+  { name: "release-check", description: "Check the release checklist (project)", argumentHint: "", kind: "skill" },
+  { name: "security-review", description: "Complete a security review of the pending changes on the current branch", argumentHint: "", kind: "skill" },
+  { name: "usage", description: "Show session cost, plan usage, and what's contributing to your limits", argumentHint: "", kind: "command" },
+];
+
+export function createOps({ world, scenario = {}, text, slash = null, PaseoOffline, siteVersion = "0.5.0", record = () => {} }) {
   const { resolve, chatData, chatLine, candidatesText, describePermission, latestFirstWithin, toIso, toolCallData, truncate, snippet, releaseData, describeRelease, chatState } = text;
   // Since 0.6.0: reads pick the one active chat, read_activity and subagent counts exist.
   const modern = typeof text.activityData === "function";
@@ -456,8 +470,111 @@ export function createOps({ world, scenario = {}, text, PaseoOffline, siteVersio
     };
   }
 
+  // ---- Slash commands (0.10.0 on): the version's own slash.mjs judges the fake chat's commands ----
+
+  const catalogOf = (chat) => slash.describeCommands(chat.provider ?? "claude", CLAUDE_COMMANDS);
+
+  async function listSlashCommands(_url, { chat, query, limit = 60 } = {}) {
+    log("listSlashCommands", { chat, query, limit });
+    const picked = pickChat(chat, { read: true });
+    if (picked.ask) return picked.ask;
+    const target = picked.chat;
+    const catalog = catalogOf(target);
+    const matching = query ? slash.filterCommands(catalog, query) : catalog.entries;
+    const shown = matching.slice(0, limit);
+    return withNote(
+      {
+        text: slash.listText({ chatLine: chatLine(target, now), catalog, shown, total: matching.length, query: query ?? "", mode: target.mode ?? "default" }),
+        data: {
+          chat: chatData(target, now),
+          provider: target.provider ?? "claude",
+          runtime: catalog.label,
+          runs_commands: catalog.runs,
+          total: matching.length,
+          runs_at_once: matching.filter((e) => e.available && !e.asks_first).length,
+          asks_first: matching.filter((e) => e.available && e.asks_first).length,
+          unavailable: matching.filter((e) => !e.available).length,
+          shown: shown.length,
+          commands: shown.map(slash.commandData),
+        },
+      },
+      picked.note,
+    );
+  }
+
+  // Confirmations are a fixed token per command text: the eval checks that one is passed back.
+  async function runSlashCommand(_url, { chat, command, args, ifBusy, confirmation, waitSeconds } = {}) {
+    const callArgs = { chat, command, args, ifBusy, confirmation, waitSeconds };
+    const picked = pickChat(chat);
+    if (picked.ask) {
+      log("runSlashCommand", callArgs, "needs_clarification");
+      return picked.ask;
+    }
+    const target = picked.chat;
+    const ids = { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project, provider: target.provider ?? "claude" };
+    const catalog = catalogOf(target);
+    const split = slash.splitCommand(command, args);
+    if (split.invalid) return { invalid: split.invalid };
+    const found = slash.findCommand(catalog, split.name);
+    if (!found.match) {
+      log("runSlashCommand", callArgs, "needs_clarification");
+      const names = found.candidates.map((e) => e.name);
+      return clarification("command", split.name, names.length ? candidatesText("command", split.name, names) : `No command matches "${split.name}", so nothing was sent. Its commands: ${catalog.entries.filter((e) => e.available).map((e) => e.name).join(", ")}.`, names);
+    }
+    const entry = found.match;
+    if (!entry.available) {
+      log("runSlashCommand", callArgs, "unavailable");
+      return { text: `Not run: /${entry.name} cannot run here. ${entry.reason} Nothing was sent.`, data: { ...ids, command: `/${entry.name}`, outcome: "unavailable", delivered: false, reason: entry.reason } };
+    }
+    const prepared = slash.prepareCommandArgs(entry, split.args);
+    if (prepared.invalid) return { invalid: prepared.invalid };
+    const sent = slash.commandText(entry, prepared.args);
+    const base = { ...ids, command: sent };
+    const working = isRunning(target) || target.permissions.length > 0;
+    if (working && ifBusy !== "interrupt") {
+      log("runSlashCommand", callArgs, "busy");
+      return { text: `Not sent: ${truncate(target.title, 70)} is working, and ${sent} would stop that work. Ask the user whether to interrupt it; only on their explicit yes call again with if_busy interrupt.`, data: { ...base, outcome: "busy", delivered: false } };
+    }
+    const risk = slash.runRisk(entry, prepared.args);
+    const token = `eval-confirm.${encodeURIComponent(sent)}.${working ? "interrupt" : "idle"}`;
+    if (risk.asksFirst && confirmation !== token) {
+      log("runSlashCommand", callArgs, "needs_confirmation");
+      const say = slash.confirmText(entry, { chatTitle: target.title, label: catalog.label, args: prepared.args, notes: risk.notes, interrupting: working, mode: target.mode ?? "default" });
+      return {
+        text: `Not run yet: ${sent} asks first. Tell the user: "${say}" Only after they say yes, call run_slash_command again with the same chat, command and args plus this confirmation.`,
+        data: { ...base, outcome: "needs_confirmation", delivered: false, risk: risk.risk, confirm_text: say, confirmation: token, expires_at: new Date(now + 120_000).toISOString() },
+      };
+    }
+    let outcome = takeOutcome("run_slash_command");
+    if (outcome === "auto") outcome = waitSeconds === 0 ? "not_waiting" : entry.compaction ? "done" : "replied";
+    log("runSlashCommand", callArgs, outcome);
+    fail(outcome);
+    target.turns.push({ at: new Date(now).toISOString(), end: new Date(now).toISOString(), user: sent, agent: [], calls: [] });
+    target.status = "idle";
+    target.updatedAt = new Date(now).toISOString();
+    const once = "It ran once; never run it again for this request.";
+    if (outcome === "done") return { text: `Ran ${sent} in ${truncate(target.title, 70)}: the context was compacted (context 182k → 14k tokens (1% of 1M)). ${once}`, data: { ...base, delivered: true, risk: risk.risk, outcome: "done", context: { before_tokens: 182000, after_tokens: 14000, max_tokens: 1000000, percent_used: 1 } } };
+    if (outcome === "not_waiting") return { text: `Sent ${sent} to ${truncate(target.title, 70)}; it arrived. ${once} Not waiting for the result; offer to check later.`, data: { ...base, delivered: true, risk: risk.risk, outcome: "not_waiting" } };
+    const reply = entry.name === "code-review" ? "calc.js:3 — add returns a - b instead of a + b." : "Готово.";
+    return { text: `Ran ${sent} in ${truncate(target.title, 70)}. ${once} Result:\n${reply}`, data: { ...base, delivered: true, risk: risk.risk, outcome: "replied", reply } };
+  }
+
   return {
     state,
-    ops: { overview, listChats, readChat, readActivity, showImages, searchMessages, startChat, sendMessage, answerApproval, stopChat, releaseStatus, releaseStart },
+    ops: {
+      overview,
+      listChats,
+      readChat,
+      readActivity,
+      showImages,
+      searchMessages,
+      startChat,
+      sendMessage,
+      answerApproval,
+      stopChat,
+      releaseStatus,
+      releaseStart,
+      ...(slash ? { listSlashCommands, runSlashCommand } : {}),
+    },
   };
 }

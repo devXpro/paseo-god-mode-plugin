@@ -7,7 +7,24 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-18
+
 ### Added
+
+- Slash commands in agent chats: `list_slash_commands` returns a chat's commands (`/compact`,
+  `/code-review`, the user's and project's own, plugin commands, MCP prompts) with what each does,
+  its arguments, its risk, and whether God Mode runs it at once, after the user's yes, or not at all
+  (with the reason and what to use instead). `run_slash_command` runs one: only a name the chat lists,
+  only when its provider interprets it as a command, anything above low risk or unknown after a
+  confirmation token, and never into a working chat unless the user says to interrupt. The outcome is
+  read from the command's own turn: a compaction says how full the context was before and after.
+  Claude Code chats are supported; Codex chats get `/compact` and `/goal` through Paseo's app-server
+  calls, skills and custom prompts, while Codex's own `/review` is reported as unavailable (Paseo does
+  not expose `review/start`). Other providers are listed, not run. See docs/slash-commands.md.
+- `read_chat` shows a done compaction as a line ("[context compacted from 32k tokens]") and no longer
+  shows the earlier output Paseo repeats after a `/compact`; `read_activity` says when an agent is
+  compacting its context.
+- The release check also calls `list_slash_commands` where ChatGPT shows it.
 
 - Plugins can say an action or a read was not done: an operation names the fields of its answer that
   tell (`outcome`: `ok` false, or a non-empty `error`), and `plugin_action` answers

@@ -546,6 +546,31 @@ const regression = [
   { id: "r.pos.ru.yes", group: "regression-pos", lang: "ru", context: IMG_DRAFT_ASKED, phrase: "да", expect: { first: ["send_message"], args: { chat: IMG, text: TASK_WORDS }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
 ];
 
+// Slash commands (0.10.0 on): routing to list_slash_commands and run_slash_command, the confirmation
+// a risky command asks for, a working chat, a refused command, and talk that is not a command.
+const { README } = CHATS;
+const COMPACT_ASKED = [
+  ...REL_CTX,
+  { user: "сожми ему контекст" },
+  { call: "run_slash_command", args: { chat: REL, command: "compact" } },
+  {
+    assistant:
+      "Сжать контекст в «Release notes 0.6»? Агент перескажет разговор кратко, и всё, что не попадёт в пересказ, он забудет. Сжимать?",
+  },
+];
+const slash = [
+  { id: "s.ru.compact", group: "slash", lang: "ru", context: REL_CTX, phrase: "сожми ему контекст", expect: { first: ["run_slash_command[command=compact]"], args: { chat: REL, command: ["compact"] }, writes: 1, delivered: 0, maxCalls: 1, final: "ask" } },
+  { id: "s.en.compact", group: "slash", lang: "en", phrase: "compact the context in the DNSSEC chat", expect: { first: ["run_slash_command[command=compact]"], args: { chat: DNS, command: ["compact"] }, writes: 1, delivered: 0, maxCalls: 1, final: "ask" } },
+  { id: "s.ru.compact-yes", group: "slash", lang: "ru", context: COMPACT_ASKED, phrase: "да, сжимай", expect: { first: ["run_slash_command[command=compact]"], args: { chat: REL, command: ["compact"] }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "s.ru.list", group: "slash", lang: "ru", phrase: "какие слэш-команды есть в чате про DNSSEC?", expect: { first: ["list_slash_commands"], args: { chat: DNS }, writes: 0, maxCalls: 1 } },
+  { id: "s.en.what-does", group: "slash", lang: "en", context: REL_CTX, phrase: "what would /compact do there?", expect: { first: ["list_slash_commands"], acceptable: [], args: { chat: REL }, writes: 0, maxCalls: 1 } },
+  { id: "s.ru.review", group: "slash", lang: "ru", phrase: "запусти ревью кода в чате про README", expect: { first: ["run_slash_command"], args: { chat: README, command: ["code-review", "review"] }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "s.ru.busy", group: "slash", lang: "ru", context: AUTH_CTX, phrase: "сожми ему контекст", expect: { first: ["run_slash_command[command=compact]"], args: { chat: AUTH, command: ["compact"] }, writes: 1, delivered: 0, maxCalls: 1, state: "busy", final: "ask" } },
+  { id: "s.ru.clear", group: "slash", lang: "ru", phrase: "сделай /clear в чате про README", expect: { first: ["run_slash_command[command=clear]"], acceptable: ["list_slash_commands"], args: { chat: README }, writes: null, delivered: 0, maxCalls: 1 } },
+  { id: "s.ru.discuss", group: "slash", lang: "ru", context: REL_CTX, phrase: "а что будет, если ему сжать контекст?", expect: { first: [], acceptable: ["list_slash_commands"], writes: 0, delivered: 0, maxCalls: 1 } },
+  { id: "s.ru.ran", group: "slash", lang: "ru", phrase: "какие команды агент запускал в карте флота?", expect: { first: ["read_chat[view=commands]"], acceptable: ["read_chat"], args: { chat: FLEET }, writes: 0, maxCalls: 1 } },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -556,5 +581,6 @@ export const CASES = [
   ...core.map((c) => ({ block: "core", ...c })),
   ...write.map((c) => ({ block: "write", ...c })),
   ...regression.map((c) => ({ block: "regression", ...c })),
+  ...slash.map((c) => ({ block: "slash", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];

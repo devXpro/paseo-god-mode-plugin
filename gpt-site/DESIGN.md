@@ -124,6 +124,8 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | `answer_approval` | write | Allow or deny a pending request, pressing the same action the app shows ("Implement", "Reject"). Requests are described as what will happen: "plan: …", "run: …", "edit …". |
 | `stop_chat` | write, destructive | Cancels the running turn. |
 | `archive_chat` | write, destructive | Archives a chat that is not working (outcome `archived`); a working one is `busy`, an archived one `already_archived`. Reversible by a new message. |
+| `list_slash_commands` | read | A chat's slash commands from Paseo's `list_commands`, judged by the provider adapters in `core/slash.mjs` (§12): what each does, risk, whether it runs at once, after a yes, or not at all and why. |
+| `run_slash_command` | write, destructive, open world | One command as the message `/name args`, only when the chat lists it and its provider interprets it; risky and unknown ones need a confirmation token, a working chat answers `busy` unless `if_busy: "interrupt"`. The outcome is read from the command's own turn. |
 | `plugin_read` | read | What Paseo plugins offer, for plugins that answer `meta.describe` (§11). Without `plugin`: every installed plugin with its reads and actions, or why it has none. With `plugin` (id, title, alias or spoken words) and no `operation`: its main read. Answers are trimmed to the fields the plugin marks, secret-looking keys redacted. |
 | `plugin_action` | write, destructive, open world | One action a plugin describes. A `low`-risk one runs at once; anything else returns `needs_confirmation` with the text to read out and a token bound to the exact arguments, and runs on the second call with it. `done` comes with `delivered: true`. |
 | `get_logs` | read | The call log; works without the pairing link. |
@@ -285,3 +287,31 @@ nothing that says which call reads and which one acts. So a plugin opts in by an
   search here: finding a chat or a thing stays with the tools and reads that list them.
 - **Other people's words (`untrusted`).** Marked answers carry a fixed note and `untrusted: true`;
   the instructions repeat the rule.
+
+## 12. Slash commands
+
+Paseo lists a chat's commands (`list_commands`: name, description, argument hint) but has no command
+RPC: `/name args` is a message, and only the provider behind the chat decides whether it is a command.
+Anything it does not take as one reaches the model as text (Claude Code 2.1.274+ spends a model turn
+on an unknown name). So `core/slash.mjs` has one adapter per provider, and God Mode sends nothing an
+adapter does not vouch for. The provider matrix is in [docs/slash-commands.md](../docs/slash-commands.md).
+
+- **Claude Code** expands commands itself. Its adapter knows the built-ins (risk, effect, model or
+  not) and refuses the ones that act behind Paseo's back (`/clear`, `/model`, `/rewind`, session
+  settings) or leak (`/heapdump`). A description that ends in `(project)` or `(user)` marks the user's
+  own command, even under a built-in name; Paseo drops aliases, so `/review` maps to the listed
+  `/code-review`.
+- **Codex** through Paseo: `/compact` and `/goal` are app-server calls Paseo makes outside any turn,
+  skills are native skill inputs, custom prompts are filled in by Paseo. Codex's own `/review`
+  (`review/start`) is not exposed by Paseo 0.11.4, so it is `unavailable` rather than sent as text.
+- **Other providers** are listed, not run: unverified.
+- **Busy.** Paseo replaces a running turn with a command even on `steer` (seen live), so a working
+  chat answers `busy`; `if_busy: "interrupt"` runs it, and the confirmation of a risky command covers
+  the interruption.
+- **Confirmation.** As for plugin actions (§11): an HMAC token over the chat, the exact command text
+  and the interrupt decision, two minutes, not single use. Everything above low and every unknown
+  command asks first.
+- **Results.** God Mode tags its message with a client message id and reads the items after it:
+  `waitForFinish`'s last message is the previous turn's after `/compact`, and Paseo repeats the
+  previous output after a done manual compaction (observed 2026-10-18), so neither is used. A Codex
+  compaction has no turn to wait for; its items are polled until the wait ends.

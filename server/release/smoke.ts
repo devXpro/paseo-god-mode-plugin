@@ -82,6 +82,9 @@ export async function smokeTest({ codex, checkoutDir, log, retries = 4, metadata
         if (chat) await check("read_chat", { chat, turns: 2 });
         // Only where the live plugin has it. The chat's newest image, or word that it has none: a valid result either way.
         if (chat && visible[`${prefix}.show_images`]) await check("show_images", { chat });
+        // Only where the live plugin has it (0.10.0 on). The chat's commands, or why Paseo could not list
+        // them: a valid result either way. It runs nothing.
+        if (chat && visible[`${prefix}.list_slash_commands`]) await check("list_slash_commands", { chat, query: "compact" });
         await check("search_messages", { query: "test", limit: 1, scan: 5 });
         // Only where the live plugin has it: a rollback can put back a version from before 0.8.0, and
         // right after an update ChatGPT may not show it yet (a stale list is a warning above, never a

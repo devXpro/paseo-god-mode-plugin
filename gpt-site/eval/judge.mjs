@@ -11,7 +11,7 @@ import { CASES } from "./cases.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
-const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site"]);
+const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site", "run_slash_command"]);
 const JUDGED_GROUPS = new Set(["prepare", "unclear", "discussion", "duplicate", "state", "risky", "send", "ambiguous", "live"]);
 const BATCH = 15;
 const DISABLED = ["apps", "plugins", "remote_plugin", "tool_suggest", "shell_tool", "unified_exec", "multi_agent", "image_generation", "goals", "sleep_tool", "view_image", "browser_use", "computer_use", "skill_search", "hooks"];

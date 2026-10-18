@@ -25,8 +25,8 @@ sidebar starts them and shows the job's log while it runs.
 6. **Verifying** — until the new deployment is live.
 7. **Checking the live plugin** — through the Codex app-server, the way ChatGPT sees the plugin: that
    ChatGPT shows every tool with its current description, and read-only calls (`list_chats`,
-   `overview`, `read_chat`, `search_messages`, and `read_activity`, `show_images` and `plugin_read`
-   where ChatGPT shows them) answer and match their output schemas.
+   `overview`, `read_chat`, `search_messages`, and `read_activity`, `show_images`, `list_slash_commands`
+   and `plugin_read` where ChatGPT shows them) answer and match their output schemas.
 8. **Asking ChatGPT to pick up the new tools** — only when ChatGPT still shows the old tool list: see
    below.
 

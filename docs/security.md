@@ -24,7 +24,7 @@ reported. The short version for users is in the [README](../README.md#security).
 ## Writes
 
 The tools that change something: `start_chat`, `send_message`, `answer_approval`, `stop_chat`,
-`archive_chat`, `plugin_action`, `update_site`.
+`archive_chat`, `run_slash_command`, `plugin_action`, `update_site`.
 
 - **Only on a command.** The server instructions tell ChatGPT to call a write tool only when the
   user's latest words tell it to act now, or are "yes" to its own "Send it?"; drafting, discussing or
@@ -64,6 +64,28 @@ What is not guaranteed:
 - **The plugin's honesty.** A plugin is trusted code on your Mac; its description says what its RPCs
   do, and God Mode cannot verify that.
 
+## Slash commands
+
+`run_slash_command` sends a chat's own command as a message, and only one that the chat lists and
+whose provider God Mode knows how to run ([slash-commands.md](slash-commands.md)).
+
+What is guaranteed:
+
+- **Nothing the agent would take as plain text.** A name the chat does not list is never sent, nor a
+  command God Mode refuses (`/clear`, `/rewind`, `/model`, `/heapdump`, session and account
+  commands, Codex's `/review`), nor arguments that start a second command.
+- **Exactly this run.** Anything above low risk, and every command God Mode cannot judge (your own,
+  plugins', MCP prompts), runs only with a confirmation token: HMAC-SHA256 keyed from the pairing
+  link, over the chat, the exact command text and whether it interrupts the chat's work; two minutes.
+- **A working chat is not interrupted by surprise.** A command waits while the chat works; it stops
+  the work only with `if_busy: "interrupt"`, which the rules allow only on the user's explicit yes,
+  and a risky command's confirmation covers that interruption.
+
+What is not guaranteed: that the user said yes (ChatGPT's part), what a custom command does beyond
+its description, and that a command asks before acting: it runs with the chat's own permission mode,
+and with permissions bypassed nothing asks (the confirmation says so). Tokens are not single use, as
+for plugin actions.
+
 ## Other people's words
 
 Answers from operations marked `untrusted` (messages, mail, tickets) carry a fixed note and
@@ -91,7 +113,8 @@ to act only on the user's own words.
 | The Mac asleep or offline | "Paseo is offline: the computer running it is probably asleep or disconnected." A write adds "Nothing was sent." |
 | A request that failed on the way | "Paseo request failed: …"; a write adds "Unknown whether it took effect: never say it did." |
 | A plugin that said it did not do it | `outcome: "refused"`, `delivered: false` and the reason (a read: `refused: true`). |
-| A busy agent | `send_message` answers `busy`, `delivered: false`, and asks whether to add the message to the current work or interrupt. |
+| A busy agent | `send_message` answers `busy`, `delivered: false`, and asks whether to add the message to the current work or interrupt; `run_slash_command` answers `busy` and asks whether to interrupt. |
+| A slash command God Mode does not run | `run_slash_command` answers `unavailable`, `delivered: false`, with the reason and what to use instead. |
 | A tool ChatGPT remembers from an older version | "There is no tool …: ChatGPT is using an outdated tool list for this plugin. Tell the user to start a new chat so it reloads." |
 | No pairing link configured | Every tool but `get_logs` answers that `PASEO_PAIRING_URL` must be set and the Site redeployed. |
 | A tool call over 45 seconds | "Paseo request failed: no answer within 45 s." |

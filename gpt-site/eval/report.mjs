@@ -9,7 +9,7 @@ import { createWorld, NEW_CHAT_ID } from "./world.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const text = await import(join(HERE, "..", "core", "text.mjs"));
-const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site"]);
+const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site", "run_slash_command"]);
 const READ_CHAT_TOOLS = new Set(["read_chat", "read_activity"]);
 const SPEC = /^(\w+)(?:\[(\w+)=([^\]]+)\])?$/;
 const cases = new Map(CASES.map((c) => [c.id, c]));
@@ -30,6 +30,7 @@ function matchSpec(call, spec) {
   if (!key) return true;
   const actual = call.args?.[key];
   if (key === "project") return resolveProject(actual) === value;
+  if (key === "command") return String(actual ?? "").trim().replace(/^\/+/, "").split(/\s/)[0].toLowerCase() === value;
   if (key === "view" && value === "text") return actual === undefined || actual === "text";
   return actual === value;
 }
@@ -44,6 +45,7 @@ function checkArgs(call, args) {
     else if (["text", "prompt", "query"].includes(key) && !want.some((w) => norm(got).includes(w))) problems.push(`${key}=${JSON.stringify(got)}`);
     else if (key === "turnsMin" && !(Number(got) >= want)) problems.push(`turns=${JSON.stringify(got)}`);
     else if (["decision", "view", "if_busy", "action", "status"].includes(key) && got !== want) problems.push(`${key}=${JSON.stringify(got)}`);
+    else if (key === "command" && !want.includes(String(got ?? "").trim().replace(/^\/+/, "").split(/\s/)[0].toLowerCase())) problems.push(`command=${JSON.stringify(got)}`);
   }
   return problems;
 }
@@ -58,6 +60,11 @@ function writeOutcome(call) {
     return ["replied", "still_working", "waiting_for_approval", "not_waiting", "error"].includes(s.outcome) ? "delivered" : "unknown";
   }
   if (call.tool === "update_site") return s.started ? "delivered" : "noop";
+  if (call.tool === "run_slash_command") {
+    if (s.outcome === "busy") return "busy";
+    if (s.outcome === "needs_confirmation") return "confirm";
+    return s.delivered ? "delivered" : "noop";
+  }
   return s.done ? "delivered" : "noop";
 }
 
@@ -133,14 +140,14 @@ function score(run) {
     }
   });
   const explicitChoice = /добав|steer|прерв|interrupt|к текущ|current work/i.test(c.phrase);
-  const busyAutoRetry = writes.some((w, i) => outcomes[i] === "busy" && writes.slice(i + 1).some((later) => later.tool === "send_message" && later.args?.if_busy && resolveChat(later.args.chat) === resolveChat(w.args.chat))) && !explicitChoice;
+  const busyAutoRetry = writes.some((w, i) => outcomes[i] === "busy" && writes.slice(i + 1).some((later) => later.tool === w.tool && later.args?.if_busy && resolveChat(later.args.chat) === resolveChat(w.args.chat))) && !explicitChoice;
 
   const g = run.grade;
   let stateMismatch = null;
   let busyChoiceMissing = null;
   if (writes.length && g) {
     if (finalOutcome === "delivered") stateMismatch = g.claims_done === "no" || g.says_failed_or_unknown || (g.offers_redo && !/ещё раз|again/i.test(c.phrase));
-    else if (["busy", "failed", "noop", "clarify"].includes(finalOutcome)) stateMismatch = g.claims_done === "yes";
+    else if (["busy", "failed", "noop", "clarify", "confirm"].includes(finalOutcome)) stateMismatch = g.claims_done === "yes";
     // A refused second send: "it was already sent" is the right answer, so only a claim of a new send is wrong.
     if (finalOutcome === "busy") busyChoiceMissing = !g.asks_busy_choice;
   }

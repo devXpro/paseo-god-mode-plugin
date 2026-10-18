@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -116,6 +116,10 @@ test("instructions follow the language and the confirmation setting, and route e
   const marker = "→ search_messages.";
   const routingEnd = text.indexOf(marker) + marker.length;
   assert.ok(routingEnd > marker.length && routingEnd <= 512, `the routing sits in the first 512 characters (ends at ${routingEnd})`);
+  const slash = "slash commands (/compact) → run_slash_command, list_slash_commands.";
+  const slashEnd = text.indexOf(slash) + slash.length;
+  assert.ok(slashEnd > slash.length && slashEnd <= 512, `slash command routing sits in the first 512 characters too (ends at ${slashEnd})`);
+  assert.match(text, /"archive it", "compact it"\), or are "yes"/);
 });
 
 test("the server version changes with anything the model reads", async () => {
@@ -134,11 +138,30 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes sixteen tools, output schemas and honest annotations", async () => {
+test("tools/list exposes eighteen tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
-    ["overview", "list_chats", "read_chat", "read_activity", "show_images", "search_messages", "start_chat", "send_message", "answer_approval", "stop_chat", "archive_chat", "plugin_read", "plugin_action", "update_status", "update_site", "get_logs"],
+    [
+      "overview",
+      "list_chats",
+      "read_chat",
+      "read_activity",
+      "show_images",
+      "search_messages",
+      "start_chat",
+      "send_message",
+      "answer_approval",
+      "stop_chat",
+      "archive_chat",
+      "list_slash_commands",
+      "run_slash_command",
+      "plugin_read",
+      "plugin_action",
+      "update_status",
+      "update_site",
+      "get_logs",
+    ],
   );
   for (const tool of result.tools) {
     assert.equal(Boolean(tool.outputSchema), tool.name !== "get_logs", `${tool.name} outputSchema`);
@@ -160,7 +183,13 @@ test("tools/list exposes sixteen tools, output schemas and honest annotations", 
   assert.equal(byName.plugin_action.annotations.readOnlyHint, false);
   assert.equal(byName.plugin_action.annotations.destructiveHint, true);
   assert.equal(byName.plugin_action.annotations.openWorldHint, true, "a plugin can reach people and services");
-  assert.ok(TOOLS.filter((t) => t.name !== "plugin_action").every((t) => t.annotations.openWorldHint === false));
+  assert.equal(byName.list_slash_commands.annotations.readOnlyHint, true);
+  assert.equal(byName.run_slash_command.annotations.readOnlyHint, false);
+  assert.equal(byName.run_slash_command.annotations.destructiveHint, true);
+  assert.equal(byName.run_slash_command.annotations.openWorldHint, true, "a command can post on a pull request or start a cloud routine");
+  assert.deepEqual(byName.run_slash_command.inputSchema.required, ["chat", "command"]);
+  assert.deepEqual(byName.run_slash_command.inputSchema.properties.if_busy.enum, ["interrupt"], "no steer: Paseo replaces the turn either way");
+  assert.ok(TOOLS.filter((t) => !["plugin_action", "run_slash_command"].includes(t.name)).every((t) => t.annotations.openWorldHint === false));
   assert.equal(byName.plugin_read.inputSchema.required, undefined, "plugin_read without a plugin lists them");
   assert.deepEqual(byName.plugin_action.inputSchema.required, ["plugin", "operation"]);
   assert.match(byName.read_chat.description, /turns=5/);
@@ -184,7 +213,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "send_message", "answer_approval", "stop_chat", "archive_chat"]) {
+  for (const tool of ["read_chat", "read_activity", "show_images", "send_message", "answer_approval", "stop_chat", "archive_chat", "list_slash_commands", "run_slash_command"]) {
     assert.match(byName[tool].inputSchema.properties.chat.description, /Ids are for calls only/, tool);
     assert.match(byName[tool].inputSchema.properties.chat.description, /Keep the chat being discussed/, tool);
   }
@@ -211,6 +240,15 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.read_chat.description, /view "thinking"/);
   assert.match(byName.update_site.description, /after one update_status call/);
   assert.match(byName.update_site.description, /update the God Mode plugin in Paseo first/);
+  // Slash commands: listing is never a required first step; a run follows the write rules.
+  assert.match(byName.list_slash_commands.description, /To run a command, call run_slash_command directly; no list first/);
+  assert.match(byName.list_slash_commands.description, /Not for the shell commands an agent ran: that is read_chat view commands/);
+  assert.match(byName.run_slash_command.description, /only when the user's latest words tell you to run a slash command in a chat now/);
+  assert.match(byName.run_slash_command.description, /Pass the command's name in English as the chat lists it/);
+  assert.match(byName.run_slash_command.description, /needs_confirmation: say confirm_text and, only after the user's yes, call again/);
+  assert.match(byName.run_slash_command.description, /busy: the chat is working and nothing was sent/);
+  assert.match(byName.run_slash_command.description, /delivered=true means it reached the agent: never run it again for that request/);
+  assert.match(byName.run_slash_command.description, /do not poll/);
 });
 
 test("without the secret, tools refuse except get_logs", async () => {
@@ -292,6 +330,9 @@ test("a failed write never reads as done", async () => {
     archiveChat: () => {
       throw new Error("no answer within 45 s");
     },
+    runSlashCommand: () => {
+      throw new Error("no answer within 45 s");
+    },
     stopChat: () => {
       throw new PaseoOffline("connect timed out");
     },
@@ -303,7 +344,30 @@ test("a failed write never reads as done", async () => {
   assert.match((await handle(call("send_message", { chat: "x", text: "go" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
   assert.match((await handle(call("archive_chat", { chat: "x" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("run_slash_command", { chat: "x", command: "compact" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.doesNotMatch((await handle(call("read_chat", { chat: "x" }))).result.content[0].text, /took effect/);
+});
+
+test("slash command tools pass their arguments, and bad ones are a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured({ PASEO_WAIT_SECONDS: "9" }), ops });
+  await handle(call("list_slash_commands", { chat: "fleet", query: "review", limit: 5 }));
+  await handle(call("run_slash_command", { chat: "fleet", command: "compact", args: "keep notes", if_busy: "interrupt", confirmation: "tok" }));
+  await handle(call("run_slash_command", { chat: "fleet", command: "context", wait_seconds: 0 }));
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.args]),
+    [
+      ["listSlashCommands", { chat: "fleet", query: "review", limit: 5 }],
+      ["runSlashCommand", { chat: "fleet", command: "compact", args: "keep notes", ifBusy: "interrupt", confirmation: "tok", waitSeconds: 9 }],
+      ["runSlashCommand", { chat: "fleet", command: "context", args: undefined, ifBusy: undefined, confirmation: undefined, waitSeconds: 0 }],
+    ],
+  );
+  for (const bad of [{ chat: "fleet" }, { command: "compact" }, { chat: "fleet", command: "compact", if_busy: "steer" }, { chat: "fleet", command: "compact", args: { text: "x" } }]) {
+    const answer = await handle(call("run_slash_command", bad));
+    assert.equal(answer.error?.code, -32602, JSON.stringify(bad));
+  }
+  assert.equal((await handle(call("list_slash_commands", {}))).error?.code, -32602);
+  assert.equal(calls.length, 3, "nothing ran for the bad calls");
 });
 
 test("an offline daemon becomes one sentence, logged with the detail, never the secret", async () => {
@@ -408,6 +472,35 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["stop_chat", { chat_id: sampleChat.id, done: true }],
     ["archive_chat", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "archived", done: true, archived_at: "2026-10-17T12:00:00.000Z" }],
     ["archive_chat", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy", done: false }],
+    [
+      "list_slash_commands",
+      {
+        chat: sampleChat,
+        provider: "claude",
+        runtime: "Claude Code",
+        runs_commands: true,
+        total: 2,
+        runs_at_once: 1,
+        asks_first: 1,
+        unavailable: 0,
+        shown: 2,
+        commands: [
+          { name: "context", usage: "/context", source: "built_in", description: "Show current context usage", effect: "Shows how full the context window is.", args: "none", runs_model: false, risk: "low", asks_first: false, available: true, when_busy: "waits" },
+          { name: "gm-ping", usage: "/gm-ping [word]", source: "custom", description: "answers pong (project)", effect: "Runs the project's own command.", args: "[word]", runs_model: null, risk: "unknown", asks_first: true, available: true, when_busy: "waits" },
+        ],
+      },
+    ],
+    ["list_slash_commands", { chat: sampleChat, provider: "codex", runtime: "Codex", total: 0, shown: 0, commands: [], error: "Codex binary not found" }],
+    ["list_slash_commands", { chat: sampleChat, provider: "opencode", runtime: "opencode", runs_commands: false, reason: "not verified", total: 0, runs_at_once: 0, asks_first: 0, unavailable: 0, shown: 0, commands: [] }],
+    ["list_slash_commands", clarification],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/compact", outcome: "needs_confirmation", delivered: false, risk: "disruptive", confirm_text: "Run /compact …", confirmation: "a.b", expires_at: "2026-10-18T07:02:00.000Z" }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/compact", delivered: true, risk: "disruptive", outcome: "done", context: { before_tokens: 22772, after_tokens: 1755, max_tokens: 1000000, percent_used: 0 } }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/compact", delivered: true, risk: "disruptive", outcome: "refused", reason: "Not enough messages to compact." }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/context", delivered: true, risk: "low", outcome: "replied", reply: "## Context Usage", images: 1 }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/context", outcome: "busy", delivered: false }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "codex", command: "/review", outcome: "unavailable", delivered: false, reason: "Paseo does not expose it" }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/x", delivered: true, risk: "unknown", outcome: "waiting_for_approval", approval: "run: make clean" }],
+    ["run_slash_command", { needs_clarification: { kind: "command", query: "co", candidates: ["code-review", "context"] } }],
     ["archive_chat", clarification],
     ["read_chat", { chat: { ...sampleChat, context: { used_tokens: 59606, max_tokens: 1000000, percent_used: 6, remaining_tokens: 940394 } }, total_turns: 3, turns: [{ turn: 1, position: 3, started_at: null, thinking: "Check the relay first.", omitted_thoughts: 0 }] }],
     ["update_status", { site_version: "0.1.0", build: "v0.1.0-2-gabc1234", installed_version: "0.1.1", update_available: true, latest_release: "0.2.0", latest_is_newer: true, live_release: 7, mac_online: true, job: { action: "update", state: "running", step: "Publishing", started_at: "2026-10-16T19:00:00.000Z", finished_at: null, message: null, error: null } }],

@@ -5,6 +5,7 @@
 | [architecture.md](architecture.md) | Everyone | The Site, the plugin, the relay; one tool call, one plugin action, one release. |
 | [configuration.md](configuration.md) | Users | Every setting, where it lives, when it applies; what Paseo and ChatGPT need. |
 | [tools.md](tools.md) | Users, developers | The tools ChatGPT gets, their arguments and conventions. |
+| [slash-commands.md](slash-commands.md) | Users, developers | `list_slash_commands` and `run_slash_command`: what runs for Claude Code and Codex, and what does not, with the reasons. |
 | [plugin-tools.md](plugin-tools.md) | Plugin authors, developers | `plugin_read` and `plugin_action`: discovery, names, arguments, results, outcomes, confirmations. |
 | [plugin-capabilities.md](plugin-capabilities.md) | Plugin authors | The `meta.describe` contract, `paseo.capabilities/1`: every field, `outcome`, `target`, `untrusted`. |
 | [plugin-authoring.md](plugin-authoring.md) | Plugin authors | Implementing and testing `meta.describe` in a Paseo plugin; what not to describe. |

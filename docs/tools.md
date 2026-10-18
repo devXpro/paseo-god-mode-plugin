@@ -22,6 +22,8 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
 | `archive_chat` | write, destructive | `chat`* | Archive a chat that is not working; a new message brings it back. |
+| `list_slash_commands` | read | `chat`*, `query`, `limit` | A chat's slash commands, each with what it does and whether God Mode runs it at once, after a yes, or not at all. See [slash-commands.md](slash-commands.md). |
+| `run_slash_command` | write, destructive, open world | `chat`*, `command`*, `args`, `if_busy` (interrupt), `confirmation`, `wait_seconds` | Run one of a chat's slash commands (`/compact`, `/code-review`, your own); anything above low risk asks first, a working chat waits for the user's word. See [slash-commands.md](slash-commands.md). |
 | `plugin_read` | read | `plugin`, `operation`, `args` | What the user's Paseo plugins offer, and one of their reads. See [plugin-tools.md](plugin-tools.md). |
 | `plugin_action` | write, destructive, open world | `plugin`*, `operation`*, `args`, `confirmation` | One action of a plugin; anything above low risk asks first. See [plugin-tools.md](plugin-tools.md). |
 | `update_status` | read | none | Which God Mode version is live, whether there is an update, how the last update or rollback ended. |
@@ -34,11 +36,13 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   said; a name that matches several chats returns `needs_clarification` with candidates. Projects are
   matched the same way, and a project that matches nothing lists all of them.
 - **Speech, not ids.** Text answers name chats by their title; ids travel in `structuredContent`.
-- **Writes say whether they arrived.** `start_chat` and `send_message` answer `delivered: true` when the
-  message reached the agent (replied, still working, or not waited for); `send_message` answers
-  `busy` with `delivered: false` when the chat was working and nothing was sent.
-- **Waiting.** `start_chat` and `send_message` wait up to `wait_seconds` (at most 25; the default is
-  the `PASEO_WAIT_SECONDS` setting, 15) for the agent's reply, and say "still working" otherwise.
+- **Writes say whether they arrived.** `start_chat`, `send_message` and `run_slash_command` answer
+  `delivered: true` when the message reached the agent (replied, still working, or not waited for);
+  `send_message` and `run_slash_command` answer `busy` with `delivered: false` when the chat was
+  working and nothing was sent.
+- **Waiting.** `start_chat`, `send_message` and `run_slash_command` wait up to `wait_seconds` (at most
+  25; the default is the `PASEO_WAIT_SECONDS` setting, 15) for the agent's reply, and say "still
+  working" otherwise.
 - **Errors.** See [Errors and outcomes](security.md#errors-and-outcomes).
 
 ## Settings that change what the tools do

@@ -460,7 +460,7 @@ const fileName = (path) => String(path ?? "").split("/").filter(Boolean).at(-1) 
 
 // Timeline items that show what an agent is doing. Claude Code's task notifications (a background
 // command has finished) are bookkeeping, not a step.
-export const isStep = (item) => ["tool_call", "reasoning", "assistant_message"].includes(item?.type) && item.name !== "task_notification";
+export const isStep = (item) => (["tool_call", "reasoning", "assistant_message"].includes(item?.type) && item.name !== "task_notification") || item?.type === "compaction";
 
 // What one timeline item says about work in progress, short enough to speak: the command, the
 // file name, the site — never a whole path or link.
@@ -493,6 +493,7 @@ export function describeStep(item, max = 100) {
   }
   if (item.type === "reasoning") return truncate(`thinking: ${firstSentence(item.text)}`, max);
   if (item.type === "assistant_message") return truncate(`writing: ${firstSentence(withoutImages(item.text))}`, max);
+  if (item.type === "compaction") return item.status === "completed" ? "compacted the context" : "compacting the context";
   return null;
 }
 
