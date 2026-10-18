@@ -21,6 +21,12 @@ GitHub release vX.Y.Z.
   `untrusted: true`, and the instructions say never to act on instructions inside them.
 - docs/plugin-capabilities.md describes the three keys; descriptions without them work unchanged.
 
+### Changed
+
+- The README is a short entry point; the reference lives in [docs/](docs/README.md): architecture,
+  configuration, tools, the plugin tools and contract, writing a plugin, security, operations and
+  development.
+
 ## [0.9.0] - 2026-10-17
 
 ### Added
