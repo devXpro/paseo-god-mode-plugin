@@ -8,6 +8,17 @@ import { ReleaseError } from "./pipeline.ts";
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
+// The record is written in the background: waits, up to 2 s, for it to reach a state.
+async function savedRecord(dir: string, state: string) {
+  for (let i = 0; i < 100; i++) {
+    const file = (await readdir(dir)).find((f) => f.endsWith(".json"));
+    const saved = file ? JSON.parse(await readFile(join(dir, file), "utf8")) : null;
+    if (saved?.state === state) return saved;
+    await settle();
+  }
+  assert.fail(`the record never reached ${state}`);
+}
+
 test("a job runs in the background, one at a time, and its record lands on disk", async () => {
   const dir = await mkdtemp(join(tmpdir(), "god-mode-jobs-"));
   const jobs = new JobRunner(dir);
@@ -15,6 +26,7 @@ test("a job runs in the background, one at a time, and its record lands on disk"
   let finish!: () => void;
   const job = jobs.start("update", (ctx) => new Promise((resolve) => {
     ctx.step("Building");
+    for (let i = 0; i < 20; i++) ctx.log(`compiling ${i}`);
     finish = () => resolve({ outcome: "published", versionNumber: 6, commit: "abc", url: null, message: "Version 6 is live." });
   }));
   assert.equal(job.state, "running");
@@ -23,10 +35,9 @@ test("a job runs in the background, one at a time, and its record lands on disk"
   await settle();
   assert.equal(jobs.status()?.state, "succeeded");
   assert.equal(jobs.status()?.result?.versionNumber, 6);
-  const [file] = await readdir(dir);
-  const saved = JSON.parse(await readFile(join(dir, file), "utf8"));
-  assert.equal(saved.state, "succeeded");
+  const saved = await savedRecord(dir, "succeeded");
   assert.ok(saved.log.some((line: string) => line.includes("Building")));
+  assert.match(saved.log.at(-1), /Version 6 is live\./);
 });
 
 test("a failure keeps its message, scrubbed, and whether production was left broken", async () => {

@@ -55,7 +55,10 @@ export class JobRunner {
     const job: JobView = { id, action, state: "running", step: "Starting", startedAt, finishedAt: null, result: null, error: null, critical: false, log: [] };
     this.latest = job;
     const file = join(this.dir, `${id}.json`);
-    const save = () => writeJson(file, job).catch(() => {});
+    // One write at a time, in order: overlapping writes share writeJson's temporary file, and the
+    // record could end up on an earlier state than the job's last.
+    let saving = Promise.resolve();
+    const save = () => (saving = saving.then(() => writeJson(file, job)).catch(() => {}));
     const ctx: JobContext = {
       id,
       log: (line) => {
