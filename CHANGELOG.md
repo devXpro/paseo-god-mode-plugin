@@ -7,6 +7,15 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+### Added
+
+- An optional voice button that opens ChatGPT's own voice chat from Paseo, off until turned on under
+  **6 · Voice button**. You name it (Jarvis by default) and choose where it shows: a pill in every
+  chat, workspace headers, the sidebar, the Command Center and a slash command. On a Mac it presses
+  ChatGPT's voice shortcut, read from ChatGPT's settings, after bringing ChatGPT forward (Paseo needs
+  Accessibility; otherwise ChatGPT opens and you tap voice once). On an iPhone it runs an Apple
+  Shortcut holding ChatGPT's voice action. See docs/voice-button.md.
+
 ## [0.10.0] - 2026-10-18
 
 ### Added
