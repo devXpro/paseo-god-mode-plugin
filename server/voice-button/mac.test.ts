@@ -7,6 +7,8 @@ import { type RunResult, type Runner, detectVoiceHotkey, keyPressScript, launchO
 const ok = (stdout = ""): RunResult => ({ stdout, stderr: "", code: 0 });
 const fail = (): RunResult => ({ stdout: "", stderr: "boom", code: 1 });
 const noSleep = async () => {};
+/** The ChatGPT app is in /Applications, whatever machine runs the tests. */
+const exists = (path: string) => path === "/Applications/ChatGPT.app/Contents/Info.plist";
 
 /** A Mac with the ChatGPT/Codex app installed; `extra` answers first. */
 function mac(extra: (file: string, script: string, args: string[]) => RunResult | undefined = () => undefined) {
@@ -62,7 +64,7 @@ test("ChatGPT's global voice shortcut wins over the in-app one, then the default
 
 test("auto mode brings ChatGPT forward, then presses its shortcut", async () => {
   const { run, calls } = mac(ready);
-  const launch = await launchOnMac(settings(), { run, platform: "darwin", sleep: noSleep, detectHotkey: () => ({ command: "composer.startVoiceMode", key: "Ctrl+Command+Alt+V" }) });
+  const launch = await launchOnMac(settings(), { run, exists, platform: "darwin", sleep: noSleep, detectHotkey: () => ({ command: "composer.startVoiceMode", key: "Ctrl+Command+Alt+V" }) });
   assert.equal(launch.outcome, "voice-requested");
   assert.equal(launch.needsOneTap, false);
   const front = calls.indexOf("/usr/bin/open -b com.openai.codex");
@@ -72,13 +74,13 @@ test("auto mode brings ChatGPT forward, then presses its shortcut", async () => 
 
 test("a set hotkey overrides ChatGPT's", async () => {
   const { run, calls } = mac(ready);
-  await launchOnMac(settings({ macMode: "hotkey", macHotkey: "cmd+shift+v" }), { run, platform: "darwin", sleep: noSleep, detectHotkey: () => assert.fail("not read") });
+  await launchOnMac(settings({ macMode: "hotkey", macHotkey: "cmd+shift+v" }), { run, exists, platform: "darwin", sleep: noSleep, detectHotkey: () => assert.fail("not read") });
   assert.ok(calls.some((c) => c.includes("CGEventCreateKeyboardEvent(null, 9, true)") && c.includes("1179648")));
 });
 
 test("without Accessibility it opens ChatGPT and presses nothing", async () => {
   const { run, calls } = mac((file, script) => (file.endsWith("osascript") && script.includes("AXIsProcessTrusted") ? ok("false\n") : undefined));
-  const launch = await launchOnMac(settings(), { run, platform: "darwin", detectHotkey: () => ({ command: "x", key: "ctrl+shift+v" }) });
+  const launch = await launchOnMac(settings(), { run, exists, platform: "darwin", detectHotkey: () => ({ command: "x", key: "ctrl+shift+v" }) });
   assert.equal(launch.via, "open");
   assert.equal(launch.needsOneTap, true);
   assert.match(launch.message, /Accessibility/);
@@ -87,7 +89,7 @@ test("without Accessibility it opens ChatGPT and presses nothing", async () => {
 
 test("keys never go to another app", async () => {
   const { run, calls } = mac((file, script) => (file.endsWith("osascript") && script.includes("frontmostApplication") ? ok("com.apple.finder\n") : ready(file, script)));
-  const launch = await launchOnMac(settings(), { run, platform: "darwin", sleep: noSleep, detectHotkey: () => ({ command: "x", key: "ctrl+shift+v" }) });
+  const launch = await launchOnMac(settings(), { run, exists, platform: "darwin", sleep: noSleep, detectHotkey: () => ({ command: "x", key: "ctrl+shift+v" }) });
   assert.equal(launch.via, "open");
   assert.ok(!pressed(calls));
 });
@@ -95,27 +97,32 @@ test("keys never go to another app", async () => {
 test("a closed ChatGPT starts in the background before the press", async () => {
   let checks = 0;
   const { run, calls } = mac((file, script) => (file.endsWith("pgrep") ? (++checks > 2 ? ok("1\n") : fail()) : ready(file, script)));
-  const launch = await launchOnMac(settings(), { run, platform: "darwin", sleep: noSleep, detectHotkey: () => ({ command: "x", key: "ctrl+shift+v" }) });
+  const launch = await launchOnMac(settings(), { run, exists, platform: "darwin", sleep: noSleep, detectHotkey: () => ({ command: "x", key: "ctrl+shift+v" }) });
   assert.equal(launch.via, "hotkey");
   assert.ok(calls.includes("/usr/bin/open -g -b com.openai.codex"));
 });
 
 test("open mode opens ChatGPT for one tap; a failure to open is an error", async () => {
   const { run } = mac();
-  const launch = await launchOnMac(settings({ macMode: "open" }), { run, platform: "darwin" });
+  const launch = await launchOnMac(settings({ macMode: "open" }), { run, exists, platform: "darwin" });
   assert.deepEqual([launch.outcome, launch.needsOneTap], ["app-opened", true]);
   const broken = mac((file) => (file === "/usr/bin/open" ? fail() : undefined));
-  await assert.rejects(launchOnMac(settings({ macMode: "open" }), { run: broken.run, platform: "darwin" }), /Could not open ChatGPT/);
+  await assert.rejects(launchOnMac(settings({ macMode: "open" }), { run: broken.run, exists, platform: "darwin" }), /Could not open ChatGPT/);
 });
 
 test("shortcut mode runs the shortcut named after the button unless told otherwise", async () => {
   const listing = (names: string) => (file: string, _s: string, args: string[]) => (file.endsWith("shortcuts") && args[0] === "list" ? ok(names) : undefined);
   const named = mac(listing("Дуся\n"));
-  const launch = await launchOnMac(settings({ name: "Дуся", macMode: "shortcut" }), { run: named.run, platform: "darwin" });
+  const launch = await launchOnMac(settings({ name: "Дуся", macMode: "shortcut" }), { run: named.run, exists, platform: "darwin" });
   assert.equal(launch.via, "shortcut");
   assert.ok(named.calls.includes("/usr/bin/shortcuts run Дуся"));
   const missing = mac(listing("Other\n"));
-  assert.equal((await launchOnMac(settings({ macMode: "shortcut" }), { run: missing.run, platform: "darwin" })).via, "open");
+  assert.equal((await launchOnMac(settings({ macMode: "shortcut" }), { run: missing.run, exists, platform: "darwin" })).via, "open");
+});
+
+test("no ChatGPT.app on disk is unsupported", async () => {
+  const { run } = mac();
+  assert.equal((await launchOnMac(settings(), { run, exists: () => false, platform: "darwin" })).outcome, "unsupported");
 });
 
 test("no Mac or no ChatGPT is unsupported", async () => {
@@ -123,5 +130,5 @@ test("no Mac or no ChatGPT is unsupported", async () => {
   assert.equal((await launchOnMac(settings(), { run, platform: "linux" })).outcome, "unsupported");
   assert.deepEqual(calls, []);
   const other = mac((file) => (file.endsWith("plutil") ? ok("com.example.other\n") : undefined));
-  assert.equal((await launchOnMac(settings(), { run: other.run, platform: "darwin" })).outcome, "unsupported");
+  assert.equal((await launchOnMac(settings(), { run: other.run, exists, platform: "darwin" })).outcome, "unsupported");
 });

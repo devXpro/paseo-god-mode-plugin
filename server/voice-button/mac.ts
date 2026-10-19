@@ -35,10 +35,10 @@ export interface ChatGptApp {
 /** com.openai.chat is the standalone ChatGPT app; com.openai.codex the ChatGPT/Codex app that replaced it. */
 const BUNDLE_IDS = ["com.openai.chat", "com.openai.codex"];
 
-export async function findChatGpt(run: Runner = runFile): Promise<ChatGptApp | null> {
+export async function findChatGpt(run: Runner = runFile, exists: (path: string) => boolean = existsSync): Promise<ChatGptApp | null> {
   for (const path of ["/Applications/ChatGPT.app", join(homedir(), "Applications", "ChatGPT.app")]) {
     const plist = join(path, "Contents", "Info.plist");
-    if (!existsSync(plist)) continue;
+    if (!exists(plist)) continue;
     const id = await run("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", plist]);
     const bundleId = id.stdout.trim();
     if (id.code !== 0 || !BUNDLE_IDS.includes(bundleId)) continue;
@@ -125,6 +125,7 @@ export function keyPressScript({ keyCode, flags }: KeyPress): string {
 
 export interface LaunchDeps {
   run?: Runner;
+  exists?: (path: string) => boolean;
   platform?: string;
   sleep?: (ms: number) => Promise<void>;
   detectHotkey?: () => DetectedHotkey;
@@ -141,10 +142,10 @@ const result = (outcome: VoiceButtonLaunch["outcome"], via: VoiceButtonLaunch["v
 
 export async function launchOnMac(
   settings: VoiceButtonSettings,
-  { run = runFile, platform = process.platform, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), detectHotkey = () => detectVoiceHotkey() }: LaunchDeps = {},
+  { run = runFile, exists = existsSync, platform = process.platform, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), detectHotkey = () => detectVoiceHotkey() }: LaunchDeps = {},
 ): Promise<VoiceButtonLaunch> {
   if (platform !== "darwin") return result("unsupported", "none", "Paseo is not running on a Mac, so it cannot open ChatGPT here.");
-  const app = await findChatGpt(run);
+  const app = await findChatGpt(run, exists);
   if (!app) return result("unsupported", "none", "The ChatGPT app is not in Applications.");
 
   const openApp = async (reason: string | null) => {
