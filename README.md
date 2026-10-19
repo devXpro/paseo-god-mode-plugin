@@ -127,6 +127,7 @@ can take minutes to show them: open a new chat. More: [operations](docs/operatio
 | [Configuration](docs/configuration.md) | Every setting and what Paseo and ChatGPT need. |
 | [Tools](docs/tools.md) | What ChatGPT can call. |
 | [Slash commands](docs/slash-commands.md) | What runs for Claude Code and Codex, and what does not. |
+| [Voice button](docs/voice-button.md) | An optional button in Paseo that opens ChatGPT voice on a Mac or iPhone. |
 | [Plugin tools](docs/plugin-tools.md) | `plugin_read` and `plugin_action` in detail. |
 | [Plugin contract](docs/plugin-capabilities.md) | `meta.describe` and `paseo.capabilities/1`, with `outcome`, `target`, `untrusted`. |
 | [Writing a plugin](docs/plugin-authoring.md) | Implementing and testing `meta.describe`. |
