@@ -78,6 +78,7 @@ import {
   splitCommand,
   withoutRepeatAfterCompaction,
 } from "./slash.mjs";
+import { catalogEntry, chooseStart, modelsData, modelsText, pickProvider, runtimeOf } from "./models.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const MAX_WAIT_SECONDS = 25;
@@ -851,25 +852,34 @@ async function awaitReply(client, agentId, seconds) {
   }
 }
 
-export async function startChat(pairingUrl, { project, prompt, model, thinking, mode, waitSeconds = 15 } = {}) {
-  return withDaemon(pairingUrl, async (client) => {
-    const picked = pickProject(await fetchProjects(client), project);
-    if (picked.ask) return picked.ask;
-    const agent = await client.createAgent({
-      provider: "claude",
-      cwd: picked.project.directory,
-      initialPrompt: prompt,
-      ...(model ? { model } : {}),
-      ...(thinking ? { thinkingOptionId: thinking } : {}),
-      ...(mode ? { modeId: mode } : {}),
-      labels: { source: "god-mode" },
-    });
-    const outcome = await awaitReply(client, agent.id, waitSeconds);
-    return {
-      text: `Started a new chat in ${picked.project.name}; the task arrived. Do not start it again.\n${outcome.text}`,
-      data: { chat_id: agent.id, short_id: agent.id.slice(0, 7), project: picked.project.name, ...outcome.data },
-    };
+export async function startChat(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => startChatOn(client, args));
+}
+
+// start_chat over an open connection (tests drive it with a fake client). The runtime, model,
+// thinking level and mode are checked against Paseo's catalog first (see Models below); `defaults`
+// are the site's settings for new chats, used where they fit the runtime the chat gets.
+export async function startChatOn(client, { project, prompt, provider, model, thinking, mode, defaults = {}, waitSeconds = 15 } = {}) {
+  const picked = pickProject(await fetchProjects(client), project);
+  if (picked.ask) return picked.ask;
+  const chosen = chooseStart(await fetchCatalog(client, picked.project.directory), { provider, model, thinking, mode }, defaults);
+  if (chosen.ask) return chosen.ask;
+  const { choice } = chosen;
+  const agent = await client.createAgent({
+    provider: choice.provider.id,
+    cwd: picked.project.directory,
+    initialPrompt: prompt,
+    ...(choice.model ? { model: choice.model.id } : {}),
+    ...(choice.thinking ? { thinkingOptionId: choice.thinking } : {}),
+    ...(choice.mode ? { modeId: choice.mode } : {}),
+    labels: { source: "god-mode" },
   });
+  const runtime = runtimeOf(choice, agent);
+  const outcome = await awaitReply(client, agent.id, waitSeconds);
+  return {
+    text: `Started a new chat in ${picked.project.name} (${runtime.text}); the task arrived. Do not start it again.\n${outcome.text}`,
+    data: { chat_id: agent.id, short_id: agent.id.slice(0, 7), project: picked.project.name, ...runtime.data, ...outcome.data },
+  };
 }
 
 export async function sendMessage(pairingUrl, { chat, text, ifBusy, waitSeconds = 15 } = {}) {
@@ -983,6 +993,43 @@ export async function archiveChatOn(client, { chat } = {}) {
     text: `Archived ${truncate(target.title, 70)}. Its history is kept; a new message to it brings it back.`,
     data: { ...ids, outcome: "archived", done: true, archived_at: toIso(archivedAt) },
   };
+}
+
+// ---- Models -------------------------------------------------------------------------------------
+// list_models, and the check start_chat makes before a chat starts. Paseo checks only the mode when
+// it creates an agent: a model or thinking level its provider lacks gives a chat that fails on its
+// first turn. models.mjs matches what the user said against this catalog.
+
+// Paseo's catalog for a directory (it can differ per project), as its New chat shows it: every
+// enabled provider with its models and modes. Listing waits for a provider Paseo is still loading.
+async function fetchCatalog(client, cwd) {
+  const scope = cwd ? { cwd } : {};
+  const { entries } = await client.getProvidersSnapshot(scope);
+  return Promise.all(
+    entries
+      .filter((entry) => entry.enabled !== false)
+      .map(async (entry) => {
+        if (!["ready", "loading"].includes(entry.status)) return catalogEntry(entry);
+        const [models, modes] = await Promise.all([client.listProviderModels(entry.provider, scope), client.listProviderModes(entry.provider, scope)]);
+        return catalogEntry(entry, models, modes);
+      }),
+  );
+}
+
+export async function listModels(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => listModelsOn(client, args));
+}
+
+// list_models over an open connection (tests drive it with a fake client).
+export async function listModelsOn(client, { provider } = {}) {
+  const catalog = await fetchCatalog(client);
+  let shown = catalog;
+  if (provider) {
+    const picked = pickProvider(catalog, provider);
+    if (picked.ask) return picked.ask;
+    shown = [picked.provider];
+  }
+  return { text: modelsText(shown), data: { providers: modelsData(shown) } };
 }
 
 // ---- Slash commands -----------------------------------------------------------------------------

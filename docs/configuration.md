@@ -19,9 +19,9 @@ Site as environment variables, which is where the Site reads them.
 | Sidebar | Site variable | Values | Default | Effect |
 | --- | --- | --- | --- | --- |
 | Language | `PASEO_LANGUAGE` | A language code, such as `en` or `de` | empty: the user's language | The language ChatGPT speaks; model-facing text stays English. |
-| Model for new chats | `PASEO_NEW_CHAT_MODEL` | A model id Paseo knows | empty: Paseo's default | The model `start_chat` uses unless the user names one. |
-| Thinking for new chats | `PASEO_NEW_CHAT_THINKING` | A thinking level the model offers | empty: Paseo's default | The thinking level `start_chat` uses unless the user names one. |
-| Mode for new chats | `PASEO_NEW_CHAT_MODE` | `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan` | empty: Paseo's default | The mode `start_chat` uses; `bypassPermissions` skips every prompt in those chats. |
+| Model for new chats | `PASEO_NEW_CHAT_MODEL` | A model id or name `list_models` shows | empty: Paseo's default | The model `start_chat` uses unless the user names one or another runtime; it brings its runtime, so a Codex model makes Codex the default. |
+| Thinking for new chats | `PASEO_NEW_CHAT_THINKING` | A thinking level the model offers | empty: Paseo's default | The thinking level `start_chat` uses unless the user names one, where the chat's model offers it. |
+| Mode for new chats | `PASEO_NEW_CHAT_MODE` | `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan` | empty: Paseo's default | The mode `start_chat` uses in Claude chats; `bypassPermissions` skips every prompt in those chats. Codex chats keep Codex's default unless the user names a mode. |
 | Wait for an answer (seconds) | `PASEO_WAIT_SECONDS` | 0 to 25 | 15 | How long `start_chat` and `send_message` wait for a reply before answering "still working". |
 | Confirm risky actions | `PASEO_CONFIRM_RISKY` | `on`, `off` | on | ChatGPT reads back approvals, stops, archiving and updates and waits for a yes. See [security.md](security.md#writes). |
 | Keep a call log | `PASEO_LOG` | `on`, `off` | on | A row per tool call in the Site's D1 database, read with `get_logs`. |

@@ -45,6 +45,8 @@ node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [-
 node core/probe.mjs activity [chat] [--max N]
 node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
+node core/probe.mjs models [provider]
+node core/probe.mjs start <project> <prompt…> [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
 node core/probe.mjs plugins
 node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]

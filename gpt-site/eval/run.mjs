@@ -80,6 +80,7 @@ async function loadCore(variant) {
       paseo: await import(join(dir, "paseo.mjs")),
       version: (await import(join(dir, "version.mjs"))).VERSION,
       slash: await import(join(dir, "slash.mjs")).catch(() => null),
+      models: await import(join(dir, "models.mjs")).catch(() => null),
     });
   }
   return cores.get(variant);
@@ -91,7 +92,7 @@ async function renderPrompt(testCase, variant) {
   const steps = testCase.context ?? [];
   if (steps.length === 0) return { prompt: testCase.phrase, replay: [] };
   const core = await loadCore(variant);
-  const { ops } = createOps({ world: createWorld(NOW), scenario: testCase.scenario ?? {}, text: core.text, slash: core.slash, PaseoOffline: core.paseo.PaseoOffline, siteVersion: core.version });
+  const { ops } = createOps({ world: createWorld(NOW), scenario: testCase.scenario ?? {}, text: core.text, slash: core.slash, models: core.models, PaseoOffline: core.paseo.PaseoOffline, siteVersion: core.version });
   const config = core.mcp.readConfig({ PASEO_PAIRING_URL: "eval://stub-no-network", PASEO_LANGUAGE: "ru", PASEO_LOG: "off" });
   const handle = core.mcp.createMcpHandler({ config, ops, log: null, caller: { identified: true } });
   const lines = ["[Earlier in this conversation]"];

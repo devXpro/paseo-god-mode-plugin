@@ -7,6 +7,8 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-20
+
 ### Added
 
 - An optional voice button that opens ChatGPT's own voice chat from Paseo, off until turned on under
@@ -15,6 +17,23 @@ GitHub release vX.Y.Z.
   ChatGPT's voice shortcut, read from ChatGPT's settings, after bringing ChatGPT forward (Paseo needs
   Accessibility; otherwise ChatGPT opens and you tap voice once). On an iPhone it runs an Apple
   Shortcut holding ChatGPT's voice action. See docs/voice-button.md.
+- `list_models`: the agent runtimes Paseo can start (Claude, Codex…) with their models, the default
+  marked, each model's thinking levels and the runtime's permission modes, read from Paseo's own
+  provider catalog. Runtimes Paseo has but cannot start are named with the reason.
+- `start_chat` starts Codex chats as well as Claude ones: `provider`, or a model that brings its
+  runtime. The model can be named as the user said it ("Opus 4.8", "GPT-6-Astra", "Astra"); the
+  runtime, model, thinking level and mode are checked against the project's catalog before anything
+  starts, and one Paseo does not offer comes back as `needs_clarification` with the choices. The
+  result says what the chat runs on (`provider`, `model`, `thinking`, `mode`), as Paseo reports it.
+- The release check also calls `list_models` where ChatGPT shows it.
+
+### Fixed
+
+- `start_chat` always started a Claude chat and passed the model on unchecked, and Paseo does not
+  check a model when it creates a chat. A Codex model name therefore made a Claude chat whose first
+  reply was a model error, which God Mode reported as a normal reply. The site's defaults for new
+  chats now apply only where they fit the chat's runtime and model, so a Claude mode such as
+  `bypassPermissions` no longer reaches a Codex chat, which Paseo refuses.
 
 ## [0.10.0] - 2026-10-18
 

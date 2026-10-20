@@ -14,9 +14,11 @@ const { PaseoOffline } = await import(`${run.coreDir}/paseo.mjs`);
 const { VERSION } = await import(`${run.coreDir}/version.mjs`);
 // Slash commands exist from 0.10.0; an older version has no slash.mjs.
 const slash = await import(`${run.coreDir}/slash.mjs`).catch(() => null);
+// The runtime catalog exists from 0.11.0; an older version has no models.mjs.
+const models = await import(`${run.coreDir}/models.mjs`).catch(() => null);
 
 const record = (entry) => appendFileSync(run.callLog, `${JSON.stringify({ at: Date.now(), ...entry })}\n`);
-const { ops, state } = createOps({ world: createWorld(run.now), scenario: run.scenario ?? {}, text, slash, PaseoOffline, siteVersion: VERSION, record });
+const { ops, state } = createOps({ world: createWorld(run.now), scenario: run.scenario ?? {}, text, slash, models, PaseoOffline, siteVersion: VERSION, record });
 const config = mcp.readConfig({ PASEO_PAIRING_URL: "eval://stub-no-network", PASEO_LANGUAGE: run.language ?? "ru", PASEO_LOG: "off" });
 const handle = mcp.createMcpHandler({ config, ops, log: null, caller: { identified: true } });
 

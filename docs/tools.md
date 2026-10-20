@@ -17,7 +17,8 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `read_activity` | read | `chat`, `max_chars` | What an agent and its subagents are doing now, and how full its context window is; without `chat`, every chat at work. |
 | `show_images` | read | `chat`, `turn`, `image`, `count` | The pictures and screenshots in a chat, shown on the user's screen in a widget and, where ChatGPT allows, given to the model. |
 | `search_messages` | read | `query`*, `project`, `chat`, `include_archived`, `scan`, `limit` | Where something was said, across the most recent chats or in one. |
-| `start_chat` | write | `project`*, `prompt`*, `wait_seconds`, `model`, `thinking`, `mode` | Start one new chat in a project with the task as its first message, like New chat. |
+| `list_models` | read | `provider` | The agent runtimes Paseo can start (Claude, Codex…), each with its models, their thinking levels and its permission modes, from Paseo's own catalog. |
+| `start_chat` | write | `project`*, `prompt`*, `wait_seconds`, `provider`, `model`, `thinking`, `mode` | Start one new chat in a project with the task as its first message, like New chat, on the runtime and model asked for, checked against Paseo's catalog first. |
 | `send_message` | write | `chat`*, `text`*, `if_busy` (steer, interrupt), `wait_seconds` | Send one message to an existing chat. |
 | `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
@@ -35,6 +36,11 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 - **Names or ids.** Tools that take a `chat` accept its id from earlier results or the name the user
   said; a name that matches several chats returns `needs_clarification` with candidates. Projects are
   matched the same way, and a project that matches nothing lists all of them.
+- **Models.** `start_chat` takes a model by its id or by its name as the user said it ("Opus 4.8",
+  "GPT-6-Astra", or "Astra" alone), and the model brings its runtime. A model, thinking level or mode
+  the project's runtime does not offer returns `needs_clarification` with the choices, and nothing
+  starts. The site's defaults for new chats apply only where they fit: a Claude mode never reaches
+  a Codex chat.
 - **Speech, not ids.** Text answers name chats by their title; ids travel in `structuredContent`.
 - **Writes say whether they arrived.** `start_chat`, `send_message` and `run_slash_command` answer
   `delivered: true` when the message reached the agent (replied, still working, or not waited for);

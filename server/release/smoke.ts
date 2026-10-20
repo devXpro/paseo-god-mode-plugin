@@ -90,6 +90,8 @@ export async function smokeTest({ codex, checkoutDir, log, retries = 4, metadata
         // right after an update ChatGPT may not show it yet (a stale list is a warning above, never a
         // failure). A read that holds even when no plugin describes itself.
         if (visible[`${prefix}.plugin_read`]) await check("plugin_read", {});
+        // Only where the live plugin has it (0.11.0 on). Paseo's runtimes and models; it starts nothing.
+        if (visible[`${prefix}.list_models`]) await check("list_models", {});
       }
     } finally {
       server.close();

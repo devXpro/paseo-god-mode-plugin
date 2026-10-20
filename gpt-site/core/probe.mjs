@@ -7,7 +7,8 @@
 //   node core/probe.mjs activity [chat] [--max N]
 //   node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 //   node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
-//   node core/probe.mjs start <project> <prompt…> [--wait 15] [--model M] [--thinking T] [--mode M]
+//   node core/probe.mjs models [provider]
+//   node core/probe.mjs start <project> <prompt…> [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
 //   node core/probe.mjs stop <chat>
@@ -30,6 +31,7 @@ import {
   answerApproval,
   archiveChat,
   listChats,
+  listModels,
   listSlashCommands,
   overview,
   pluginAction,
@@ -66,6 +68,7 @@ const { values, positionals } = parseArgs({
     scan: { type: "string" },
     limit: { type: "string" },
     wait: { type: "string" },
+    provider: { type: "string" },
     model: { type: "string" },
     thinking: { type: "string" },
     mode: { type: "string" },
@@ -115,10 +118,12 @@ const operations = {
       scan: number(values.scan, undefined),
       limit: number(values.limit, 10),
     }),
+  models: () => listModels(url, { provider: first }),
   start: () =>
     startChat(url, {
       project: first,
       prompt: rest.join(" "),
+      provider: values.provider,
       model: values.model,
       thinking: values.thinking,
       mode: values.mode,

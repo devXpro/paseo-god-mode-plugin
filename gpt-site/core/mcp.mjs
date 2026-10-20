@@ -183,6 +183,46 @@ const OUTCOME_OUT = {
   },
 };
 
+// start_chat's result: the outcome, plus the runtime Paseo gave the new chat.
+const START_OUT = {
+  ...OUTCOME_OUT,
+  properties: {
+    ...OUTCOME_OUT.properties,
+    provider: { type: "string", description: "The chat's agent runtime: claude, codex, …" },
+    model: { ...nullableString, description: "Its model id; null: the runtime's default model." },
+    thinking: { ...nullableString, description: "Its thinking level, when Paseo knows it." },
+    mode: { ...nullableString, description: "Its permission mode." },
+  },
+};
+
+const MODEL_OUT = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "Pass it to start_chat as model." },
+    name: { type: "string" },
+    description: { type: "string" },
+    default: { type: "boolean", description: "The model a chat of this runtime gets when none is named." },
+    thinking: { type: "array", items: { type: "string" }, description: "The thinking levels it offers, for start_chat's thinking." },
+    default_thinking: nullableString,
+  },
+};
+
+const RUNTIME_OUT = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "Pass it to start_chat as provider." },
+    name: { type: "string" },
+    available: { type: "boolean", description: "false: Paseo has it but cannot start chats with it now; reason says why." },
+    reason: { type: "string" },
+    models: { type: "array", items: MODEL_OUT },
+    modes: {
+      type: "array",
+      description: "Its permission modes, for start_chat's mode.",
+      items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, description: { type: "string" } } },
+    },
+  },
+};
+
 const SUBAGENT_OUT = {
   type: "object",
   properties: {
@@ -489,22 +529,37 @@ export const TOOLS = [
     annotations: readOnly,
   },
   {
+    name: "list_models",
+    description:
+      "Use this when the user asks which agents or models a new chat can run on (\"which models are there?\", \"what does Codex have?\"), or which thinking levels or modes one offers. One call returns every runtime Paseo can start (Claude, Codex…) with its models, the default marked, each model's thinking levels, and the runtime's permission modes. Not needed before start_chat, which takes the model's name as the user said it.",
+    inputSchema: {
+      type: "object",
+      properties: { provider: { type: "string", description: "Only this runtime, e.g. claude or codex. Leave empty for all." } },
+    },
+    outputSchema: object({ providers: { type: "array", items: RUNTIME_OUT } }),
+    annotations: readOnly,
+  },
+  {
     name: "start_chat",
     description:
-      "Use this to start one new chat (a new agent) in a project when the user's latest words tell you to start it now, with their task as its first message, like New chat in Paseo. One instruction = one chat: never start it twice, not even reworded. Drafting or discussing a task is not a command: prepare the text and ask \"Start it?\". To continue or answer an existing chat, use send_message instead. delivered=true means the chat started and got the task — tell the user and offer to check later; do not poll. Set model, thinking or mode only when the user asks for them.",
+      "Use this to start one new chat (a new agent) in a project when the user's latest words tell you to start it now, with their task as its first message, like New chat in Paseo. One instruction = one chat: never start it twice, not even reworded. Drafting or discussing a task is not a command: prepare the text and ask \"Start it?\". To continue or answer an existing chat, use send_message instead. delivered=true means the chat started and got the task — tell the user and offer to check later; do not poll. Set provider, model, thinking or mode only when the user asks for them: model takes the name the user said and brings its runtime; a runtime, model, level or mode Paseo does not offer comes back as needs_clarification with the choices, and nothing starts.",
     inputSchema: {
       type: "object",
       properties: {
         project: PROJECT,
         prompt: { type: "string", description: "The task, in the user's words." },
         wait_seconds: WAIT,
-        model: { type: "string", description: 'A Claude model id, e.g. "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5".' },
-        thinking: { type: "string", enum: ["off", "low", "medium", "high", "xhigh", "max"] },
-        mode: { type: "string", enum: MODES, description: "Permission mode; bypassPermissions skips every prompt." },
+        provider: { type: "string", description: 'The agent runtime, "claude" or "codex", when the user names one without a model ("a Codex chat"). Default: the model\'s runtime, else Claude.' },
+        model: { type: "string", description: 'The model as list_models names it or as the user said it, e.g. "Opus 5.5", "claude-sonnet-5-5", "GPT-6.1-Sol".' },
+        thinking: { type: "string", description: "A thinking level the model offers: low, medium, high, xhigh, max; some Claude models also off and ultracode, Codex ultra." },
+        mode: {
+          type: "string",
+          description: "Permission mode. Claude: default, acceptEdits, auto, plan, bypassPermissions (skips every prompt). Codex: auto, auto-review, full-access (no prompts).",
+        },
       },
       required: ["project", "prompt"],
     },
-    outputSchema: OUTCOME_OUT,
+    outputSchema: START_OUT,
     annotations: write,
   },
   {
@@ -808,15 +863,20 @@ async function dispatch(name, args, config, ops, log, caller) {
           limit: args.limit ?? 10,
         })
       );
+    case "list_models":
+      return ops.listModels(url, { provider: args.provider || undefined });
     case "start_chat":
       return (
         (need("project", "prompt") && { invalid: need("project", "prompt") }) ||
         ops.startChat(url, {
           project: args.project,
           prompt: args.prompt,
-          model: args.model ?? config.model,
-          thinking: args.thinking ?? config.thinking,
-          mode: args.mode ?? config.mode,
+          provider: args.provider || undefined,
+          model: args.model || undefined,
+          thinking: args.thinking || undefined,
+          mode: args.mode || undefined,
+          // Unlike the user's choices, a default that does not fit the chat's runtime is left out.
+          defaults: { model: config.model, thinking: config.thinking, mode: config.mode },
           waitSeconds: args.wait_seconds ?? config.waitSeconds,
         })
       );

@@ -44,7 +44,10 @@ function checkArgs(call, args) {
     else if (key === "project" && resolveProject(got) !== want) problems.push(`project=${JSON.stringify(got)}`);
     else if (["text", "prompt", "query"].includes(key) && !want.some((w) => norm(got).includes(w))) problems.push(`${key}=${JSON.stringify(got)}`);
     else if (key === "turnsMin" && !(Number(got) >= want)) problems.push(`turns=${JSON.stringify(got)}`);
-    else if (["decision", "view", "if_busy", "action", "status"].includes(key) && got !== want) problems.push(`${key}=${JSON.stringify(got)}`);
+    else if (["decision", "view", "if_busy", "action", "status", "thinking"].includes(key) && got !== want) problems.push(`${key}=${JSON.stringify(got)}`);
+    // What the started chat runs on, as the result says: however the model was named in the call.
+    else if (key === "startedProvider" && call.structured?.provider !== want) problems.push(`provider=${JSON.stringify(call.structured?.provider ?? null)}`);
+    else if (key === "startedModel" && call.structured?.model !== want) problems.push(`model=${JSON.stringify(call.structured?.model ?? null)}`);
     else if (key === "command" && !want.includes(String(got ?? "").trim().replace(/^\/+/, "").split(/\s/)[0].toLowerCase())) problems.push(`command=${JSON.stringify(got)}`);
   }
   return problems;

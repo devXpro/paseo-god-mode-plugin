@@ -265,5 +265,49 @@ export function createWorld(now = Date.now()) {
     }),
   ];
 
-  return { now, projects, chats, ago };
+  // Paseo's runtime catalog, trimmed from what Paseo 0.12.0 listed on 2026-10-20: each provider's
+  // snapshot entry with the models and modes Paseo lists for it.
+  const levels = (ids, preferred) => ids.map((id) => ({ id, label: id, ...(id === preferred ? { isDefault: true } : {}) }));
+  const model = (id, label, ids, preferred, extra = {}) => ({ id, label, thinkingOptions: levels(ids, preferred), defaultThinkingOptionId: preferred, ...extra });
+  const CLAUDE_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultracode"];
+  const CODEX_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+  const providers = [
+    {
+      entry: { provider: "claude", label: "Claude", status: "ready", enabled: true },
+      models: [
+        model("claude-opus-5-5", "Opus 5.5", CLAUDE_LEVELS, "medium", { isDefault: true }),
+        model("claude-opus-5", "Opus 5", ["off", ...CLAUDE_LEVELS], "high"),
+        model("claude-fable-5-1", "Fable 5.1", CLAUDE_LEVELS, "high"),
+        model("claude-sonnet-5-5", "Sonnet 5.5", CLAUDE_LEVELS, "medium"),
+        model("claude-sonnet-5", "Sonnet 5", ["off", ...CLAUDE_LEVELS], "high"),
+        model("claude-haiku-5-5", "Haiku 5.5", ["off", ...CLAUDE_LEVELS], "medium"),
+        { id: "claude-haiku-4-5", label: "Haiku 4.5" },
+      ],
+      modes: [
+        { id: "plan", label: "Plan Mode" },
+        { id: "default", label: "Always Ask" },
+        { id: "acceptEdits", label: "Accept File Edits" },
+        { id: "auto", label: "Auto mode" },
+        { id: "bypassPermissions", label: "Bypass" },
+      ],
+    },
+    {
+      entry: { provider: "codex", label: "Codex", status: "ready", enabled: true },
+      models: [
+        model("gpt-6.1-sol", "GPT-6.1-Sol", CODEX_LEVELS, "low", { isDefault: true }),
+        model("gpt-6-astra", "GPT-6-Astra", CODEX_LEVELS, "low"),
+        model("gpt-6-sol", "GPT-6-Sol", CODEX_LEVELS, "medium"),
+        model("gpt-6-luna", "GPT-6-Luna", CODEX_LEVELS.slice(0, 5), "medium"),
+        model("gpt-5.6-luna", "GPT-5.6-Luna", CODEX_LEVELS.slice(0, 5), "medium"),
+      ],
+      modes: [
+        { id: "auto", label: "Default Permissions" },
+        { id: "auto-review", label: "Auto-review" },
+        { id: "full-access", label: "Full Access" },
+      ],
+    },
+    { entry: { provider: "copilot", label: "Copilot", status: "unavailable", enabled: true } },
+  ];
+
+  return { now, projects, chats, providers, ago };
 }

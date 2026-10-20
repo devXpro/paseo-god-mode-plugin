@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -138,7 +138,7 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes eighteen tools, output schemas and honest annotations", async () => {
+test("tools/list exposes nineteen tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
@@ -149,6 +149,7 @@ test("tools/list exposes eighteen tools, output schemas and honest annotations",
       "read_activity",
       "show_images",
       "search_messages",
+      "list_models",
       "start_chat",
       "send_message",
       "answer_approval",
@@ -172,6 +173,8 @@ test("tools/list exposes eighteen tools, output schemas and honest annotations",
   assert.equal(byName.show_images.annotations.readOnlyHint, true);
   assert.equal(byName.show_images.inputSchema.required, undefined, "show_images works without a chat");
   assert.equal(byName.search_messages.annotations.readOnlyHint, true);
+  assert.equal(byName.list_models.annotations.readOnlyHint, true);
+  assert.equal(byName.list_models.inputSchema.required, undefined, "list_models without a provider lists them all");
   assert.equal(byName.send_message.annotations.readOnlyHint, false);
   assert.equal(byName.stop_chat.annotations.destructiveHint, true);
   assert.equal(byName.archive_chat.annotations.readOnlyHint, false);
@@ -296,12 +299,35 @@ test("read_chat, read_activity, list_chats and search_messages pass their argume
   assert.deepEqual(calls.at(-1).args, { query: "dataviz", project: "proxy", chat: undefined, includeArchived: false, scan: 30, limit: 10 });
 });
 
-test("start_chat fills unset options from the site settings", async () => {
+test("start_chat passes the user's choices and the site settings apart", async () => {
   const { ops, calls } = fakeOps();
   const config = configured({ PASEO_NEW_CHAT_MODEL: "claude-sonnet-5-5", PASEO_NEW_CHAT_MODE: "bypassPermissions", PASEO_WAIT_SECONDS: "10" });
-  await createMcpHandler({ config, ops })(call("start_chat", { project: "proxy", prompt: "run tests", mode: "plan" }));
-  assert.deepEqual(calls[0].args, { project: "proxy", prompt: "run tests", model: "claude-sonnet-5-5", thinking: undefined, mode: "plan", waitSeconds: 10 });
+  const handle = createMcpHandler({ config, ops });
+  await handle(call("start_chat", { project: "proxy", prompt: "run tests", mode: "plan" }));
+  assert.deepEqual(calls[0].args, {
+    project: "proxy",
+    prompt: "run tests",
+    provider: undefined,
+    model: undefined,
+    thinking: undefined,
+    mode: "plan",
+    defaults: { model: "claude-sonnet-5-5", thinking: undefined, mode: "bypassPermissions" },
+    waitSeconds: 10,
+  });
   assert.equal(calls[0].url, SECRET);
+  await handle(call("start_chat", { project: "proxy", prompt: "run tests", provider: "codex", model: "GPT-6-Astra", thinking: "high" }));
+  assert.deepEqual(
+    { provider: calls[1].args.provider, model: calls[1].args.model, thinking: calls[1].args.thinking, mode: calls[1].args.mode },
+    { provider: "codex", model: "GPT-6-Astra", thinking: "high", mode: undefined },
+  );
+});
+
+test("list_models lists every runtime, or the one asked for", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured(), ops });
+  await handle(call("list_models", {}));
+  await handle(call("list_models", { provider: "codex" }));
+  assert.deepEqual(calls.map((c) => [c.name, c.args]), [["listModels", { provider: undefined }], ["listModels", { provider: "codex" }]]);
 });
 
 test("missing required arguments are a JSON-RPC error and nothing runs", async () => {

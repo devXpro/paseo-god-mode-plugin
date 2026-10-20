@@ -41,14 +41,14 @@ ChatGPT (voice or text)
 | --- | --- | --- |
 | `PASEO_PAIRING_URL` | required | The link from `paseo pair`. A full key to your Paseo: keep it in this variable only. |
 | `PASEO_LANGUAGE` | unset | The language ChatGPT speaks with you, e.g. `ru`, `en`, `de`. Unset: the language you use. |
-| `PASEO_NEW_CHAT_MODEL` | Paseo's default | Model for chats started from ChatGPT, e.g. `claude-sonnet-5-5`. |
-| `PASEO_NEW_CHAT_THINKING` | the model's default | `off`, `low`, `medium`, `high`, `xhigh` or `max`. |
-| `PASEO_NEW_CHAT_MODE` | Paseo's default | `default`, `acceptEdits`, `auto`, `bypassPermissions` (skips every prompt) or `plan`. |
+| `PASEO_NEW_CHAT_MODEL` | Paseo's default | Model for chats started from ChatGPT, e.g. `claude-sonnet-5-5` or `gpt-6.1-sol`; it brings its runtime. |
+| `PASEO_NEW_CHAT_THINKING` | the model's default | A level the model offers: `low`, `medium`, `high`, `xhigh`, `max`; some Claude models also `off` and `ultracode`, Codex `ultra`. Left out where the chat's model lacks it. |
+| `PASEO_NEW_CHAT_MODE` | Paseo's default | `default`, `acceptEdits`, `auto`, `bypassPermissions` (skips every prompt) or `plan`; Claude chats only. |
 | `PASEO_WAIT_SECONDS` | `15` | How long a call waits for the agent's reply before saying it is still working. Max 25. |
 | `PASEO_CONFIRM_RISKY` | `on` | ChatGPT reads back approvals, stops and archiving and waits for your yes. `off` acts at once. |
 | `PASEO_LOG` | `on` | Keep a log of every call in the Site's database, for `get_logs`. |
 
-A spoken request can override model, thinking and mode for one new chat.
+A spoken request can override the runtime, model, thinking and mode for one new chat.
 
 ## Tools
 
@@ -60,7 +60,8 @@ A spoken request can override model, thinking and mode for one new chat.
 | `read_activity` | What an agent and its subagents are doing right now: state, current step, each subagent's task, status, running time and result. Without a chat: every chat at work. |
 | `show_images` | The screenshots and pictures in a chat, shown in ChatGPT by a widget and handed to the model where ChatGPT allows it: the newest, a turn's, or the N-th of a turn (`[image N]` in `read_chat`). Without a chat: the newest image of the most recent chats. |
 | `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
-| `start_chat` | A new chat in a project with your task as the first message. |
+| `list_models` | The runtimes Paseo can start (Claude, Codex…) with their models, thinking levels and modes. |
+| `start_chat` | A new chat in a project with your task as the first message, on the runtime and model you name. |
 | `send_message` | A follow-up or an answer to an existing chat. |
 | `answer_approval` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | Cancel what a chat is doing now. |

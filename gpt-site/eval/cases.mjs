@@ -10,6 +10,7 @@
 //   args        checked on the first call of the case's target tool:
 //               chat (id), project, decision, view, if_busy, action, status,
 //               text / prompt / query (any keyword, lowercase stem), turnsMin
+//               thinking; startedProvider / startedModel: what start_chat's result says the chat runs on
 //   target      that tool (defaults to the tool of the first ideal spec)
 //   reach       a chat id that some read call must reach (for ambiguous references)
 //   writes      exact number of write calls expected, or null
@@ -571,6 +572,43 @@ const slash = [
   { id: "s.ru.ran", group: "slash", lang: "ru", phrase: "какие команды агент запускал в карте флота?", expect: { first: ["read_chat[view=commands]"], acceptable: ["read_chat"], args: { chat: FLEET }, writes: 0, maxCalls: 1 } },
 ];
 
+// Models (0.11.0 on): which runtimes and models a new chat can use, and starting one on the runtime
+// and model the user names, checked by what the result says it runs on. A family name that fits
+// several models ("Sonnet") comes back as a question, and nothing starts.
+const modelCases = [
+  { id: "m.ru.list", group: "models", lang: "ru", phrase: "какие модели можно выбрать для нового чата?", expect: { first: ["list_models"], writes: 0, maxCalls: 1 } },
+  { id: "m.ru.list-codex", group: "models", lang: "ru", phrase: "какие модели есть у кодекса?", expect: { first: ["list_models"], writes: 0, maxCalls: 1 } },
+  { id: "m.en.levels", group: "models", lang: "en", phrase: "which thinking levels does Opus 5.5 have?", expect: { first: ["list_models"], writes: 0, maxCalls: 1 } },
+  {
+    id: "m.ru.start-model",
+    group: "models",
+    lang: "ru",
+    phrase: "запусти в sends новый чат на GPT-6 Astra: почини ретраи вебхука",
+    expect: { first: ["start_chat"], args: { project: "sends", prompt: ["ретра", "вебхук"], startedProvider: "codex", startedModel: "gpt-6-astra" }, writes: 1, maxCalls: 1, state: "delivered" },
+  },
+  {
+    id: "m.ru.start-codex",
+    group: "models",
+    lang: "ru",
+    phrase: "запусти в proxy новый чат в кодексе: прогони все тесты",
+    expect: { first: ["start_chat"], args: { project: "proxy", prompt: ["тест"], startedProvider: "codex" }, writes: 1, maxCalls: 1, state: "delivered" },
+  },
+  {
+    id: "m.en.start-claude",
+    group: "models",
+    lang: "en",
+    phrase: "start a new chat in jobby on Sonnet 5.5 with high thinking: write the release notes",
+    expect: { first: ["start_chat"], args: { project: "jobby-jobs", prompt: ["release"], startedProvider: "claude", startedModel: "claude-sonnet-5-5", thinking: "high" }, writes: 1, maxCalls: 1, state: "delivered" },
+  },
+  {
+    id: "m.ru.start-ambiguous",
+    group: "models",
+    lang: "ru",
+    phrase: "запусти в sends новый чат на соннете: почини ретраи вебхука",
+    expect: { first: ["start_chat"], acceptable: ["list_models"], args: { project: "sends" }, writes: null, delivered: 0, maxCalls: 2, final: "ask" },
+  },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -582,5 +620,6 @@ export const CASES = [
   ...write.map((c) => ({ block: "write", ...c })),
   ...regression.map((c) => ({ block: "regression", ...c })),
   ...slash.map((c) => ({ block: "slash", ...c })),
+  ...modelCases.map((c) => ({ block: "models", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];

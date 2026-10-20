@@ -35,7 +35,7 @@ const CLAUDE_COMMANDS = [
   { name: "usage", description: "Show session cost, plan usage, and what's contributing to your limits", argumentHint: "", kind: "command" },
 ];
 
-export function createOps({ world, scenario = {}, text, slash = null, PaseoOffline, siteVersion = "0.5.0", record = () => {} }) {
+export function createOps({ world, scenario = {}, text, slash = null, models = null, PaseoOffline, siteVersion = "0.5.0", record = () => {} }) {
   const { resolve, chatData, chatLine, candidatesText, describePermission, latestFirstWithin, toIso, toolCallData, truncate, snippet, releaseData, describeRelease, chatState } = text;
   // Since 0.6.0: reads pick the one active chat, read_activity and subagent counts exist.
   const modern = typeof text.activityData === "function";
@@ -46,6 +46,8 @@ export function createOps({ world, scenario = {}, text, slash = null, PaseoOffli
   const queues = Object.fromEntries(Object.entries(scenario.outcomes ?? {}).map(([k, v]) => [k, [...v]]));
   const state = { recording: true, created: 0 };
   const release = RELEASES[scenario.release ?? "uptodate"](siteVersion);
+  // Since 0.11.0: Paseo's runtime catalog, read by list_models and checked by start_chat.
+  const catalog = models ? world.providers.map((p) => models.catalogEntry(p.entry, p.models ? { models: p.models } : {}, { modes: p.modes })) : [];
 
   const takeOutcome = (tool) => (queues[tool]?.length ? queues[tool].shift() : (scenario.defaults?.[tool] ?? WRITE_DEFAULTS[tool]));
   const fail = (outcome) => {
@@ -361,15 +363,40 @@ export function createOps({ world, scenario = {}, text, slash = null, PaseoOffli
     return { text: "Agent is still working. Tell the user and offer to check later; do not poll.", data: { outcome: "still_working", ...flag(true) } };
   }
 
-  async function startChat(_url, { project, prompt, model, thinking, mode, waitSeconds } = {}) {
+  async function listModels(_url, { provider } = {}) {
+    let shown = catalog;
+    if (provider) {
+      const picked = models.pickProvider(catalog, provider);
+      if (picked.ask) {
+        log("listModels", { provider }, "needs_clarification");
+        return picked.ask;
+      }
+      shown = [picked.provider];
+    }
+    log("listModels", { provider }, "ok");
+    return { text: models.modelsText(shown), data: { providers: models.modelsData(shown) } };
+  }
+
+  async function startChat(_url, { project, prompt, provider, model, thinking, mode, defaults, waitSeconds } = {}) {
+    const args = { project, prompt, provider, model, thinking, mode, waitSeconds };
     const picked = pickProject(project);
     if (picked.ask) {
-      log("startChat", { project, prompt, model, thinking, mode, waitSeconds }, "needs_clarification");
+      log("startChat", args, "needs_clarification");
       return picked.ask;
+    }
+    let runtime = null;
+    if (models) {
+      const chosen = models.chooseStart(catalog, { provider, model, thinking, mode }, defaults);
+      if (chosen.ask) {
+        log("startChat", args, "needs_clarification");
+        return chosen.ask;
+      }
+      const { choice } = chosen;
+      runtime = models.runtimeOf(choice, { provider: choice.provider.id, model: choice.model?.id ?? null, thinkingOptionId: choice.thinking ?? null, currentModeId: choice.mode ?? null });
     }
     let outcome = takeOutcome("start_chat");
     if (outcome === "still_working" && waitSeconds === 0) outcome = "not_waiting";
-    log("startChat", { project, prompt, model, thinking, mode, waitSeconds }, outcome);
+    log("startChat", args, outcome);
     fail(outcome);
     state.created += 1;
     const id = state.created === 1 ? NEW_CHAT_ID : `${NEW_CHAT_ID.slice(0, 35)}${state.created}`;
@@ -388,7 +415,8 @@ export function createOps({ world, scenario = {}, text, slash = null, PaseoOffli
       createdAt: new Date(now).toISOString(),
       turns: [{ at: new Date(now).toISOString(), end: null, user: prompt, agent: result.data.reply ? [result.data.reply] : [], calls: [] }],
     });
-    return { text: `Started a new chat in ${picked.project.name}; the task arrived.\n${result.text}`, data: { chat_id: id, short_id: id.slice(0, 7), project: picked.project.name, ...result.data } };
+    const on = runtime ? ` (${runtime.text})` : "";
+    return { text: `Started a new chat in ${picked.project.name}${on}; the task arrived.\n${result.text}`, data: { chat_id: id, short_id: id.slice(0, 7), project: picked.project.name, ...runtime?.data, ...result.data } };
   }
 
   async function sendMessage(_url, { chat, text: message, ifBusy, waitSeconds } = {}) {
@@ -575,6 +603,7 @@ export function createOps({ world, scenario = {}, text, slash = null, PaseoOffli
       releaseStatus,
       releaseStart,
       ...(slash ? { listSlashCommands, runSlashCommand } : {}),
+      ...(models ? { listModels } : {}),
     },
   };
 }
