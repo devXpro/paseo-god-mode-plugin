@@ -79,6 +79,129 @@ export function pickActive(chats) {
   return active.length === 1 ? active[0] : null;
 }
 
+// ---- Which chat a name means --------------------------------------------------------------------
+// Paseo titles a new chat with the first line of its first message, cut to 60 characters
+// (create-agent-title.js in @getpaseo/server): a chat that continues another one usually starts the
+// same way and gets the same title, and a long title stops mid-word. Paseo also has a model name each
+// chat's workspace, and that title (what its sidebar shows) often tells such chats apart.
+const TITLE_CUT = 60;
+
+// A chat's whole names, normalized: its title and its workspace's own title, each alone and with
+// the project after it, the way chat lines show them ("Fleet map (proxy)").
+function wholeNames(chat) {
+  const title = normalize(chat.title);
+  const project = normalize(chat.project);
+  const workspace = normalize(chat.workspace);
+  const names = [title];
+  if (workspace && workspace !== project && workspace !== title) names.push(workspace);
+  return [...names, ...names.map((name) => `${name} ${project}`)];
+}
+
+// A title Paseo cut short is named by a query that goes on from it: "…в тестовом аккаунте" names the
+// chat titled "…в тестовом а".
+function goesOnFrom(chat, query) {
+  const title = normalize(chat.title);
+  return title !== "" && String(chat.title).trim().length >= TITLE_CUT - 1 && query.startsWith(title);
+}
+
+// The share of the query's words found among the chat's title, workspace and project words.
+function coverage(queryWords, chat) {
+  const names = words(`${chat.title} ${chat.workspace ?? ""} ${chat.project}`);
+  return queryWords.filter((q) => names.some((t) => sameWord(q, t))).length / queryWords.length;
+}
+
+// Which chats a name points at, by tier: "exact" (one of their whole names, or a cut title the name
+// goes on from), "words" (every word of the name is among theirs) or "partial" (at least half of
+// them). `best` holds every chat of the tier at its top score, in the order given (newest first);
+// `near`, for partial matches and below, every chat with a word in common, closest first. Ids are
+// not names: the caller looks them up.
+export function matchChat(chats, query) {
+  const q = normalize(query);
+  if (!q) return { tier: null, best: [], near: [] };
+  for (const named of [(c) => wholeNames(c).includes(q), (c) => goesOnFrom(c, q)]) {
+    const best = chats.filter(named);
+    if (best.length) return { tier: "exact", best };
+  }
+  const queryWords = words(q);
+  const scored = chats.map((chat) => ({ chat, score: coverage(queryWords, chat) })).filter((s) => s.score > 0);
+  const top = Math.max(0, ...scored.map((s) => s.score));
+  const best = scored.filter((s) => s.score === top).map((s) => s.chat);
+  if (top === 1) return { tier: "words", best };
+  // A stable sort: among equals the newest stays first.
+  const near = [...scored].sort((a, b) => b.score - a.score).map((s) => s.chat);
+  return top >= 0.5 ? { tier: "partial", best, near } : { tier: null, best: [], near };
+}
+
+// Settles a name among active chats. The one chat at the top is the answer, except that a write
+// never takes a partial match (a word the user said fits no chat) and never chooses between equals,
+// by recency or by state. A read also takes the closest match and, among equals, the only one with
+// something going on, saying so in `note`. Otherwise { ask: reason, chats } with the ones to offer.
+export function settleChat(chats, query, { read = false } = {}) {
+  const found = matchChat(chats, query);
+  if (!found.tier) return { ask: "no_match", chats: found.near };
+  if (found.best.length === 1 && (read || found.tier !== "partial")) return { chat: found.best[0] };
+  if (read) {
+    const one = pickActive(found.best);
+    if (one) return { chat: one, note: `"${query}" matches ${found.best.length} chats; this is the only active one.` };
+  }
+  if (found.tier === "partial" && !read) return { ask: "partial", chats: found.near };
+  return { ask: found.tier === "exact" ? "same_name" : "similar", chats: found.best };
+}
+
+// A chat among others the user picks from: its chat line, with its workspace's title where that
+// tells it apart, since such chats often share a title.
+export function choiceLine(chat, now = Date.now()) {
+  const workspace = String(chat.workspace ?? "").trim();
+  const tells = workspace !== "" && ![normalize(chat.title), normalize(chat.project)].includes(normalize(workspace));
+  const where = tells ? `${chat.project}, workspace "${truncate(workspace, 70)}"` : chat.project;
+  return `${truncate(chat.title, 70)} (${where}): ${chatState(chat)}${chat.archived ? ", archived" : ""}, ${ago(chat.updatedAt, now)}`;
+}
+
+const CHOICES_SHOWN = 5;
+
+const CHAT_QUESTIONS = {
+  same_name: (q, n) => `${n} chats are named "${q}"`,
+  similar: (q, n) => `"${q}" fits ${n} chats equally`,
+  partial: (q) => `No chat has every word of "${q}"`,
+  id_prefix: (q) => `Several chats have an id starting with "${q}"`,
+  no_match: (q) => `No active chat matches "${q}"`,
+  unknown_id: (q) => `No chat has the id "${q}"`,
+};
+
+// Names are matched among active chats only; the archive is the user's to ask for.
+const ARCHIVE_UNSEARCHED = "Archived chats were not searched: look there (list_chats with include_archived) only if the user asks.";
+
+const CHAT_QUESTION_NOTES = {
+  same_name: "Chats often share a title: Paseo titles each with the start of its first message.",
+  partial: "The closest:",
+  no_match: `${ARCHIVE_UNSEARCHED} The closest active ones:`,
+};
+
+// needs_clarification for a chat reference: why it did not settle (reason) and the chats to pick
+// from, which the text tells apart without ids. `read` false: a write, so the text says nothing was
+// done. What the model does next: take the one the conversation is about, by its id, or ask.
+export function chatQuestion(query, reason, chats, { read = false, now = Date.now() } = {}) {
+  const shown = chats.slice(0, CHOICES_SHOWN);
+  const head = `${CHAT_QUESTIONS[reason](query, chats.length)}${read ? "" : ", so nothing was done"}.`;
+  const lines = shown.length
+    ? [
+        CHAT_QUESTION_NOTES[reason],
+        "If one of them is the chat this conversation is about, call again with its id; otherwise ask the user which one:",
+        ...shown.map((c) => `- ${choiceLine(c, now)}`),
+        chats.length > shown.length ? `… and ${chats.length - shown.length} more; a fuller name narrows it down.` : null,
+      ]
+    : [
+        {
+          unknown_id: "It was deleted, or the id is wrong: use the chat's name, or find it with list_chats.",
+          id_prefix: "Pass the whole id, or the chat's name.",
+        }[reason] ?? `${ARCHIVE_UNSEARCHED} Otherwise ask the user for another name.`,
+      ];
+  return {
+    text: [head, ...lines].filter(Boolean).join("\n"),
+    data: { needs_clarification: { kind: "chat", query: String(query ?? ""), reason, candidates: shown.map((c) => chatData(c, now)) } },
+  };
+}
+
 // Cuts at a line or sentence end when one is in the second half, else at a word
 // boundary, so speech does not stop mid-word. `max` counts characters.
 export function truncate(value, max) {

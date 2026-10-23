@@ -7,6 +7,45 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-23
+
+### Added
+
+- `send_message` by the id of an archived chat whose title an active chat now has (most likely its
+  continuation, and an id kept from before) answers `archived` with `delivered: false` and those
+  chats in `same_title`, and sends nothing; `if_archived: "restore"` sends it anyway. Any other
+  archived chat still gets the message and comes back, and the result now says so.
+- `needs_clarification` for a chat says why in `reason`: `same_name`, `similar`, `partial`,
+  `id_prefix`, `no_match` or `unknown_id`.
+
+### Changed
+
+- Chat names resolve in tiers: the whole name (the title or the workspace's title, either with the
+  project after it, or the whole first line of a title Paseo cut at 60 characters), then every word
+  of it, then at least half of them. The workspace's title counts as a name: Paseo has a model write
+  it, and it often tells apart chats that share a title.
+- Writes (`send_message`, `answer_approval`, `stop_chat`, `archive_chat`, `run_slash_command`) act on
+  a name only when one chat has it whole or has all of its words. They never choose between equals,
+  by recency or by which chat is running or waiting, and a partial match is asked about. Reads still
+  take the closest match and the only active chat among equals, saying so in `note`;
+  `search_messages` with a chat now resolves it the same way.
+- `needs_clarification` for a chat offers only the equal candidates, up to five, with their workspace
+  titles, and for a write says nothing was done. A name no active chat has says the archive was not
+  searched, and that ChatGPT looks there (`include_archived`) only when the user asks.
+- The instructions and the `chat` argument tell ChatGPT to pass a chat's id when an earlier result
+  gave it, since titles repeat; otherwise the name, without listing chats first; and on
+  `needs_clarification` to call again with the id of the candidate the conversation is about, or ask.
+
+### Fixed
+
+- A chat's whole title never matched exactly: names were compared with the title and the project
+  together. Two active chats titled alike (a continued chat starts with the same line) therefore came
+  back with a third lookalike, and a title inside a longer one ("Fleet map", "Fleet map D") was asked
+  about instead of taken.
+- A short id was looked up among active chats only: an archived chat's `short_id` found nothing, and
+  a start two ids share took the newest chat. Paseo's own lookup now settles it across every chat,
+  archived ones included, and refuses one that several ids share; an unknown whole id says so.
+
 ## [0.11.0] - 2026-10-20
 
 ### Added

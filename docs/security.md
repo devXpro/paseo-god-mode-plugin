@@ -31,6 +31,12 @@ The tools that change something: `start_chat`, `send_message`, `answer_approval`
   "you could send it" are not commands.
 - **One instruction, one write.** A write result says `delivered: true` when it arrived; the rules say
   never to send it again or a reworded copy.
+- **The chat a write reaches.** By id, that chat. By name, only a chat that has the whole name, or
+  every word of it, and no other chat as well: chats that share a title (Paseo titles continued chats
+  alike), a partial match, an id start several chats share and an unknown id all return
+  `needs_clarification`, and nothing is done. A write never chooses by recency or by which chat is
+  running or waiting. `send_message` by the id of an archived chat whose title an active chat now has
+  answers `archived` and sends nothing unless `if_archived: "restore"`. This is a server check.
 - **Read-back for risky agent actions.** With `PASEO_CONFIRM_RISKY` on (the default), approving a
   request, stopping or archiving a chat, and updating God Mode need the user to have heard exactly
   what will happen and said yes. This is a rule ChatGPT follows, not a server check.
@@ -109,7 +115,8 @@ to act only on the user's own words.
 | Situation | What ChatGPT gets |
 | --- | --- |
 | Bad or missing arguments | A JSON-RPC error that says what the tool or the plugin operation takes. Nothing runs. |
-| A name that matches several things, or nothing | `needs_clarification` with candidates to ask the user about. |
+| A name that matches several things, or nothing | `needs_clarification` with candidates to ask the user about; for chats a `reason`, and for writes the text says nothing was done. |
+| `send_message` to an archived chat an active one now stands in for | `outcome: "archived"`, `delivered: false`, the active chats with its title in `same_title`. |
 | The Mac asleep or offline | "Paseo is offline: the computer running it is probably asleep or disconnected." A write adds "Nothing was sent." |
 | A request that failed on the way | "Paseo request failed: …"; a write adds "Unknown whether it took effect: never say it did." |
 | A plugin that said it did not do it | `outcome: "refused"`, `delivered: false` and the reason (a read: `refused: true`). |

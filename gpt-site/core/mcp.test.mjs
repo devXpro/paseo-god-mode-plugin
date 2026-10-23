@@ -107,6 +107,9 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.match(text, /a plain "send it" means add it \(if_busy steer\)/);
   assert.match(text, /do not poll/);
   assert.match(text, /never read ids, hashes or links aloud/);
+  assert.match(text, /Pass a chat's id when an earlier result gave it: titles repeat\./);
+  assert.match(text, /Otherwise pass the name the user said, with no list_chats first; the tool acts only on one clear match\./);
+  assert.match(text, /needs_clarification means nothing was done: call again with the id of the candidate this conversation is about, or ask the user which one\./);
   assert.match(text, /must have heard exactly what will happen and said yes/);
   const plain = await createMcpHandler({ config: readConfig({ PASEO_CONFIRM_RISKY: "off" }), ops })(rpc("server/discover"));
   assert.match(plain.result.instructions, /Answer in the user's language/);
@@ -216,10 +219,21 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "send_message", "answer_approval", "stop_chat", "archive_chat", "list_slash_commands", "run_slash_command"]) {
-    assert.match(byName[tool].inputSchema.properties.chat.description, /Ids are for calls only/, tool);
-    assert.match(byName[tool].inputSchema.properties.chat.description, /Keep the chat being discussed/, tool);
+  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "answer_approval", "stop_chat", "archive_chat", "list_slash_commands", "run_slash_command"]) {
+    const chat = byName[tool].inputSchema.properties.chat.description;
+    assert.match(chat, /Ids are for calls only/, tool);
+    assert.match(chat, /Keep the chat being discussed/, tool);
+    assert.match(chat, /its id from earlier results in this conversation when you have it \(titles repeat/, tool);
+    assert.match(chat, /The tool resolves a name itself, so no list_chats first\./, tool);
+    assert.match(chat, /"Fleet map \(proxy\)"/, `${tool}: a project can narrow the name`);
+    const clarify = byName[tool].outputSchema.properties.needs_clarification;
+    assert.match(clarify.description, /nothing was done\. Call again with the id of the candidate this conversation is about, or ask the user which one\./, tool);
+    assert.ok(clarify.properties.reason.enum.includes("same_name"), tool);
   }
+  assert.match(byName.list_chats.description, /resolve a name themselves/);
+  assert.match(byName.send_message.description, /archived means NOT delivered/);
+  assert.deepEqual(byName.send_message.inputSchema.properties.if_archived.enum, ["restore"]);
+  assert.match(byName.send_message.inputSchema.properties.if_archived.description, /^Only after an archived result/);
   // Write tools: only on an explicit command, the outcome is the truth, no duplicates, no polling.
   assert.match(byName.send_message.description, /when the user's latest words tell you to send now/);
   assert.match(byName.send_message.description, /One instruction = one call: never split it into several messages, never send it again or a reworded copy/);
@@ -230,7 +244,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.send_message.inputSchema.properties.if_busy.description, /a plain "send it"/);
   assert.equal(byName.send_message.inputSchema.properties.again, undefined, "no dedupe switch: a new command always sends");
   assert.equal(byName.start_chat.inputSchema.properties.again, undefined);
-  assert.deepEqual(byName.send_message.outputSchema.properties.outcome.enum, ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "busy"]);
+  assert.deepEqual(byName.send_message.outputSchema.properties.outcome.enum, ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "busy", "archived"]);
   assert.match(byName.start_chat.description, /tell you to start it now/);
   assert.match(byName.start_chat.description, /One instruction = one chat: never start it twice/);
   assert.match(byName.start_chat.description, /do not poll/);
@@ -330,6 +344,22 @@ test("list_models lists every runtime, or the one asked for", async () => {
   assert.deepEqual(calls.map((c) => [c.name, c.args]), [["listModels", { provider: undefined }], ["listModels", { provider: "codex" }]]);
 });
 
+test("send_message passes if_archived on, and any other value is a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured({ PASEO_WAIT_SECONDS: "7" }), ops });
+  await handle(call("send_message", { chat: "#8a9b0c1", text: "go on", if_archived: "restore" }));
+  await handle(call("send_message", { chat: "fleet", text: "go on" }));
+  assert.deepEqual(
+    calls.map((c) => c.args),
+    [
+      { chat: "#8a9b0c1", text: "go on", ifBusy: undefined, ifArchived: "restore", waitSeconds: 7 },
+      { chat: "fleet", text: "go on", ifBusy: undefined, ifArchived: undefined, waitSeconds: 7 },
+    ],
+  );
+  assert.equal((await handle(call("send_message", { chat: "fleet", text: "go on", if_archived: "yes" }))).error.code, -32602);
+  assert.equal(calls.length, 2);
+});
+
 test("missing required arguments are a JSON-RPC error and nothing runs", async () => {
   const { ops, calls } = fakeOps();
   const handle = createMcpHandler({ config: configured(), ops });
@@ -425,7 +455,13 @@ test("notifications get no body", async () => {
 
 test("the shapes the operations produce match the declared output schemas", () => {
   const clarification = { needs_clarification: { kind: "chat", query: "fleet", candidates: [sampleChat] } };
+  const twins = { needs_clarification: { kind: "chat", query: "Fleet map", reason: "same_name", candidates: [sampleChat, { ...sampleChat, id: "b1", short_id: "b1" }] } };
   const cases = [
+    ["send_message", twins],
+    ["answer_approval", { needs_clarification: { kind: "chat", query: "0f0f0f0f-1111-4222-8333-444444444444", reason: "unknown_id", candidates: [] } }],
+    ["read_chat", { chat: { ...sampleChat, archived: true }, total_turns: 1, turns: [] }],
+    ["send_message", { chat_id: "8a9b0c1d-4d5e", short_id: "8a9b0c1", project: "proxy", outcome: "archived", delivered: false, same_title: [sampleChat] }],
+    ["search_messages", { query: "x", note: '"fleet" matches 2 chats; this is the only active one.', searched_chats: 1, matched_chats: 0, total_matches: 0, matches: [] }],
     ["overview", { summary: "1 running", hours: 12, waiting: [], running: [{ ...sampleChat, subagents_running: 2 }], new: [], projects: [{ name: "proxy", chats: 3 }] }],
     ["list_chats", { scope: "proxy", query: null, include_archived: false, total: 1, chats: [sampleChat] }],
     ["list_chats", clarification],

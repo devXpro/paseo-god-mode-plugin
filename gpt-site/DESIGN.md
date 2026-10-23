@@ -140,13 +140,37 @@ never with ids, which travel in the data.
 
 ### Name resolution
 
-Full id or a 6+ character id prefix, then an exact title, then word overlap on title and
-project. Words match when equal, when one prefixes the other, or when they share four letters,
-which absorbs Russian endings. Recency breaks ties. One clear winner is used. Otherwise reads take
-the only active chat among the best matches (running, waiting for approval, or with subagents at
-work) and say so in `note`; writes, and reads without one active chat, get up to three candidates
-back. A project that matches nothing returns the whole project list, so
-ChatGPT can turn "прокси" into "proxy" and retry without asking.
+An id comes first: the whole id of any chat, archived ones included, or its start of 6+ characters
+(`short_id`, `#a1b2c3d`), which Paseo's own lookup settles across every chat it keeps and refuses
+when several ids share it; an unknown id says so. A name is matched among active chats against the
+title, the workspace's title (Paseo has a model name it, and its sidebar shows it) and the project,
+in tiers: the whole name, alone or with the project after it ("Fleet map (proxy)"), or the whole
+first line of a title Paseo cut at 60 characters; then every word of the name (words match when
+equal, when one prefixes the other, or when they share four letters, which absorbs Russian endings);
+then at least half of them. One chat at the best tier is used. Writes take no partial match and
+never choose between equals; reads take the closest match and, among equals, the only chat at work
+(running, waiting for approval, or with subagents at work), and say so in `note`. Everything else is
+`needs_clarification` with a `reason` and up to five candidates, told apart by workspace, state and
+age. Names never reach into the archive: it is listed only when the user asks (`include_archived`),
+and an archived chat is then reached by its id; a name no active chat has says the archive was not
+searched. A project that matches nothing returns the whole project list, so ChatGPT can turn
+"прокси" into "proxy" and retry without asking.
+
+Why this way (2026-10-23). Paseo titles a chat with the first line of its first message cut at 60
+characters, so a chat that continues another one gets the same title. Two active chats titled so
+made `send_message` by name ask, and the exact tier then compared the name with title and project
+together, so no title matched exactly and three lookalikes came back. Recency would have picked the
+right chat that time, but a forgotten chat with the same title is exactly what recency cannot tell
+apart, so writes ask, with the workspace titles that do tell them apart. What saves the extra call
+is the id: results carry it and the rules say to pass it. A partial match no longer drives a write,
+since a word that fits no chat may mean one that is archived or gone. `send_message` by the id of an
+archived chat whose title an active chat has answers `archived`: that id most likely dates from before
+the work moved to the new chat.
+
+A server-side "chat being discussed" was considered and left out. A global one breaks with two
+conversations at once (the phone and the desktop). ChatGPT documents `_meta["openai/session"]`, an
+anonymized conversation id on each tool call, which could key one in D1; it is unverified for a Site
+plugin and in voice, Codex sends none, and the model already holds the ids such a binding would keep.
 
 ## 4. Settings
 

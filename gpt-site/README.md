@@ -79,8 +79,10 @@ declared `outputSchema`: chats with `id`, `short_id`, `title`, `project`, `statu
 `_meta`, which only its widget sees.
 
 Chats and projects are named the way you say them; the tools match names and ask back when
-unsure. Archived chats can be read by their full id. Terminals, files, git and daemon control
-are deliberately not exposed.
+unsure. A write acts on a name only when one chat has it whole, and never picks between chats that
+share a title. Names are matched among active chats only; archived chats are searched when you ask,
+and reached by their id or short id. Terminals, files, git and daemon control are deliberately not
+exposed.
 
 ## Project instructions
 

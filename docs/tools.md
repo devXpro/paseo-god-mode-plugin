@@ -19,7 +19,7 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `search_messages` | read | `query`*, `project`, `chat`, `include_archived`, `scan`, `limit` | Where something was said, across the most recent chats or in one. |
 | `list_models` | read | `provider` | The agent runtimes Paseo can start (Claude, Codex…), each with its models, their thinking levels and its permission modes, from Paseo's own catalog. |
 | `start_chat` | write | `project`*, `prompt`*, `wait_seconds`, `provider`, `model`, `thinking`, `mode` | Start one new chat in a project with the task as its first message, like New chat, on the runtime and model asked for, checked against Paseo's catalog first. |
-| `send_message` | write | `chat`*, `text`*, `if_busy` (steer, interrupt), `wait_seconds` | Send one message to an existing chat. |
+| `send_message` | write | `chat`*, `text`*, `if_busy` (steer, interrupt), `if_archived` (restore), `wait_seconds` | Send one message to an existing chat. |
 | `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
 | `archive_chat` | write, destructive | `chat`* | Archive a chat that is not working; a new message brings it back. |
@@ -33,9 +33,21 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 
 ## Conventions
 
-- **Names or ids.** Tools that take a `chat` accept its id from earlier results or the name the user
-  said; a name that matches several chats returns `needs_clarification` with candidates. Projects are
-  matched the same way, and a project that matches nothing lists all of them.
+- **Names or ids.** Tools that take a `chat` accept its id from earlier results (the whole id, its
+  `short_id` or `#short_id`) or the name the user said, resolved in the same call, so no `list_chats`
+  first. Paseo titles a chat with the first line of its first message cut at 60 characters, so a chat
+  that continues another one usually has the same title: an id is the surer reference. A name is
+  matched against the chat's title, its workspace's title (what Paseo's sidebar shows) and its
+  project, with or without the project after it (`Fleet map (proxy)`), in tiers: the whole name
+  (also the whole first line of a cut title), then every word of it, then at least half of them.
+  One chat at the best tier is used. A write never takes a partial match and never picks between
+  equals, by recency or by state; a read takes the closest match and, among equals, the only chat
+  at work, and says so in `note`. Otherwise the answer is `needs_clarification` with `reason`
+  (`same_name`, `similar`, `partial`, `id_prefix`, `no_match`, `unknown_id`) and up to five
+  candidates with their ids, workspace, state and age, and nothing was done. Names resolve among
+  active chats only: the archive is searched only when the user asks (`include_archived` of
+  `list_chats` and `search_messages`), and an archived chat is then reached by its id. Projects are
+  matched by name too, and a project that matches nothing lists all of them.
 - **Models.** `start_chat` takes a model by its id or by its name as the user said it ("Opus 4.8",
   "GPT-6-Astra", or "Astra" alone), and the model brings its runtime. A model, thinking level or mode
   the project's runtime does not offer returns `needs_clarification` with the choices, and nothing
@@ -45,7 +57,10 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 - **Writes say whether they arrived.** `start_chat`, `send_message` and `run_slash_command` answer
   `delivered: true` when the message reached the agent (replied, still working, or not waited for);
   `send_message` and `run_slash_command` answer `busy` with `delivered: false` when the chat was
-  working and nothing was sent.
+  working and nothing was sent. `send_message` to an archived chat whose title an active chat now
+  has (most likely its continuation, and the id kept from before) answers `archived` with
+  `delivered: false` and the active chats in `same_title`; `if_archived: "restore"` sends it anyway
+  and brings the archived chat back. Any other archived chat gets the message, which restores it.
 - **Waiting.** `start_chat`, `send_message` and `run_slash_command` wait up to `wait_seconds` (at most
   25; the default is the `PASEO_WAIT_SECONDS` setting, 15) for the agent's reply, and say "still
   working" otherwise.

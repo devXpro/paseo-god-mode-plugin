@@ -63,7 +63,24 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
   const clarification = (kind, query, message, candidates) => ({ text: message, data: { needs_clarification: { kind, query: String(query ?? ""), candidates } } });
   const runningSubagents = (c) => c.subagents.filter((s) => s.status === "running").length;
 
+  // After 0.11.0: ids of any chat (a start several share asks), names settled among active chats
+  // only (a write takes only a whole match).
+  const settles = typeof text.settleChat === "function";
+  function pickChatSettled(query, read) {
+    const raw = String(query ?? "").trim().replace(/^#/, "").toLowerCase();
+    if (/^[0-9a-f]{6}[0-9a-f-]*$/.test(raw)) {
+      const byId = world.chats.filter((c) => c.id.startsWith(raw));
+      if (byId.length === 1) return { chat: byId[0] };
+      if (byId.length > 1) return { ask: text.chatQuestion(raw, "id_prefix", byId, { read, now }) };
+      if (raw.length === 36) return { ask: text.chatQuestion(raw, "unknown_id", [], { read, now }) };
+    }
+    const settled = text.settleChat(active(), query, { read });
+    if (settled.chat) return settled;
+    return { ask: text.chatQuestion(query, settled.ask, settled.ask === "no_match" ? settled.chats.slice(0, 3) : settled.chats, { read, now }) };
+  }
+
   function pickChat(query, { read = false } = {}) {
+    if (settles) return pickChatSettled(query, read);
     const found = resolve(active(), query, { text: (c) => `${c.title} ${c.project}` });
     if (found.match) return { chat: found.match };
     const raw = String(query ?? "").trim().replace(/^#/, "");
@@ -333,7 +350,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     log("searchMessages", { query, project, chat, includeArchived, scan, limit });
     let candidates;
     if (chat) {
-      const picked = pickChat(chat);
+      const picked = pickChat(chat, { read: settles });
       if (picked.ask) return picked.ask;
       candidates = [picked.chat];
     } else {

@@ -6,6 +6,8 @@ import {
   activityText,
   chatData,
   chatLine,
+  chatQuestion,
+  choiceLine,
   contextLine,
   contextOf,
   describePermission,
@@ -19,10 +21,12 @@ import {
   imageTarget,
   isStep,
   latestFirstWithin,
+  matchChat,
   pickActive,
   releaseData,
   repliedOutcome,
   resolve,
+  settleChat,
   withImagePlaceholders,
   withoutImages,
   snippet,
@@ -194,6 +198,124 @@ test("a project name picks the one active chat for reads, never between two", ()
   assert.equal(pickActive([...items, chat("e1b2c3d4-5", "Tests", "running")]), null, "two active chats still need the user");
   assert.equal(pickActive([items[1], chat("f1", "Waiting", "idle", { permissions: [{ kind: "tool", name: "Bash" }] })]).id, "f1");
   assert.equal(pickActive([items[1], { ...items[2], subagentsRunning: 1 }]).id, "c1b2c3d4-3");
+});
+
+// Chats as paseo.mjs maps them. The lab ones have the shape of a real case (2026-10-23): Paseo
+// titled two active chats with the same first line cut at 60 characters, mid-word.
+const NOW_R = Date.parse("2026-10-23T09:30:00Z");
+const ch = (id, title, extra = {}) => ({
+  id,
+  title,
+  project: "proxy",
+  workspace: null,
+  status: "idle",
+  attention: null,
+  permissions: [],
+  updatedAt: "2026-10-23T09:00:00Z",
+  archived: false,
+  ...extra,
+});
+const CUT = "Продолжаем учебный кластер demo-dev на миникубе в тестовом а";
+const STEP5 = ch("5e7a0c11-0000", CUT, { project: "lab", workspace: "Продолжить demo-dev minikube: шаг 5 in-cluster", updatedAt: "2026-10-23T06:27:00Z" });
+const PLAN4 = ch("6b2f9d40-0000", CUT, { project: "lab", workspace: "Plan demo-dev minikube monitoring questions §4", updatedAt: "2026-10-22T06:39:00Z" });
+const STAGE = ch("7c1d2e3f-0000", "Обкатка demo-dev на стенде + дока для прода", { project: "lab", workspace: "lab" });
+
+test("a title Paseo cut at 60 characters is named by its whole first line, and chats sharing it stay equal", () => {
+  assert.equal(CUT.length, 60);
+  const said = "Продолжаем учебный кластер demo-dev на миникубе в тестовом аккаунте";
+  const found = matchChat([STEP5, PLAN4, STAGE], said);
+  assert.equal(found.tier, "exact");
+  assert.deepEqual(found.best, [STEP5, PLAN4], "only the two that carry the name, not a third lookalike");
+  assert.deepEqual(settleChat([STEP5, PLAN4, STAGE], said), { ask: "same_name", chats: [STEP5, PLAN4] });
+  assert.deepEqual(settleChat([STEP5, PLAN4, STAGE], said, { read: true }), { ask: "same_name", chats: [STEP5, PLAN4] }, "both idle: a read does not guess either");
+  assert.deepEqual(settleChat([STEP5, PLAN4, STAGE], CUT), { ask: "same_name", chats: [STEP5, PLAN4] });
+  assert.equal(matchChat([ch("x", "Fleet map")], "Fleet map D").tier, "partial", "a short title is no cut: a longer name is not exactly it");
+});
+
+test("a workspace title tells chats with one title apart", () => {
+  const chats = [STEP5, PLAN4, STAGE];
+  assert.deepEqual(settleChat(chats, "Продолжить demo-dev minikube: шаг 5 in-cluster"), { chat: STEP5 });
+  assert.deepEqual(settleChat(chats, "шаг 5 in-cluster"), { chat: STEP5 });
+  assert.deepEqual(settleChat(chats, "monitoring questions"), { chat: PLAN4 });
+  assert.equal(matchChat([STAGE], "lab").tier, "words", "a workspace named like its project is no name of its own");
+});
+
+test("an exact title wins over titles that contain it, which the project in the text once hid", () => {
+  const fleet = ch("a1", "Fleet map");
+  const fleetD = ch("a2", "Fleet map D", { updatedAt: "2026-10-23T09:20:00Z" });
+  assert.deepEqual(settleChat([fleetD, fleet], "fleet map"), { chat: fleet });
+  assert.deepEqual(settleChat([fleetD, fleet], "Fleet map D"), { chat: fleetD });
+  assert.equal(resolve([fleetD, fleet], "fleet map", { text: (c) => `${c.title} ${c.project}` }).match, undefined, "the old matching asked here");
+});
+
+test("a project named with the title narrows it", () => {
+  const proxy = ch("b1", "Auth refactor");
+  const jobby = ch("b2", "Auth refactor", { project: "jobby-jobs" });
+  assert.deepEqual(settleChat([proxy, jobby], "Auth refactor"), { ask: "same_name", chats: [proxy, jobby] });
+  assert.deepEqual(settleChat([proxy, jobby], "Auth refactor (jobby-jobs)"), { chat: jobby });
+  assert.deepEqual(settleChat([proxy, jobby], "auth refactor proxy"), { chat: proxy });
+});
+
+test("a write takes no partial match, a read takes the closest", () => {
+  const fleet = ch("c1", "Fleet map D");
+  const deploy = ch("c2", "Deploy fixes", { project: "jobby-jobs" });
+  const found = matchChat([fleet, deploy], "fleet map deploy");
+  assert.equal(found.tier, "partial");
+  assert.deepEqual(settleChat([fleet, deploy], "fleet map deploy"), { ask: "partial", chats: [fleet, deploy] });
+  assert.deepEqual(settleChat([fleet, deploy], "fleet map deploy", { read: true }), { chat: fleet });
+  assert.deepEqual(settleChat([fleet, deploy], "fleet"), { chat: fleet }, "one word that only one chat has is a whole match");
+});
+
+test("between equals a write never picks by recency or state; a read takes the only one at work", () => {
+  const idle = ch("e1", "Release notes", { updatedAt: "2026-10-23T09:29:00Z" });
+  const busy = ch("e2", "Release notes", { status: "running", updatedAt: "2026-10-22T09:00:00Z" });
+  const waiting = ch("e3", "Release notes", { permissions: [{ kind: "tool", name: "Bash" }] });
+  assert.deepEqual(settleChat([idle, busy], "release notes"), { ask: "same_name", chats: [idle, busy] });
+  assert.deepEqual(settleChat([idle, waiting], "release notes"), { ask: "same_name", chats: [idle, waiting] }, "an approval waiting in one is no reason");
+  const read = settleChat([idle, busy], "release notes", { read: true });
+  assert.equal(read.chat, busy);
+  assert.equal(read.note, '"release notes" matches 2 chats; this is the only active one.');
+  assert.deepEqual(settleChat([idle, busy, waiting], "release notes", { read: true }).ask, "same_name", "two at work: a read asks too");
+});
+
+test("nothing in common, or under half, matches nothing and offers the closest", () => {
+  assert.deepEqual(settleChat([STEP5, STAGE], "погода Варшава"), { ask: "no_match", chats: [] });
+  const weak = settleChat([STEP5, STAGE], "lab grafana alerts loki");
+  assert.equal(weak.ask, "no_match");
+  assert.ok(weak.chats.length > 0);
+  assert.deepEqual(matchChat([STEP5], "  "), { tier: null, best: [], near: [] });
+});
+
+test("a choice line names the workspace only where it tells chats apart", () => {
+  assert.equal(
+    choiceLine(STEP5, NOW_R),
+    'Продолжаем учебный кластер demo-dev на миникубе в тестовом а (lab, workspace "Продолжить demo-dev minikube: шаг 5 in-cluster"): idle, 3 h ago',
+  );
+  assert.equal(choiceLine(STAGE, NOW_R), "Обкатка demo-dev на стенде + дока для прода (lab): idle, 30 min ago");
+  assert.equal(choiceLine({ ...STAGE, archived: true }, NOW_R), "Обкатка demo-dev на стенде + дока для прода (lab): idle, archived, 30 min ago");
+});
+
+test("a chat question says nothing was done, tells the chats apart without ids, and carries the ids", () => {
+  const write = chatQuestion("Продолжаем учебный кластер", "same_name", [STEP5, PLAN4], { now: NOW_R });
+  assert.match(write.text, /^2 chats are named "Продолжаем учебный кластер", so nothing was done\.\n/);
+  assert.match(write.text, /call again with its id; otherwise ask the user which one:/);
+  assert.match(write.text, /workspace "Plan demo-dev minikube monitoring questions §4"/);
+  assert.doesNotMatch(write.text, /5e7a0c11|6b2f9d40/, "no ids to read aloud");
+  assert.deepEqual(write.data.needs_clarification.candidates.map((c) => c.id), [STEP5.id, PLAN4.id]);
+  assert.equal(write.data.needs_clarification.reason, "same_name");
+  assert.equal(write.data.needs_clarification.kind, "chat");
+  const read = chatQuestion("release", "similar", [STEP5, PLAN4], { read: true, now: NOW_R });
+  assert.match(read.text, /^"release" fits 2 chats equally\.\n/);
+  const many = chatQuestion("lab", "similar", Array.from({ length: 7 }, (_, i) => ch(`f${i}`, `Chat ${i}`)), { now: NOW_R });
+  assert.equal(many.data.needs_clarification.candidates.length, 5);
+  assert.match(many.text, /… and 2 more; a fuller name narrows it down\.$/);
+  assert.equal(
+    chatQuestion("weather", "no_match", [], { now: NOW_R }).text,
+    'No active chat matches "weather", so nothing was done.\nArchived chats were not searched: look there (list_chats with include_archived) only if the user asks. Otherwise ask the user for another name.',
+  );
+  const closest = chatQuestion("lab grafana", "no_match", [STAGE], { read: true, now: NOW_R }).text;
+  assert.match(closest, /^No active chat matches "lab grafana"\.\nArchived chats were not searched: look there \(list_chats with include_archived\) only if the user asks\. The closest active ones:\n/);
+  assert.match(chatQuestion("0f0f0f0f-1111-4222-8333-444444444444", "unknown_id", []).text, /It was deleted, or the id is wrong/);
 });
 
 test("steps read as speech: a command, a file name, a host, a first sentence", () => {

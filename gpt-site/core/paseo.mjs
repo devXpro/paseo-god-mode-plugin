@@ -16,7 +16,9 @@ import {
   candidatesText,
   chatData,
   chatLine,
+  chatQuestion,
   chatState,
+  choiceLine,
   contextLine,
   contextOf,
   describePermission,
@@ -30,10 +32,11 @@ import {
   imageTarget,
   isStep,
   latestFirstWithin,
-  pickActive,
+  normalize,
   releaseData,
   repliedOutcome,
   resolve,
+  settleChat,
   snippet,
   toIso,
   toolCallData,
@@ -217,26 +220,41 @@ function clarification(kind, query, text, names) {
   return { text, data: { needs_clarification: { kind, query: String(query ?? ""), candidates: names } } };
 }
 
-// Resolves a spoken chat reference among active chats, or a full id of any chat
-// including archived ones. Returns { chat, note? } or { ask }. Reads take the one
-// active chat among several matches ("the agent in jobby") and say so in `note`;
-// writes always ask.
+// An id as the tools hand it out: the whole id, or its start (short_id, "#a1b2c3d"), 6+ characters.
+const ID_PREFIX = /^[0-9a-f]{6}[0-9a-f-]*$/;
+
+// The chat an id names, archived chats included, or the question when it names none or several.
+// Null when the reference is no id, or a word that only looks like one.
+async function chatById(client, chats, query, { read }) {
+  const raw = String(query ?? "").trim().replace(/^#/, "").toLowerCase();
+  if (!ID_PREFIX.test(raw)) return null;
+  const known = UUID.test(raw) ? chats.find((c) => c.id === raw) : null;
+  if (known) return { chat: known };
+  // A start of an id is Paseo's to settle: it looks through every chat it keeps, archived ones
+  // too, so a short id an archived chat shares is never taken for an active chat's. It answers
+  // null for an unknown id and refuses a start that several ids share.
+  let fetched;
+  try {
+    fetched = await client.fetchAgent(raw);
+  } catch (error) {
+    if (!/ambiguous/i.test(String(error?.message ?? ""))) throw error;
+    return { ask: chatQuestion(raw, "id_prefix", chats.filter((c) => c.id.startsWith(raw)), { read }) };
+  }
+  if (fetched) return { chat: chats.find((c) => c.id === fetched.agent.id) ?? toChat(fetched) };
+  return UUID.test(raw) ? { ask: chatQuestion(raw, "unknown_id", [], { read }) } : null;
+}
+
+// Resolves a chat reference: an id of any chat, archived ones included, or a name among active
+// chats only (see settleChat: a write acts only on one whole match, never on recency or state).
+// Archived chats are looked through only when the user asks (include_archived of list_chats and
+// search_messages), and then reached by id. Returns { chat, note? } or { ask }.
 async function pickChat(client, query, chats, { read = false } = {}) {
-  const all = chats ?? (await fetchChats(client));
-  const found = resolve(all, query, { text: (c) => `${c.title} ${c.project}` });
-  if (found.match) return { chat: found.match };
-  const raw = String(query ?? "").trim().replace(/^#/, "");
-  if (UUID.test(raw)) {
-    const fetched = await client.fetchAgent(raw);
-    if (fetched) return { chat: toChat(fetched) };
-  }
-  const active = read ? pickActive(found.top ?? found.candidates) : null;
-  if (active) {
-    const matches = (found.top ?? found.candidates).length;
-    return { chat: active, note: `"${query}" matches ${matches} chats; this is the only active one.` };
-  }
-  const lines = found.candidates.map((c) => chatLine(c));
-  return { ask: clarification("chat", query, candidatesText("chat", query, lines), found.candidates.map((c) => chatData(c))) };
+  const active = chats ?? (await fetchChats(client));
+  const byId = await chatById(client, active, query, { read });
+  if (byId) return byId;
+  const settled = settleChat(active, query, { read });
+  if (settled.chat) return settled;
+  return { ask: chatQuestion(query, settled.ask, settled.ask === "no_match" ? settled.chats.slice(0, 3) : settled.chats, { read }) };
 }
 
 // With no match the whole project list comes back, so ChatGPT can map a spoken
@@ -755,79 +773,90 @@ async function activityOf(client, chat, known) {
 
 // read_activity: one chat, or every chat where an agent or a subagent is working now. A turn can
 // end while backgrounded subagents keep going, so recent idle chats are asked too.
-export async function readActivity(pairingUrl, { chat, maxChars } = {}) {
+export async function readActivity(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => readActivityOn(client, args));
+}
+
+// read_activity over an open connection (tests drive it with a fake client).
+export async function readActivityOn(client, { chat, maxChars } = {}) {
   const max = clamp(maxChars ?? 1500, 200, 6000);
-  return withDaemon(pairingUrl, async (client) => {
-    const chats = await fetchChats(client);
-    if (chat) {
-      const picked = await pickChat(client, chat, chats, { read: true });
-      if (picked.ask) return picked.ask;
-      const activity = await activityOf(client, picked.chat);
-      const summary = activity.working ? "working" : "not working";
-      return withNote({ text: truncate(activityText(activity), max), data: { summary, chats: [activity] } }, picked.note);
-    }
-    const now = Date.now();
-    const candidates = chats.filter((c) => isRunning(c) || now - Date.parse(c.updatedAt) < ACTIVITY_RECENT_MS).slice(0, ACTIVITY_SCAN);
-    await countSubagents(client, candidates);
-    const working = candidates.filter((c) => isRunning(c) || c.subagentsRunning > 0);
-    if (working.length === 0) {
-      return { text: "No agent or subagent is working right now.", data: { summary: "Nothing is working right now.", chats: [] } };
-    }
-    const activities = await Promise.all(working.map((c) => activityOf(client, c, c.subagents)));
-    const helpers = activities.reduce((n, a) => n + a.subagents_running, 0);
-    const summary = `${activities.length} chat(s) working, ${helpers} subagent(s) running.`;
-    return { text: truncate([summary, ...activities.map(activityText)].join("\n"), max), data: { summary, chats: activities } };
-  });
+  const chats = await fetchChats(client);
+  if (chat) {
+    const picked = await pickChat(client, chat, chats, { read: true });
+    if (picked.ask) return picked.ask;
+    const activity = await activityOf(client, picked.chat);
+    const summary = activity.working ? "working" : "not working";
+    return withNote({ text: truncate(activityText(activity), max), data: { summary, chats: [activity] } }, picked.note);
+  }
+  const now = Date.now();
+  const candidates = chats.filter((c) => isRunning(c) || now - Date.parse(c.updatedAt) < ACTIVITY_RECENT_MS).slice(0, ACTIVITY_SCAN);
+  await countSubagents(client, candidates);
+  const working = candidates.filter((c) => isRunning(c) || c.subagentsRunning > 0);
+  if (working.length === 0) {
+    return { text: "No agent or subagent is working right now.", data: { summary: "Nothing is working right now.", chats: [] } };
+  }
+  const activities = await Promise.all(working.map((c) => activityOf(client, c, c.subagents)));
+  const helpers = activities.reduce((n, a) => n + a.subagents_running, 0);
+  const summary = `${activities.length} chat(s) working, ${helpers} subagent(s) running.`;
+  return { text: truncate([summary, ...activities.map(activityText)].join("\n"), max), data: { summary, chats: activities } };
 }
 
 // Finds where something was said, across many chats at once: Paseo searches
 // one chat at a time, so the chats are searched here in parallel.
-export async function searchMessages(pairingUrl, { query, project, chat, includeArchived = false, scan, limit = 10 } = {}) {
+export async function searchMessages(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => searchMessagesOn(client, args));
+}
+
+// search_messages over an open connection (tests drive it with a fake client).
+export async function searchMessagesOn(client, { query, project, chat, includeArchived = false, scan, limit = 10 } = {}) {
   const wanted = clamp(Math.trunc(limit) || 10, 1, 30);
-  return withDaemon(pairingUrl, async (client) => {
-    let candidates;
-    if (chat) {
-      const picked = await pickChat(client, chat);
+  let candidates;
+  let note;
+  if (chat) {
+    const picked = await pickChat(client, chat, undefined, { read: true });
+    if (picked.ask) return picked.ask;
+    candidates = [picked.chat];
+    note = picked.note;
+  } else {
+    candidates = includeArchived
+      ? await fetchChatHistory(client, { includeArchived: true, limit: CHAT_PAGE })
+      : await fetchChats(client);
+    if (project) {
+      const picked = pickProject(await fetchProjects(client), project);
       if (picked.ask) return picked.ask;
-      candidates = [picked.chat];
-    } else {
-      candidates = includeArchived
-        ? await fetchChatHistory(client, { includeArchived: true, limit: CHAT_PAGE })
-        : await fetchChats(client);
-      if (project) {
-        const picked = pickProject(await fetchProjects(client), project);
-        if (picked.ask) return picked.ask;
-        candidates = candidates.filter((c) => c.project === picked.project.name);
-      }
-      candidates = candidates.slice(0, clamp(Math.trunc(scan) || SEARCH_SCAN.default, 1, SEARCH_SCAN.max));
+      candidates = candidates.filter((c) => c.project === picked.project.name);
     }
-    const perChat = chat ? Math.min(wanted, 8) : 2;
-    const results = await mapLimit(candidates, SEARCH_CONCURRENCY, (c) =>
-      searchChat(client, c, query, perChat).catch(() => ({ chat: c, total: 0, matches: [] })),
-    );
-    const hits = results.filter((r) => r.total > 0);
-    const matches = hits.flatMap((r) => r.matches.map((m) => ({ chat: r.chat, ...m }))).slice(0, wanted);
-    const data = {
-      query,
-      searched_chats: candidates.length,
-      matched_chats: hits.length,
-      total_matches: 0,
-      matches: matches.map(({ chat: c, ...m }) => ({
-        chat: { id: c.id, short_id: c.id.slice(0, 7), title: c.title, project: c.project, updated_at: toIso(c.updatedAt), archived: c.archived },
-        ...m,
-      })),
-    };
-    if (matches.length === 0) {
-      return { text: `No messages matching "${query}" in the ${candidates.length} most recent chat(s) searched.`, data };
-    }
-    const totalMatches = hits.reduce((n, r) => n + r.total, 0);
-    data.total_matches = totalMatches;
-    const shown = matches.length < totalMatches ? `; ${matches.length} of ${totalMatches} matches shown` : "";
-    return {
+    candidates = candidates.slice(0, clamp(Math.trunc(scan) || SEARCH_SCAN.default, 1, SEARCH_SCAN.max));
+  }
+  const perChat = chat ? Math.min(wanted, 8) : 2;
+  const results = await mapLimit(candidates, SEARCH_CONCURRENCY, (c) =>
+    searchChat(client, c, query, perChat).catch(() => ({ chat: c, total: 0, matches: [] })),
+  );
+  const hits = results.filter((r) => r.total > 0);
+  const matches = hits.flatMap((r) => r.matches.map((m) => ({ chat: r.chat, ...m }))).slice(0, wanted);
+  const data = {
+    query,
+    searched_chats: candidates.length,
+    matched_chats: hits.length,
+    total_matches: 0,
+    matches: matches.map(({ chat: c, ...m }) => ({
+      chat: { id: c.id, short_id: c.id.slice(0, 7), title: c.title, project: c.project, updated_at: toIso(c.updatedAt), archived: c.archived },
+      ...m,
+    })),
+  };
+  if (matches.length === 0) {
+    return withNote({ text: `No messages matching "${query}" in the ${candidates.length} most recent chat(s) searched.`, data }, note);
+  }
+  const totalMatches = hits.reduce((n, r) => n + r.total, 0);
+  data.total_matches = totalMatches;
+  const shown = matches.length < totalMatches ? `; ${matches.length} of ${totalMatches} matches shown` : "";
+  return withNote(
+    {
       text: [`"${query}" found in ${hits.length} of ${candidates.length} chat(s) searched${shown}:`, ...matches.map((m) => matchLine(m.chat, m))].join("\n"),
       data,
-    };
-  });
+    },
+    note,
+  );
 }
 
 // Waits up to `seconds` for the agent's turn to end and describes the outcome.
@@ -882,86 +911,111 @@ export async function startChatOn(client, { project, prompt, provider, model, th
   };
 }
 
-export async function sendMessage(pairingUrl, { chat, text, ifBusy, waitSeconds = 15 } = {}) {
-  return withDaemon(pairingUrl, async (client) => {
-    const picked = await pickChat(client, chat);
-    if (picked.ask) return picked.ask;
-    const target = picked.chat;
-    const ids = { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project };
-    const busy = isRunning(target);
-    if (busy && !ifBusy) {
-      return {
-        text: `Not sent: ${truncate(target.title, 70)} is busy. Ask the user whether to add this to its current work or interrupt it, then call again with if_busy.`,
-        data: { ...ids, outcome: "busy", delivered: false },
-      };
-    }
-    await client.sendAgentMessage(target.id, text, busy ? { activeTurnBehavior: ifBusy } : undefined);
-    const outcome = await awaitReply(client, target.id, waitSeconds);
-    return {
-      text: `Sent to ${truncate(target.title, 70)}; it arrived. Do not send it again.\n${outcome.text}`,
-      data: { ...ids, ...outcome.data },
-    };
-  });
+export async function sendMessage(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => sendMessageOn(client, args));
 }
 
-export async function answerApproval(pairingUrl, { chat, decision, request } = {}) {
-  return withDaemon(pairingUrl, async (client) => {
-    const picked = await pickChat(client, chat);
-    if (picked.ask) return picked.ask;
-    const target = picked.chat;
-    const pending = target.permissions;
-    if (pending.length === 0) {
-      return {
-        text: `${chatLine(target)}\nNothing is waiting for approval here, so nothing was allowed or denied. If the agent asked the user a question in its text, answer it with send_message.`,
-        data: { chat_id: target.id, done: false, what: null },
-      };
-    }
-    let permission = pending[0];
-    if (pending.length > 1) {
-      const byNumber = pending[Number(request) - 1];
-      const byText = request ? resolve(pending, request, { text: (p) => describePermission(p) }).match : null;
-      permission = byNumber ?? byText;
-      if (!permission) {
-        const options = pending.map((p) => describePermission(p, 100));
-        return clarification(
-          "approval",
-          request,
-          [chatLine(target), "Several requests are waiting. Ask the user which one, then call again with request set to its number:", ...options.map((o, i) => `${i + 1}. ${o}`)].join("\n"),
-          options,
-        );
-      }
-    }
-    const behavior = decision === "allow" ? "allow" : "deny";
-    // Press the same button the app would show ("Implement", "Reject", …).
-    const action = permission.actions?.find((a) => a.behavior === behavior);
-    const response = {
-      behavior,
-      ...(action ? { selectedActionId: action.id } : {}),
-      ...(behavior === "deny" ? { message: "Denied by voice." } : {}),
-    };
-    await client.respondToPermissionAndWait(target.id, permission.id, response, 10_000);
-    const what = describePermission(permission);
+// send_message over an open connection (tests drive it with a fake client).
+export async function sendMessageOn(client, { chat, text, ifBusy, ifArchived, waitSeconds = 15 } = {}) {
+  const chats = await fetchChats(client);
+  const picked = await pickChat(client, chat, chats);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const title = truncate(target.title, 70);
+  const ids = { chat_id: target.id, short_id: target.id.slice(0, 7), project: target.project };
+  // Only an id reaches an archived chat, and a message brings it back. An active chat with its
+  // title is most likely its continuation, and the id one kept from before the move.
+  const namesakes = target.archived ? chats.filter((c) => normalize(c.title) === normalize(target.title)).slice(0, 5) : [];
+  if (namesakes.length && ifArchived !== "restore") {
     return {
-      text: `${behavior === "allow" ? "Allowed" : "Denied"}: ${what} in ${truncate(target.title, 70)}.`,
-      data: { chat_id: target.id, done: true, decision: behavior, what },
+      text: [
+        `Not sent: ${title} is archived, and ${namesakes.length === 1 ? "an active chat has" : `${namesakes.length} active chats have`} its title, most likely its continuation:`,
+        ...namesakes.map((c) => `- ${choiceLine(c)}`),
+        'Ask the user which chat they mean and send it there by its id. Only if they want the archived one back with this message, call again with if_archived "restore".',
+      ].join("\n"),
+      data: { ...ids, outcome: "archived", delivered: false, same_title: namesakes.map((c) => chatData(c)) },
     };
-  });
+  }
+  const busy = isRunning(target);
+  if (busy && !ifBusy) {
+    return {
+      text: `Not sent: ${title} is busy. Ask the user whether to add this to its current work or interrupt it, then call again with if_busy.`,
+      data: { ...ids, outcome: "busy", delivered: false },
+    };
+  }
+  await client.sendAgentMessage(target.id, text, busy ? { activeTurnBehavior: ifBusy } : undefined);
+  const outcome = await awaitReply(client, target.id, waitSeconds);
+  const back = target.archived ? " It was archived; the message brought it back." : "";
+  return {
+    text: `Sent to ${title}; it arrived.${back} Do not send it again.\n${outcome.text}`,
+    data: { ...ids, ...outcome.data },
+  };
 }
 
-export async function stopChat(pairingUrl, { chat } = {}) {
-  return withDaemon(pairingUrl, async (client) => {
-    const picked = await pickChat(client, chat);
-    if (picked.ask) return picked.ask;
-    const target = picked.chat;
-    if (!isRunning(target)) {
-      return { text: `${chatLine(target)}\nIt is not running; nothing was stopped.`, data: { chat_id: target.id, done: false } };
-    }
-    await client.cancelAgent(target.id);
+export async function answerApproval(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => answerApprovalOn(client, args));
+}
+
+// answer_approval over an open connection (tests drive it with a fake client).
+export async function answerApprovalOn(client, { chat, decision, request } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const pending = target.permissions;
+  if (pending.length === 0) {
     return {
-      text: `Stopped ${truncate(target.title, 70)}. State before: ${chatState(target)}.`,
-      data: { chat_id: target.id, done: true },
+      text: `${chatLine(target)}\nNothing is waiting for approval here, so nothing was allowed or denied. If the agent asked the user a question in its text, answer it with send_message.`,
+      data: { chat_id: target.id, done: false, what: null },
     };
-  });
+  }
+  let permission = pending[0];
+  if (pending.length > 1) {
+    const byNumber = pending[Number(request) - 1];
+    const byText = request ? resolve(pending, request, { text: (p) => describePermission(p) }).match : null;
+    permission = byNumber ?? byText;
+    if (!permission) {
+      const options = pending.map((p) => describePermission(p, 100));
+      return clarification(
+        "approval",
+        request,
+        [chatLine(target), "Several requests are waiting. Ask the user which one, then call again with request set to its number:", ...options.map((o, i) => `${i + 1}. ${o}`)].join("\n"),
+        options,
+      );
+    }
+  }
+  const behavior = decision === "allow" ? "allow" : "deny";
+  // Press the same button the app would show ("Implement", "Reject", …).
+  const action = permission.actions?.find((a) => a.behavior === behavior);
+  const response = {
+    behavior,
+    ...(action ? { selectedActionId: action.id } : {}),
+    ...(behavior === "deny" ? { message: "Denied by voice." } : {}),
+  };
+  await client.respondToPermissionAndWait(target.id, permission.id, response, 10_000);
+  const what = describePermission(permission);
+  return {
+    text: `${behavior === "allow" ? "Allowed" : "Denied"}: ${what} in ${truncate(target.title, 70)}.`,
+    data: { chat_id: target.id, done: true, decision: behavior, what },
+  };
+}
+
+export async function stopChat(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => stopChatOn(client, args));
+}
+
+// stop_chat over an open connection (tests drive it with a fake client).
+export async function stopChatOn(client, { chat } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  if (!isRunning(target)) {
+    return { text: `${chatLine(target)}\nIt is not running; nothing was stopped.`, data: { chat_id: target.id, done: false } };
+  }
+  await client.cancelAgent(target.id);
+  return {
+    text: `Stopped ${truncate(target.title, 70)}. State before: ${chatState(target)}.`,
+    data: { chat_id: target.id, done: true },
+  };
 }
 
 // Archives a chat the way Paseo's Archive does: hidden from the list, history kept, and a new message
