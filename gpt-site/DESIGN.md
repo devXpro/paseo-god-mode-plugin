@@ -162,7 +162,10 @@ made `send_message` by name ask, and the exact tier then compared the name with 
 together, so no title matched exactly and three lookalikes came back. Recency would have picked the
 right chat that time, but a forgotten chat with the same title is exactly what recency cannot tell
 apart, so writes ask, with the workspace titles that do tell them apart. What saves the extra call
-is the id: results carry it and the rules say to pass it. A partial match no longer drives a write,
+is the id: results carry it and the rules say to pass it. After `needs_clarification` the model asks
+the user (0.12.1): told to take "the candidate this conversation is about", it took the first of two
+chats a shared name fitted, as the call log showed. It picks one itself only when the user's words
+pick it ("the latest", "the one about X") or the conversation already read or used exactly that chat. A partial match no longer drives a write,
 since a word that fits no chat may mean one that is archived or gone. `send_message` by the id of an
 archived chat whose title an active chat has answers `archived`: that id most likely dates from before
 the work moved to the new chat.

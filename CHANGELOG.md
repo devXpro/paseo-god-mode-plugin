@@ -7,6 +7,17 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-23
+
+### Fixed
+
+- After `needs_clarification` for a chat, ChatGPT picked the first candidate itself instead of asking:
+  the guidance let it take "the candidate this conversation is about", and a name every candidate
+  shares read as that. The answer, the `needs_clarification` description and the instructions now
+  say to ask the user which one, naming what tells them apart, and to pick one only when the user's
+  words pick it ("the latest" is the one updated most recently, "the one about X" the one whose title
+  or workspace says X) or the conversation already read or used exactly that chat.
+
 ## [0.12.0] - 2026-10-23
 
 ### Added

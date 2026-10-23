@@ -186,7 +186,7 @@ export function chatQuestion(query, reason, chats, { read = false, now = Date.no
   const lines = shown.length
     ? [
         CHAT_QUESTION_NOTES[reason],
-        "If one of them is the chat this conversation is about, call again with its id; otherwise ask the user which one:",
+        'Ask the user which one, naming what tells them apart. Pick one yourself (call again with its id) only if the user\'s words pick it ("the latest" is the one updated most recently; "the one about X" is the one whose title or workspace says X) or this conversation already read or used exactly that chat. Words they all share, or coming first, are no reason to pick:',
         ...shown.map((c) => `- ${choiceLine(c, now)}`),
         chats.length > shown.length ? `… and ${chats.length - shown.length} more; a fuller name narrows it down.` : null,
       ]

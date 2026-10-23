@@ -149,7 +149,7 @@ test("the case: two active chats share a cut title; the whole line asks about th
   assert.deepEqual(ask.candidates.map((c) => c.id), [STEP5.id, PLAN4.id], "not the archived one, not the lookalike");
   assert.deepEqual(ask.candidates.map((c) => c.workspace), [STEP5.workspace, PLAN4.workspace]);
   assert.match(result.text, /^2 chats are named "Продолжаем учебный кластер demo-dev на миникубе в тестовом аккаунте", so nothing was done\.\n/);
-  assert.match(result.text, /call again with its id; otherwise ask the user which one:/);
+  assert.match(result.text, /\nAsk the user which one, naming what tells them apart\. Pick one yourself \(call again with its id\) only if the user's words pick it/);
   assert.match(result.text, /workspace "Продолжить demo-dev minikube: шаг 5 in-cluster"\): idle, 3 h ago/);
   assert.match(result.text, /workspace "Plan demo-dev minikube monitoring questions §4"\): idle, 25 h ago/);
   assert.doesNotMatch(result.text, /5e7a0c11|6b2f9d40/, "the text has no ids to read aloud");

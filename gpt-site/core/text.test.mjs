@@ -298,7 +298,9 @@ test("a choice line names the workspace only where it tells chats apart", () => 
 test("a chat question says nothing was done, tells the chats apart without ids, and carries the ids", () => {
   const write = chatQuestion("Продолжаем учебный кластер", "same_name", [STEP5, PLAN4], { now: NOW_R });
   assert.match(write.text, /^2 chats are named "Продолжаем учебный кластер", so nothing was done\.\n/);
-  assert.match(write.text, /call again with its id; otherwise ask the user which one:/);
+  assert.match(write.text, /\nAsk the user which one, naming what tells them apart\./);
+  assert.match(write.text, /"the latest" is the one updated most recently; "the one about X" is the one whose title or workspace says X/, "the user's own words may pick one");
+  assert.match(write.text, /Words they all share, or coming first, are no reason to pick:\n- /, "never the first one by default");
   assert.match(write.text, /workspace "Plan demo-dev minikube monitoring questions §4"/);
   assert.doesNotMatch(write.text, /5e7a0c11|6b2f9d40/, "no ids to read aloud");
   assert.deepEqual(write.data.needs_clarification.candidates.map((c) => c.id), [STEP5.id, PLAN4.id]);

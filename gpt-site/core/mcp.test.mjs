@@ -109,7 +109,10 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.match(text, /never read ids, hashes or links aloud/);
   assert.match(text, /Pass a chat's id when an earlier result gave it: titles repeat\./);
   assert.match(text, /Otherwise pass the name the user said, with no list_chats first; the tool acts only on one clear match\./);
-  assert.match(text, /needs_clarification means nothing was done: call again with the id of the candidate this conversation is about, or ask the user which one\./);
+  assert.match(
+    text,
+    /needs_clarification means nothing was done: ask the user which one, unless their words pick one \("the latest" is the one updated most recently\) or this conversation already read or used exactly one of them; then call again with its id\./,
+  );
   assert.match(text, /must have heard exactly what will happen and said yes/);
   const plain = await createMcpHandler({ config: readConfig({ PASEO_CONFIRM_RISKY: "off" }), ops })(rpc("server/discover"));
   assert.match(plain.result.instructions, /Answer in the user's language/);
@@ -227,7 +230,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
     assert.match(chat, /The tool resolves a name itself, so no list_chats first\./, tool);
     assert.match(chat, /"Fleet map \(proxy\)"/, `${tool}: a project can narrow the name`);
     const clarify = byName[tool].outputSchema.properties.needs_clarification;
-    assert.match(clarify.description, /nothing was done\. Call again with the id of the candidate this conversation is about, or ask the user which one\./, tool);
+    assert.match(clarify.description, /nothing was done\. Ask the user which one; call again with a candidate's id yourself only if the user's words pick it/, tool);
     assert.ok(clarify.properties.reason.enum.includes("same_name"), tool);
   }
   assert.match(byName.list_chats.description, /resolve a name themselves/);

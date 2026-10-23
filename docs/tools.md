@@ -44,7 +44,9 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   equals, by recency or by state; a read takes the closest match and, among equals, the only chat
   at work, and says so in `note`. Otherwise the answer is `needs_clarification` with `reason`
   (`same_name`, `similar`, `partial`, `id_prefix`, `no_match`, `unknown_id`) and up to five
-  candidates with their ids, workspace, state and age, and nothing was done. Names resolve among
+  candidates with their ids, workspace, state and age, and nothing was done; ChatGPT then asks which
+  one, unless the user's words pick it ("the latest", "the one about X") or the conversation already
+  read or used exactly that chat. Names resolve among
   active chats only: the archive is searched only when the user asks (`include_archived` of
   `list_chats` and `search_messages`), and an archived chat is then reached by its id. Projects are
   matched by name too, and a project that matches nothing lists all of them.
