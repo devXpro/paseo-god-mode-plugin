@@ -3,6 +3,7 @@
 //
 //   node core/probe.mjs overview [--hours 12]
 //   node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
+//   node core/probe.mjs pinned [--project P] [--query Q]
 //   node core/probe.mjs read <chat> [--view text|commands|thinking] [--turn 1] [--turns 3] [--max N]
 //   node core/probe.mjs activity [chat] [--max N]
 //   node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
@@ -32,6 +33,7 @@ import {
   archiveChat,
   listChats,
   listModels,
+  listPinnedChats,
   listSlashCommands,
   overview,
   pluginAction,
@@ -98,6 +100,7 @@ const operations = {
       includeArchived: Boolean(values.archived),
       limit: number(values.limit, 10),
     }),
+  pinned: () => listPinnedChats(url, { project: values.project, query: values.query }),
   read: () =>
     readChat(url, {
       chat: first,

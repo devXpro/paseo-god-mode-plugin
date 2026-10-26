@@ -33,6 +33,7 @@ import {
   isStep,
   latestFirstWithin,
   normalize,
+  pinnedResult,
   releaseData,
   repliedOutcome,
   resolve,
@@ -86,6 +87,8 @@ import { catalogEntry, chooseStart, modelsData, modelsText, pickProvider, runtim
 const CONNECT_TIMEOUT_MS = 8_000;
 const MAX_WAIT_SECONDS = 25;
 const CHAT_PAGE = 200;
+// Workspaces per page; Paseo serves at most 200.
+const WORKSPACE_PAGE = 200;
 const TURN_ENTRIES = 400;
 const COMMANDS_SHOWN = 8;
 const MAX_TURNS = 10;
@@ -171,6 +174,8 @@ function toChat({ agent, project }) {
     title: agent.title || "(untitled)",
     project: project?.projectName ?? "(no project)",
     workspace: project?.workspaceName ?? null,
+    // Paseo pins a workspace, not a chat: list_pinned_chats finds a pin's chats by this.
+    workspaceId: agent.workspaceId ?? null,
     status: agent.status,
     attention: agent.requiresAttention ? agent.attentionReason : null,
     permissions: agent.pendingPermissions ?? [],
@@ -382,6 +387,49 @@ export async function listChats(pairingUrl, { project, status = "all", query, in
     const hint = "\nThe data carries each chat's id: pass it to the next tool; no need to list again.";
     return { text: `${chats.length} chat(s) in ${scope}:\n${shown.map((c) => chatLine(c, now)).join("\n")}${more}${hint}`, data };
   });
+}
+
+// The rows of the Pinned section at the top of Paseo's sidebar. Paseo pins a workspace (its
+// pinnedAt), not a chat, and cannot filter by pins, so every page of workspaces is read; archived
+// workspaces never come back. Latest pin first, as Paseo orders them: an order the user dragged is
+// kept on their device, out of the daemon's reach.
+async function fetchPinned(client) {
+  const pinned = [];
+  let cursor = null;
+  do {
+    const { entries, pageInfo } = await client.fetchWorkspaces({ page: { limit: WORKSPACE_PAGE, ...(cursor ? { cursor } : {}) } });
+    pinned.push(...entries.filter((w) => w.pinnedAt));
+    cursor = pageInfo?.hasMore ? pageInfo.nextCursor : null;
+  } while (cursor);
+  return pinned.sort((a, b) => String(b.pinnedAt).localeCompare(String(a.pinnedAt)));
+}
+
+export async function listPinnedChats(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => listPinnedChatsOn(client, args));
+}
+
+// list_pinned_chats over an open connection (tests drive it with a fake client): every pinned row
+// with its active chats, newest first, in one project when asked.
+export async function listPinnedChatsOn(client, { project, query } = {}) {
+  const [projects, workspaces, chats] = await Promise.all([project ? fetchProjects(client) : [], fetchPinned(client), fetchChats(client)]);
+  let scope = "all projects";
+  if (project) {
+    const picked = pickProject(projects, project);
+    if (picked.ask) return picked.ask;
+    scope = picked.project.name;
+  }
+  const rows = workspaces
+    .filter((w) => !project || w.projectDisplayName === scope)
+    .map((w) => ({
+      id: w.id,
+      name: w.name,
+      project: w.projectDisplayName,
+      branch: w.gitRuntime?.currentBranch ?? null,
+      pinnedAt: w.pinnedAt,
+      status: w.status,
+      chats: chats.filter((c) => c.workspaceId === w.id),
+    }));
+  return pinnedResult(rows, { scope, query });
 }
 
 // Loads `count` turns, newest first counted from `from` (1 = latest), each read

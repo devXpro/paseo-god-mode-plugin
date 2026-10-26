@@ -22,7 +22,10 @@ import {
   isStep,
   latestFirstWithin,
   matchChat,
+  matchPinned,
   pickActive,
+  pinnedLine,
+  pinnedResult,
   releaseData,
   repliedOutcome,
   resolve,
@@ -451,4 +454,109 @@ test("a write's reply counts its images instead of reading their paths", () => {
   const shot = repliedOutcome(`Done: ![Image](${SHOT})`);
   assert.equal(shot.text, "Agent replied: Done: [image 1]\nThe reply has 1 image(s); show_images puts them on the user's screen.");
   assert.deepEqual(shot.data, { outcome: "replied", delivered: true, reply: "Done: [image 1]", images: 1 });
+});
+
+// ---- Pinned chats ----------------------------------------------------------------------------------
+
+const PIN_NOW = Date.parse("2026-10-26T18:00:00Z");
+const pinChat = (id, title, fields = {}) => ({
+  id,
+  title,
+  project: "lab",
+  workspace: null,
+  status: "idle",
+  attention: null,
+  permissions: [],
+  updatedAt: "2026-10-26T17:50:00Z",
+  createdAt: "2026-10-26T10:00:00Z",
+  archived: false,
+  ...fields,
+});
+// A pinned row as list_pinned_chats builds it from Paseo's workspace: latest pin first in ROWS.
+const pinRow = (id, name, chats, fields = {}) => ({ id, name, project: "lab", branch: null, pinnedAt: "2026-10-26T15:00:00Z", status: "done", chats, ...fields });
+const FLEET_PIN = pinRow("wks_fleet", "Fleet map", [pinChat("a2252400-0000-4000-8000-000000000001", "Fleet map, stage D", { project: "proxy", status: "running", updatedAt: "2026-10-26T17:58:00Z" })], {
+  project: "proxy",
+  pinnedAt: "2026-10-26T17:00:00Z",
+  status: "running",
+});
+const DEPLOY_PIN = pinRow("wks_deploy", "Deploy scripts", [], { branch: "ci-hooks", pinnedAt: "2026-10-26T12:00:00Z" });
+const CLUSTER_PIN = pinRow("wks_cluster", "Local cluster, step 6 (helm)", [pinChat("739a96bc-0000-4000-8000-000000000002", "Продолжаем учебный кластер на миникубе в тестовом а")], {
+  pinnedAt: "2026-10-26T09:00:00Z",
+});
+const NOTES_PIN = pinRow(
+  "wks_notes",
+  "Release notes",
+  [
+    pinChat("c3d4e5f6-0000-4000-8000-000000000003", "Release notes 0.6", { attention: "finished", updatedAt: "2026-10-26T17:55:00Z" }),
+    pinChat("c3d4e5f6-0000-4000-8000-000000000004", "Release notes 0.5", { updatedAt: "2026-10-26T17:00:00Z" }),
+  ],
+  { pinnedAt: "2026-10-26T08:00:00Z", status: "attention" },
+);
+const ROWS = [FLEET_PIN, DEPLOY_PIN, CLUSTER_PIN, NOTES_PIN];
+
+test("a pinned row reads as the sidebar shows it: its name, project and what its chats do", () => {
+  assert.equal(pinnedLine(FLEET_PIN, PIN_NOW), "Fleet map (proxy): running, 2 min ago");
+  assert.equal(pinnedLine(DEPLOY_PIN, PIN_NOW), "Deploy scripts (lab): no active chat");
+  assert.equal(pinnedLine(NOTES_PIN, PIN_NOW), "Release notes (lab): 2 chats: Release notes 0.6, new reply, 5 min ago; Release notes 0.5, idle, 1 h ago");
+});
+
+test("a query picks pinned rows by every word, else by half of them, else gives every row back", () => {
+  assert.deepEqual(matchPinned(ROWS, undefined), { match: null, rows: ROWS });
+  assert.deepEqual(matchPinned(ROWS, "  "), { match: null, rows: ROWS });
+  // An inflected word of a chat's title: the row's own name is in English.
+  assert.deepEqual(matchPinned(ROWS, "миникуб"), { match: "all_words", rows: [CLUSTER_PIN] });
+  assert.deepEqual(matchPinned(ROWS, "fleet proxy"), { match: "all_words", rows: [FLEET_PIN] }, "the name and the project");
+  assert.deepEqual(matchPinned(ROWS, "deploy scripts"), { match: "all_words", rows: [DEPLOY_PIN] });
+  assert.deepEqual(matchPinned(ROWS, "hooks"), { match: "all_words", rows: [DEPLOY_PIN] }, "a word of the branch alone");
+  assert.deepEqual(matchPinned(ROWS, "release"), { match: "all_words", rows: [NOTES_PIN] }, "one row, however many chats match");
+  assert.deepEqual(matchPinned(ROWS, "fleet zebra"), { match: "some_words", rows: [FLEET_PIN] });
+  // Another script: nothing matches, so every row comes back for the model to match itself.
+  assert.deepEqual(matchPinned(ROWS, "хелм"), { match: "none", rows: ROWS });
+});
+
+test("list_pinned_chats answers with the rows, the way the query matched, and the ids in the data", () => {
+  const all = pinnedResult(ROWS, { scope: "all projects", query: undefined, now: PIN_NOW });
+  assert.equal(
+    all.text,
+    [
+      "4 pinned, latest pin first:",
+      "Fleet map (proxy): running, 2 min ago",
+      "Deploy scripts (lab): no active chat",
+      "Local cluster, step 6 (helm) (lab): idle, 10 min ago",
+      "Release notes (lab): 2 chats: Release notes 0.6, new reply, 5 min ago; Release notes 0.5, idle, 1 h ago",
+      "The data carries each chat's id: pass it to the next tool. If the user meant one and several fit, ask which.",
+    ].join("\n"),
+  );
+  assert.deepEqual(Object.keys(all.data), ["scope", "query", "total", "pinned"], "no query_match without a query");
+  assert.equal(all.data.total, 4);
+  assert.deepEqual(all.data.pinned[0], {
+    workspace_id: "wks_fleet",
+    name: "Fleet map",
+    project: "proxy",
+    branch: null,
+    pinned_at: "2026-10-26T17:00:00.000Z",
+    pinned_ago: "1 h ago",
+    status: "running",
+    chats: [chatData(FLEET_PIN.chats[0], PIN_NOW)],
+  });
+  assert.equal(all.data.pinned[1].branch, "ci-hooks");
+  assert.deepEqual(all.data.pinned[1].chats, []);
+  assert.deepEqual(all.data.pinned[3].chats.map((c) => c.state), ["new reply", "idle"]);
+
+  const one = pinnedResult(ROWS, { scope: "all projects", query: "миникуб", now: PIN_NOW });
+  assert.match(one.text, /^1 pinned match "миникуб":\nLocal cluster, step 6/);
+  assert.equal(one.data.query_match, "all_words");
+  assert.deepEqual(one.data.pinned.map((r) => r.workspace_id), ["wks_cluster"]);
+
+  const closest = pinnedResult(ROWS, { scope: "all projects", query: "fleet zebra", now: PIN_NOW });
+  assert.match(closest.text, /^No pinned chat has every word of "fleet zebra"; the closest 1:\nFleet map/);
+  assert.equal(closest.data.query_match, "some_words");
+
+  const none = pinnedResult([FLEET_PIN], { scope: "proxy", query: "хелм", now: PIN_NOW });
+  assert.match(none.text, /^No pinned chat in proxy has the words of "хелм"\. All 1 pinned in proxy, latest pin first; the user may have said a name in another language or spelling:\nFleet map/);
+  assert.equal(none.data.query_match, "none");
+  assert.equal(none.data.total, 1, "every row comes back");
+
+  assert.deepEqual(pinnedResult([], { scope: "all projects", now: PIN_NOW }), { text: "Nothing is pinned.", data: { scope: "all projects", query: null, total: 0, pinned: [] } });
+  assert.equal(pinnedResult([], { scope: "proxy", query: "fleet", now: PIN_NOW }).text, "Nothing is pinned in proxy.");
 });

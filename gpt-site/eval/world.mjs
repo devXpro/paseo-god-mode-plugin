@@ -265,6 +265,15 @@ export function createWorld(now = Date.now()) {
     }),
   ];
 
+  // The Pinned section at the top of Paseo's sidebar, latest pin first. Paseo pins a workspace, not a
+  // chat: a row shows the workspace's title, else its folder, and holds its chats; the deploy one lost
+  // its only chat to the archive. proxy's chat at work, the fleet map, is not pinned.
+  const pins = [
+    { id: "wks_5e1d9a07c3b2f4e6", name: "proxy", project: "proxy", branch: null, pinnedAt: ago(90), status: "done", chatIds: ["d4e5f6a7-2b3c-4d5e-8f60-718293a4b5c6"] },
+    { id: "wks_8c4b2e6f1a3d5c7e", name: "release notes", project: "sends", branch: null, pinnedAt: ago(300), status: "attention", chatIds: ["c3d4e5f6-1a2b-4c3d-9e4f-5a6b7c8d9e0f"] },
+    { id: "wks_2f7a9c1e4b6d8a0c", name: "Скрипты деплоя", project: "jobby-jobs", branch: "deploy-scripts", pinnedAt: ago(4000), status: "done", chatIds: [] },
+  ];
+
   // Paseo's runtime catalog, trimmed from what Paseo 0.12.0 listed on 2026-10-20: each provider's
   // snapshot entry with the models and modes Paseo lists for it.
   const levels = (ids, preferred) => ids.map((id) => ({ id, label: id, ...(id === preferred ? { isDefault: true } : {}) }));
@@ -309,5 +318,5 @@ export function createWorld(now = Date.now()) {
     { entry: { provider: "copilot", label: "Copilot", status: "unavailable", enabled: true } },
   ];
 
-  return { now, projects, chats, providers, ago };
+  return { now, projects, chats, pins, providers, ago };
 }

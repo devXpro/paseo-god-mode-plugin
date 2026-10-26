@@ -174,6 +174,19 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     return { text: `${chats.length} chat(s) in ${scope}:\n${shown.map((c) => chatLine(c, now)).join("\n")}`, data };
   }
 
+  // Since 0.13.0: the pinned rows, answered by the version's own pinnedResult.
+  async function listPinnedChats(_url, { project, query } = {}) {
+    log("listPinnedChats", { project, query });
+    let scope = "all projects";
+    if (project) {
+      const picked = pickProject(project);
+      if (picked.ask) return picked.ask;
+      scope = picked.project.name;
+    }
+    const rows = world.pins.filter((p) => !project || p.project === scope).map((p) => ({ ...p, chats: active().filter((c) => p.chatIds.includes(c.id)) }));
+    return text.pinnedResult(rows, { scope, query, now });
+  }
+
   function turnsOf(c, from, count) {
     const total = c.turns.length;
     const wanted = [];
@@ -621,6 +634,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       releaseStart,
       ...(slash ? { listSlashCommands, runSlashCommand } : {}),
       ...(models ? { listModels } : {}),
+      ...(typeof text.pinnedResult === "function" ? { listPinnedChats } : {}),
     },
   };
 }

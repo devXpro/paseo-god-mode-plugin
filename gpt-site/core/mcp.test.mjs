@@ -5,7 +5,7 @@ import { createMcpHandler, readConfig, TOOLS } from "./mcp.mjs";
 import { PaseoOffline } from "./paseo.mjs";
 import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
-import { chatData } from "./text.mjs";
+import { chatData, pinnedResult } from "./text.mjs";
 
 const SECRET = "https://app.paseo.sh/#offer=secret-offer";
 
@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -144,13 +144,14 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes nineteen tools, output schemas and honest annotations", async () => {
+test("tools/list exposes twenty tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
     [
       "overview",
       "list_chats",
+      "list_pinned_chats",
       "read_chat",
       "read_activity",
       "show_images",
@@ -175,6 +176,8 @@ test("tools/list exposes nineteen tools, output schemas and honest annotations",
   }
   const byName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
   assert.equal(byName.read_chat.annotations.readOnlyHint, true);
+  assert.equal(byName.list_pinned_chats.annotations.readOnlyHint, true);
+  assert.equal(byName.list_pinned_chats.inputSchema.required, undefined, "list_pinned_chats without arguments lists every pin");
   assert.equal(byName.read_activity.annotations.readOnlyHint, true);
   assert.equal(byName.show_images.annotations.readOnlyHint, true);
   assert.equal(byName.show_images.inputSchema.required, undefined, "show_images works without a chat");
@@ -234,6 +237,12 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
     assert.ok(clarify.properties.reason.enum.includes("same_name"), tool);
   }
   assert.match(byName.list_chats.description, /resolve a name themselves/);
+  // A chat picked by its pin goes through list_pinned_chats: no other tool knows pins.
+  assert.match(byName.list_pinned_chats.description, /^Use this when the user asks about pinned chats, the Pinned section at the top of Paseo's sidebar/);
+  assert.match(byName.list_pinned_chats.description, /Also call it first when the user picks a chat by its pin \("read the pinned chat in proxy"\): pinned is not a name, so the other tools cannot find it/);
+  assert.match(byName.list_pinned_chats.description, /then pass the chat's id to read_chat or the tool asked for, and if several pinned chats fit, ask which/);
+  assert.match(byName.list_pinned_chats.description, /Paseo pins a workspace: a row usually holds one chat, sometimes none or several/);
+  assert.match(byName.list_pinned_chats.inputSchema.properties.query.description, /not "pinned" or "chat"/);
   assert.match(byName.send_message.description, /archived means NOT delivered/);
   assert.deepEqual(byName.send_message.inputSchema.properties.if_archived.enum, ["restore"]);
   assert.match(byName.send_message.inputSchema.properties.if_archived.description, /^Only after an archived result/);
@@ -294,7 +303,7 @@ test("operations that still return a plain string keep working", async () => {
   assert.equal(response.result.structuredContent, undefined);
 });
 
-test("read_chat, read_activity, list_chats and search_messages pass their arguments through", async () => {
+test("read_chat, read_activity, list_chats, list_pinned_chats and search_messages pass their arguments through", async () => {
   const { ops, calls } = fakeOps();
   const handle = createMcpHandler({ config: configured(), ops });
   await handle(call("read_chat", { chat: "#a22524f", turns: 5, max_chars: 3000 }));
@@ -312,6 +321,10 @@ test("read_chat, read_activity, list_chats and search_messages pass their argume
   assert.deepEqual(calls.at(-1).args, { chat: "fleet", maxChars: 900 });
   await handle(call("list_chats", { query: "DNSSEC", include_archived: true }));
   assert.deepEqual(calls.at(-1).args, { project: undefined, status: undefined, query: "DNSSEC", includeArchived: true, limit: 10 });
+  await handle(call("list_pinned_chats", {}));
+  assert.deepEqual(calls.at(-1), { name: "listPinnedChats", url: SECRET, args: { project: undefined, query: undefined } });
+  await handle(call("list_pinned_chats", { project: "proxy", query: "fleet" }));
+  assert.deepEqual(calls.at(-1).args, { project: "proxy", query: "fleet" });
   await handle(call("search_messages", { query: "dataviz", project: "proxy", scan: 30 }));
   assert.deepEqual(calls.at(-1).args, { query: "dataviz", project: "proxy", chat: undefined, includeArchived: false, scan: 30, limit: 10 });
 });
@@ -608,6 +621,13 @@ test("the shapes the operations produce match the declared output schemas", () =
       },
     ],
   );
+  const pinnedChat = { id: sampleChat.id, title: "Fleet map", project: "proxy", workspace: "Fleet map D", status: "running", attention: null, permissions: [], updatedAt: sampleChat.updated_at, createdAt: sampleChat.created_at, archived: false };
+  const rows = [
+    { id: "wks_fleet", name: "Fleet map D", project: "proxy", branch: "fleet-d", pinnedAt: "2026-10-16T15:00:00.000Z", status: "running", chats: [pinnedChat] },
+    { id: "wks_empty", name: "Deploy scripts", project: "proxy", branch: null, pinnedAt: "2026-10-16T12:00:00.000Z", status: "done", chats: [] },
+  ];
+  for (const query of [undefined, "fleet", "fleet zebra", "хелм"]) cases.push(["list_pinned_chats", pinnedResult(rows, { scope: "proxy", query }).data]);
+  cases.push(["list_pinned_chats", pinnedResult([], { scope: "all projects" }).data], ["list_pinned_chats", { needs_clarification: { kind: "project", query: "прокси", candidates: ["proxy"] } }]);
   for (const [tool, data] of cases) {
     assert.deepEqual(validate(schemaOf(tool), data), [], tool);
   }

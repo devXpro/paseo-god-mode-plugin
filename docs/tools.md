@@ -13,6 +13,7 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | --- | --- | --- | --- |
 | `overview` | read | `hours` | What is going on: chats waiting for an approval, running chats with their running subagents, chats with a new reply, and the projects. |
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `include_archived`, `limit` | Find chats by title, project or state that are not in the conversation yet. |
+| `list_pinned_chats` | read | `project`, `query` | The chats in the Pinned section at the top of Paseo's sidebar, across every project, latest pin first; also the way to a chat the user picks by its pin. |
 | `read_chat` | read | `chat`*, `view` (text, commands, thinking), `turn`, `turns`, `max_chars` | What a chat said (the latest turn, or the last N at once), the commands it ran, or the agent's reasoning. |
 | `read_activity` | read | `chat`, `max_chars` | What an agent and its subagents are doing now, and how full its context window is; without `chat`, every chat at work. |
 | `show_images` | read | `chat`, `turn`, `image`, `count` | The pictures and screenshots in a chat, shown on the user's screen in a widget and, where ChatGPT allows, given to the model. |
@@ -50,6 +51,15 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   active chats only: the archive is searched only when the user asks (`include_archived` of
   `list_chats` and `search_messages`), and an archived chat is then reached by its id. Projects are
   matched by name too, and a project that matches nothing lists all of them.
+- **Pinned chats.** Paseo pins a workspace, not a chat: each row of its Pinned section is a
+  workspace with its chats, usually one, sometimes none (its chat was archived, or it holds only
+  terminals) or several. `list_pinned_chats` returns every row with its active chats, latest pin
+  first; an order dragged by hand stays on that device and never reaches God Mode, and the
+  sidebar's project and label filters do not apply. "Pinned" is not a name, so a chat the user picks
+  by its pin ("read the pinned chat in proxy") is found with `list_pinned_chats` first and then
+  reached by its id. `query` takes the rows with every word of it among their names, branches,
+  projects and chat titles, else those with at least half; when no row has them, every row comes
+  back with `query_match: "none"`, so ChatGPT can match a name said in another language itself.
 - **Models.** `start_chat` takes a model by its id or by its name as the user said it ("Opus 4.8",
   "GPT-6-Astra", or "Astra" alone), and the model brings its runtime. A model, thinking level or mode
   the project's runtime does not offer returns `needs_clarification` with the choices, and nothing

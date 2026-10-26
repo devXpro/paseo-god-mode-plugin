@@ -41,6 +41,7 @@ the Mac running Paseo; it never prints it.
 cd gpt-site
 node core/probe.mjs overview [--hours 12]
 node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
+node core/probe.mjs pinned [--project P] [--query Q]
 node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [--max N]
 node core/probe.mjs activity [chat] [--max N]
 node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]

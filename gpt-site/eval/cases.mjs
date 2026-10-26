@@ -609,6 +609,25 @@ const modelCases = [
   },
 ];
 
+// Pinned chats (0.13.0 on): Paseo pins a workspace, and the user calls its rows pinned chats. Pinned
+// is no name: a chat picked by its pin is found with list_pinned_chats, then read by its id. The trap:
+// proxy's chat at work (the fleet map, waiting for an approval) is not pinned, and a read of "proxy"
+// alone takes it.
+const pinnedCases = [
+  { id: "p.ru.list", group: "pinned", lang: "ru", phrase: "что у меня закреплено в пасео?", expect: { first: ["list_pinned_chats"], writes: 0, maxCalls: 1 } },
+  { id: "p.en.list", group: "pinned", lang: "en", phrase: "which chats did I pin?", expect: { first: ["list_pinned_chats"], writes: 0, maxCalls: 1 } },
+  { id: "p.ru.project", group: "pinned", lang: "ru", phrase: "какие закреплённые чаты в sends?", expect: { first: ["list_pinned_chats[project=sends]"], acceptable: ["list_pinned_chats"], writes: 0, maxCalls: 1 } },
+  { id: "p.ru.read-proxy", group: "pinned", lang: "ru", phrase: "посмотри запиненный чат из проекта прокси", expect: { first: ["list_pinned_chats"], target: "read_chat", args: { chat: DNS }, writes: 0, maxCalls: 3 } },
+  { id: "p.en.read-proxy", group: "pinned", lang: "en", phrase: "read the pinned chat in proxy", expect: { first: ["list_pinned_chats"], target: "read_chat", args: { chat: DNS }, writes: 0, maxCalls: 2 } },
+  {
+    id: "p.ru.read-named",
+    group: "pinned",
+    lang: "ru",
+    phrase: "что ответил агент в закреплённом чате про release notes?",
+    expect: { first: ["read_chat", "list_pinned_chats"], target: "read_chat", args: { chat: REL }, writes: 0, maxCalls: 2 },
+  },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -621,5 +640,6 @@ export const CASES = [
   ...regression.map((c) => ({ block: "regression", ...c })),
   ...slash.map((c) => ({ block: "slash", ...c })),
   ...modelCases.map((c) => ({ block: "models", ...c })),
+  ...pinnedCases.map((c) => ({ block: "pinned", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];

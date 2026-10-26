@@ -7,6 +7,19 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-26
+
+### Added
+
+- `list_pinned_chats`: the chats in the Pinned section at the top of Paseo's sidebar, across every
+  project, latest pin first, each row with its active chats and their ids. `project` narrows them,
+  and `query` picks among them by words, chat titles included; when no row has the words, every row
+  comes back so ChatGPT can match a name said in another language. Paseo pins a workspace, so a row
+  holds one chat, sometimes none or several. A chat the user picks by its pin ("read the pinned chat
+  in proxy") is found with it first: no other tool knows pins, and a read by the project's name alone
+  would take the chat at work there.
+- The release's live check calls `list_pinned_chats` too, once ChatGPT shows it.
+
 ## [0.12.1] - 2026-10-23
 
 ### Fixed

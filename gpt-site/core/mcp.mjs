@@ -142,6 +142,26 @@ const CLARIFY_OUT = {
   },
 };
 
+// A row of Paseo's Pinned section: Paseo pins a workspace, and the row holds its chats.
+const PINNED_OUT = {
+  type: "object",
+  properties: {
+    workspace_id: { type: "string", description: "The pinned workspace. For the other tools, pass a chat's id." },
+    name: { type: "string", description: "The row's name as Paseo's sidebar shows it: the workspace's title, else its branch or folder." },
+    project: { type: "string" },
+    branch: nullableString,
+    pinned_at: time,
+    pinned_ago: nullableString,
+    status: {
+      type: "string",
+      enum: ["needs_input", "failed", "running", "attention", "done"],
+      description: "The row's state as the sidebar shows it: needs_input waits for the user; failed; running; attention has a reply to review; done is quiet.",
+    },
+    chats: { type: "array", items: CHAT_OUT, description: "Its active chats, newest first: usually one; none when its only chat was archived or it holds only terminals." },
+  },
+  required: ["workspace_id", "name", "project", "pinned_at", "status", "chats"],
+};
+
 const IMAGE_REF = {
   type: "object",
   properties: {
@@ -434,6 +454,31 @@ export const TOOLS = [
       include_archived: { type: "boolean" },
       total: { type: "integer" },
       chats: { type: "array", items: CHAT_OUT },
+    }),
+    annotations: readOnly,
+  },
+  {
+    name: "list_pinned_chats",
+    description:
+      "Use this when the user asks about pinned chats, the Pinned section at the top of Paseo's sidebar (\"what's pinned?\", \"my pinned chats in proxy\"). Also call it first when the user picks a chat by its pin (\"read the pinned chat in proxy\"): pinned is not a name, so the other tools cannot find it; then pass the chat's id to read_chat or the tool asked for, and if several pinned chats fit, ask which. One call returns every pinned row across projects, latest pin first, each with its active chats and their ids. Paseo pins a workspace: a row usually holds one chat, sometimes none or several.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: PROJECT,
+        query: { type: "string", description: 'Only words of the pinned chat\'s name, title, branch or project as the user said them; not "pinned" or "chat".' },
+      },
+    },
+    outputSchema: object({
+      scope: { type: "string" },
+      query: nullableString,
+      query_match: {
+        type: "string",
+        enum: ["all_words", "some_words", "none"],
+        description:
+          "all_words: the rows with every word of query. some_words: no row had every word; these have at least half. none: no row had them, so every pinned row of the scope is listed for you to match the user's words (another language or spelling) yourself.",
+      },
+      total: { type: "integer" },
+      pinned: { type: "array", items: PINNED_OUT },
     }),
     annotations: readOnly,
   },
@@ -858,6 +903,8 @@ async function dispatch(name, args, config, ops, log, caller) {
         includeArchived: Boolean(args.include_archived),
         limit: args.limit ?? 10,
       });
+    case "list_pinned_chats":
+      return ops.listPinnedChats(url, { project: args.project || undefined, query: args.query || undefined });
     case "read_chat":
       if (need("chat")) return { invalid: need("chat") };
       if (args.view !== undefined && !READ_VIEWS.includes(args.view)) return { invalid: `view must be one of ${READ_VIEWS.join(", ")}.` };

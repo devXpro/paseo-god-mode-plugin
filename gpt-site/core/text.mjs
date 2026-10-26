@@ -417,6 +417,74 @@ export function candidatesText(kind, query, candidates) {
   ].join("\n");
 }
 
+// ---- Pinned chats -------------------------------------------------------------------------------
+// Paseo pins a workspace, not a chat: the rows of the Pinned section at the top of its sidebar. A row
+// shows its workspace's title (else its branch or folder) and usually holds one chat, sometimes none
+// (its only chat was archived, or it holds only terminals) or several.
+
+// The words a pinned row can be named by: its name, branch and project, and its chats' titles.
+const pinnedWords = (row) => `${row.name} ${row.branch ?? ""} ${row.project} ${row.chats.map((c) => c.title).join(" ")}`;
+
+// The rows a query names: those with every word of it, else those with at least half (closest first),
+// else every row, so the model can match words the user said in another language or spelling
+// ("миникуб" for Minikube) itself. match is null without a query.
+export function matchPinned(rows, query) {
+  const queryWords = words(query);
+  if (queryWords.length === 0) return { match: null, rows };
+  const scored = rows.map((row) => ({ row, score: overlap(queryWords, pinnedWords(row)) }));
+  const every = scored.filter((s) => s.score === 1).map((s) => s.row);
+  if (every.length) return { match: "all_words", rows: every };
+  // A stable sort: among equals the latest pin stays first.
+  const some = scored.filter((s) => s.score >= 0.5).sort((a, b) => b.score - a.score).map((s) => s.row);
+  if (some.length) return { match: "some_words", rows: some };
+  return { match: "none", rows };
+}
+
+// The structured form of a pinned row; its chats come as chatData.
+export function pinnedData(row, now = Date.now()) {
+  return {
+    workspace_id: row.id,
+    name: row.name,
+    project: row.project,
+    branch: row.branch ?? null,
+    pinned_at: toIso(row.pinnedAt),
+    pinned_ago: row.pinnedAt ? ago(row.pinnedAt, now) : null,
+    status: row.status,
+    chats: row.chats.map((c) => chatData(c, now)),
+  };
+}
+
+// A pinned row in words: its name as the sidebar shows it, its project, and what its chats do.
+export function pinnedLine(row, now = Date.now()) {
+  const head = `${truncate(row.name, 70)} (${row.project})`;
+  if (row.chats.length === 0) return `${head}: no active chat`;
+  if (row.chats.length === 1) return `${head}: ${chatState(row.chats[0])}, ${ago(row.chats[0].updatedAt, now)}`;
+  return `${head}: ${row.chats.length} chats: ${row.chats.map((c) => `${truncate(c.title, 50)}, ${chatState(c)}, ${ago(c.updatedAt, now)}`).join("; ")}`;
+}
+
+// list_pinned_chats' answer over the pinned rows of its scope (a project, or "all projects"), latest
+// pin first, picked among by the query's words.
+export function pinnedResult(rows, { scope, query, now = Date.now() }) {
+  const found = matchPinned(rows, query);
+  const data = {
+    scope,
+    query: query ?? null,
+    ...(found.match ? { query_match: found.match } : {}),
+    total: found.rows.length,
+    pinned: found.rows.map((row) => pinnedData(row, now)),
+  };
+  const where = scope === "all projects" ? "" : ` in ${scope}`;
+  if (rows.length === 0) return { text: `Nothing is pinned${where}.`, data };
+  const n = found.rows.length;
+  const head = {
+    all_words: `${n} pinned${where} match "${query}":`,
+    some_words: `No pinned chat${where} has every word of "${query}"; the closest ${n}:`,
+    none: `No pinned chat${where} has the words of "${query}". All ${n} pinned${where}, latest pin first; the user may have said a name in another language or spelling:`,
+  }[found.match] ?? `${n} pinned${where}, latest pin first:`;
+  const hint = "The data carries each chat's id: pass it to the next tool. If the user meant one and several fit, ask which.";
+  return { text: [head, ...found.rows.map((row) => pinnedLine(row, now)), hint].join("\n"), data };
+}
+
 // ---- Images -----------------------------------------------------------------------------------
 
 // A picture in a Paseo chat is markdown image syntax in an agent's message: the daemon turns an

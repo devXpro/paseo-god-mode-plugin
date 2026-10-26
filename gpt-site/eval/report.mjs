@@ -123,9 +123,11 @@ function score(run) {
   const writes = calls.filter((call) => WRITE.has(call.tool));
   const firstIdeal = ideal.length === 0 ? calls.length === 0 : ideal.some((s) => matchSpec(first, s));
   const firstAcceptable = firstIdeal || (first && acceptable.some((s) => matchSpec(first, s)) && (ideal.length > 0 || writes.length === 0));
-  const idealTools = new Set(ideal.map((s) => s.match(SPEC)[1]));
-  const argsCall = calls.find((call) => idealTools.has(call.tool));
-  const argProblems = argsCall && exp.args ? checkArgs(argsCall, exp.args) : null;
+  // args are checked on the first call of the case's target: the ideal first tool unless it names another.
+  const targetTools = new Set(exp.target ? [exp.target] : ideal.map((s) => s.match(SPEC)[1]));
+  const argsCall = calls.find((call) => targetTools.has(call.tool));
+  // A target the case names but the model never called misses the point of the case.
+  const argProblems = exp.args ? (argsCall ? checkArgs(argsCall, exp.args) : exp.target ? [`no ${exp.target} call`] : null) : null;
   // The model got facts about the chat meant: a result that describes it, not a list of candidates.
   const reached = exp.reach
     ? calls.some((call) => call.structured && !call.structured.needs_clarification && JSON.stringify(call.structured).includes(exp.reach))
