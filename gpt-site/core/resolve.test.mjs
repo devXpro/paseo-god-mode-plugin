@@ -8,6 +8,7 @@ import {
   answerApprovalOn,
   archiveChatOn,
   listSlashCommandsOn,
+  pinChatOn,
   readActivityOn,
   readChatOn,
   runSlashCommandOn,
@@ -39,7 +40,7 @@ const IDLE_TWIN = chat("1a2b3c4d-0000-4000-8000-000000000001", "Release notes 0.
 const BUSY_TWIN = chat("4e5f6a7b-0000-4000-8000-000000000002", "Release notes 0.6", { minutes: 400, status: "running", permissions: [APPROVAL] });
 
 function fakeDaemon(chats) {
-  const log = { sent: [], answered: [], cancelled: [], archived: [], read: [] };
+  const log = { sent: [], answered: [], cancelled: [], archived: [], pinned: [], read: [] };
   let archiveLookups = 0;
   const agent = (c) => ({
     agent: {
@@ -53,6 +54,8 @@ function fakeDaemon(chats) {
       createdAt: at(c.minutes + 60),
       archivedAt: c.archived ? at(c.minutes) : null,
       cwd: `/Users/r/${c.project}`,
+      // Every chat has a sidebar row of its own here.
+      workspaceId: `wks_${c.id.slice(0, 8)}`,
       provider: "claude",
       currentModeId: "default",
     },
@@ -100,6 +103,14 @@ function fakeDaemon(chats) {
       log.archived.push(id);
       return { archivedAt: at(0) };
     },
+    async fetchWorkspaces() {
+      const rows = chats.filter((c) => !c.archived).map((c) => ({ id: `wks_${c.id.slice(0, 8)}`, name: c.workspace ?? c.project, projectDisplayName: c.project, status: "done", pinnedAt: null }));
+      return { entries: rows, pageInfo: { nextCursor: null, prevCursor: null, hasMore: false } };
+    },
+    async setWorkspacePinned(id, pinned) {
+      log.pinned.push({ id, pinned });
+      return { pinnedAt: pinned ? at(0) : null };
+    },
     async listProviderSubagents() {
       return { subagents: [] };
     },
@@ -121,7 +132,7 @@ function fakeDaemon(chats) {
   };
 }
 
-const NOTHING = { sent: [], answered: [], cancelled: [], archived: [], read: [] };
+const NOTHING = { sent: [], answered: [], cancelled: [], archived: [], pinned: [], read: [] };
 const send = (daemon, chatRef, extra = {}) => sendMessageOn(daemon, { chat: chatRef, text: "проверь поды", waitSeconds: 1, ...extra });
 
 // Every tool that takes a chat, by the operation behind it.
@@ -130,6 +141,7 @@ const WRITES = {
   answer_approval: (daemon, ref) => answerApprovalOn(daemon, { chat: ref, decision: "allow" }),
   stop_chat: (daemon, ref) => stopChatOn(daemon, { chat: ref }),
   archive_chat: (daemon, ref) => archiveChatOn(daemon, { chat: ref }),
+  pin_chat: (daemon, ref) => pinChatOn(daemon, { chat: ref, action: "pin" }),
   run_slash_command: (daemon, ref) => runSlashCommandOn(daemon, { chat: ref, command: "compact", secret: "s", waitSeconds: 0 }),
 };
 const READS = {

@@ -9,7 +9,7 @@ import { createWorld, NEW_CHAT_ID } from "./world.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const text = await import(join(HERE, "..", "core", "text.mjs"));
-const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "update_site", "run_slash_command"]);
+const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "pin_chat", "update_site", "run_slash_command"]);
 const READ_CHAT_TOOLS = new Set(["read_chat", "read_activity"]);
 const SPEC = /^(\w+)(?:\[(\w+)=([^\]]+)\])?$/;
 const cases = new Map(CASES.map((c) => [c.id, c]));

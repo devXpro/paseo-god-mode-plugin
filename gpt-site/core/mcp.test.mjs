@@ -5,7 +5,7 @@ import { createMcpHandler, readConfig, TOOLS } from "./mcp.mjs";
 import { PaseoOffline } from "./paseo.mjs";
 import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
-import { chatData, pinnedResult } from "./text.mjs";
+import { chatData, pinnedResult, pinResult, rowQuestion } from "./text.mjs";
 
 const SECRET = "https://app.paseo.sh/#offer=secret-offer";
 
@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "pinChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -125,7 +125,7 @@ test("instructions follow the language and the confirmation setting, and route e
   const slash = "slash commands (/compact) → run_slash_command, list_slash_commands.";
   const slashEnd = text.indexOf(slash) + slash.length;
   assert.ok(slashEnd > slash.length && slashEnd <= 512, `slash command routing sits in the first 512 characters too (ends at ${slashEnd})`);
-  assert.match(text, /"archive it", "compact it"\), or are "yes"/);
+  assert.match(text, /"archive it", "compact it", "pin it"\), or are "yes"/);
 });
 
 test("the server version changes with anything the model reads", async () => {
@@ -144,7 +144,7 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes twenty tools, output schemas and honest annotations", async () => {
+test("tools/list exposes twenty-one tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
@@ -162,6 +162,7 @@ test("tools/list exposes twenty tools, output schemas and honest annotations", a
       "answer_approval",
       "stop_chat",
       "archive_chat",
+      "pin_chat",
       "list_slash_commands",
       "run_slash_command",
       "plugin_read",
@@ -188,6 +189,11 @@ test("tools/list exposes twenty tools, output schemas and honest annotations", a
   assert.equal(byName.stop_chat.annotations.destructiveHint, true);
   assert.equal(byName.archive_chat.annotations.readOnlyHint, false);
   assert.equal(byName.archive_chat.annotations.destructiveHint, true);
+  assert.equal(byName.pin_chat.annotations.readOnlyHint, false);
+  assert.equal(byName.pin_chat.annotations.destructiveHint, false, "one more call undoes a pin");
+  assert.equal(byName.pin_chat.annotations.idempotentHint, true, "a pin already as asked is left alone");
+  assert.deepEqual(byName.pin_chat.inputSchema.required, ["action"], "a chat or, instead, a row's workspace_id");
+  assert.deepEqual(byName.pin_chat.inputSchema.properties.action.enum, ["pin", "unpin"]);
   assert.equal(byName.update_status.annotations.readOnlyHint, true);
   assert.equal(byName.update_site.annotations.destructiveHint, true);
   assert.match(byName.update_site.description, /wait for the user's yes before calling/);
@@ -225,7 +231,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "answer_approval", "stop_chat", "archive_chat", "list_slash_commands", "run_slash_command"]) {
+  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "answer_approval", "stop_chat", "archive_chat", "pin_chat", "list_slash_commands", "run_slash_command"]) {
     const chat = byName[tool].inputSchema.properties.chat.description;
     assert.match(chat, /Ids are for calls only/, tool);
     assert.match(chat, /Keep the chat being discussed/, tool);
@@ -266,6 +272,16 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.archive_chat.description, /wait for their yes/);
   assert.match(byName.archive_chat.description, /a new message to it brings it back/);
   assert.match(byName.archive_chat.description, /busy means nothing was archived/);
+  // Pins: a chat is pinned through its row, a pinned row with no chat by its workspace id.
+  assert.match(byName.pin_chat.description, /^Use this only when the user's latest words tell you to pin or unpin a chat in Paseo's sidebar/);
+  assert.match(byName.pin_chat.description, /Paseo pins the chat's row, its workspace/);
+  assert.match(byName.pin_chat.description, /with any other chat it holds/);
+  assert.match(byName.pin_chat.description, /start_chat's chat_id for a chat just started/);
+  assert.match(byName.pin_chat.description, /needs_clarification means nothing changed: ask which/);
+  assert.match(byName.pin_chat.description, /A chat picked by its pin \("unpin the pinned chat in proxy"\) is found with list_pinned_chats first/);
+  assert.match(byName.pin_chat.description, /a row with no chat takes its name, or its workspace_id from there/);
+  assert.match(byName.pin_chat.description, /No read-back needed/);
+  assert.match(byName.list_pinned_chats.outputSchema.properties.pinned.items.properties.workspace_id.description, /pin_chat takes it for a row with no chat/);
   assert.match(byName.read_chat.description, /view "thinking"/);
   assert.match(byName.update_site.description, /after one update_status call/);
   assert.match(byName.update_site.description, /update the God Mode plugin in Paseo first/);
@@ -376,6 +392,24 @@ test("send_message passes if_archived on, and any other value is a JSON-RPC erro
   assert.equal(calls.length, 2);
 });
 
+test("pin_chat passes a chat or a workspace id, and anything else is a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured(), ops });
+  await handle(call("pin_chat", { chat: "#a22524f", action: "pin" }));
+  await handle(call("pin_chat", { workspace_id: " wks_5e1d9a07c3b2f4e6 ", action: "unpin" }));
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.url, c.args]),
+    [
+      ["pinChat", SECRET, { chat: "#a22524f", action: "pin" }],
+      ["pinChat", SECRET, { workspaceId: "wks_5e1d9a07c3b2f4e6", action: "unpin" }],
+    ],
+  );
+  for (const bad of [{ chat: "fleet" }, { chat: "fleet", action: "toggle" }, { action: "pin" }, { chat: " ", action: "pin" }, { chat: "fleet", workspace_id: "wks_1", action: "pin" }]) {
+    assert.equal((await handle(call("pin_chat", bad))).error?.code, -32602, JSON.stringify(bad));
+  }
+  assert.equal(calls.length, 2, "nothing ran for the bad calls");
+});
+
 test("missing required arguments are a JSON-RPC error and nothing runs", async () => {
   const { ops, calls } = fakeOps();
   const handle = createMcpHandler({ config: configured(), ops });
@@ -402,6 +436,9 @@ test("a failed write never reads as done", async () => {
     archiveChat: () => {
       throw new Error("no answer within 45 s");
     },
+    pinChat: () => {
+      throw new Error("no answer within 45 s");
+    },
     runSlashCommand: () => {
       throw new Error("no answer within 45 s");
     },
@@ -416,6 +453,7 @@ test("a failed write never reads as done", async () => {
   assert.match((await handle(call("send_message", { chat: "x", text: "go" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
   assert.match((await handle(call("archive_chat", { chat: "x" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("pin_chat", { chat: "x", action: "pin" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("run_slash_command", { chat: "x", command: "compact" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.doesNotMatch((await handle(call("read_chat", { chat: "x" }))).result.content[0].text, /took effect/);
 });
@@ -628,6 +666,18 @@ test("the shapes the operations produce match the declared output schemas", () =
   ];
   for (const query of [undefined, "fleet", "fleet zebra", "хелм"]) cases.push(["list_pinned_chats", pinnedResult(rows, { scope: "proxy", query }).data]);
   cases.push(["list_pinned_chats", pinnedResult([], { scope: "all projects" }).data], ["list_pinned_chats", { needs_clarification: { kind: "project", query: "прокси", candidates: ["proxy"] } }]);
+  const unpinned = { ...rows[0], pinnedAt: null };
+  cases.push(
+    ["pin_chat", pinResult({ action: "pin", outcome: "pinned", row: rows[0], chat: pinnedChat }).data],
+    ["pin_chat", pinResult({ action: "pin", outcome: "pinned", row: { ...rows[0], chats: [pinnedChat, { ...pinnedChat, id: "b7c1d2e3-4f50-4a61-8b72-93a4b5c6d7e8", title: "Fleet map E" }] } }).data],
+    ["pin_chat", pinResult({ action: "unpin", outcome: "unpinned", row: { ...rows[1], pinnedAt: null } }).data],
+    ["pin_chat", pinResult({ action: "pin", outcome: "already_pinned", row: rows[0], chat: pinnedChat }).data],
+    ["pin_chat", pinResult({ action: "unpin", outcome: "not_pinned", row: unpinned, chat: pinnedChat }).data],
+    ["pin_chat", pinResult({ action: "pin", outcome: "archived", chat: { ...pinnedChat, archived: true } }).data],
+    ["pin_chat", pinResult({ action: "unpin", outcome: "no_row", chat: pinnedChat }).data],
+    ["pin_chat", rowQuestion("wks_gone").data],
+    ["pin_chat", clarification],
+  );
   for (const [tool, data] of cases) {
     assert.deepEqual(validate(schemaOf(tool), data), [], tool);
   }

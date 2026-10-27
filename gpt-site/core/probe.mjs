@@ -14,6 +14,7 @@
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
 //   node core/probe.mjs stop <chat>
 //   node core/probe.mjs archive <chat>
+//   node core/probe.mjs pin|unpin <chat> | --workspace W
 //   node core/probe.mjs plugins
 //   node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 //   node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
@@ -36,6 +37,7 @@ import {
   listPinnedChats,
   listSlashCommands,
   overview,
+  pinChat,
   pluginAction,
   pluginRead,
   readActivity,
@@ -81,6 +83,7 @@ const { values, positionals } = parseArgs({
     request: { type: "string" },
     args: { type: "string" },
     confirm: { type: "string" },
+    workspace: { type: "string" },
     json: { type: "boolean" },
   },
 });
@@ -137,6 +140,8 @@ const operations = {
   approve: () => answerApproval(url, { chat: first, decision: rest[0], request: values.request }),
   stop: () => stopChat(url, { chat: first }),
   archive: () => archiveChat(url, { chat: first }),
+  pin: () => pinChat(url, { chat: first, workspaceId: values.workspace, action: "pin" }),
+  unpin: () => pinChat(url, { chat: first, workspaceId: values.workspace, action: "unpin" }),
   plugins: () => pluginRead(url, {}),
   "plugin-read": () => pluginRead(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined }),
   "plugin-act": () =>

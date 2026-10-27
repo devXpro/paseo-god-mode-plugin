@@ -42,6 +42,7 @@ cd gpt-site
 node core/probe.mjs overview [--hours 12]
 node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
 node core/probe.mjs pinned [--project P] [--query Q]
+node core/probe.mjs pin|unpin <chat> | --workspace W
 node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [--max N]
 node core/probe.mjs activity [chat] [--max N]
 node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
@@ -55,8 +56,8 @@ node core/probe.mjs commands <chat> [--query Q] [--limit 60]
 node core/probe.mjs command <chat> <name> [args…] [--if-busy interrupt] [--confirm TOKEN] [--wait 15]
 ```
 
-The write commands (`start`, `send`, `approve`, `stop`, `plugin-act`, `command`) act on your real
-agents and plugins. `--json` prints the structured data instead of the text.
+The write commands (`start`, `send`, `approve`, `stop`, `pin`, `unpin`, `plugin-act`, `command`) act on
+your real agents, sidebar and plugins. `--json` prints the structured data instead of the text.
 
 ## The tool-selection eval
 

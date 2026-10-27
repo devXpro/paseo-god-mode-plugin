@@ -7,6 +7,19 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-27
+
+### Added
+
+- `pin_chat`: pins or unpins a chat in Paseo's sidebar (`action` pin or unpin), the way Paseo's own
+  Pin and Unpin do. Paseo pins a row, the chat's workspace, so the row's other chats go with it, and
+  the answer names them. The chat is named as for the other tools: its id (`chat_id` of the chat
+  `start_chat` just opened), or a name that only one chat has, or a name that only the chats of one
+  row share (the row's own title). A row with no chat is reached by every word of its name, or by its
+  `workspace_id` from `list_pinned_chats`. A pin or unpin already in place changes nothing, so a row
+  keeps its place in Pinned; an archived chat, a row that is gone and an unclear name change nothing
+  either. No read-back: one more call undoes it.
+
 ## [0.13.0] - 2026-10-26
 
 ### Added

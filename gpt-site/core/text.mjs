@@ -485,6 +485,68 @@ export function pinnedResult(rows, { scope, query, now = Date.now() }) {
   return { text: [head, ...found.rows.map((row) => pinnedLine(row, now)), hint].join("\n"), data };
 }
 
+// The sidebar row a name reaches for pin_chat when it settles on no one chat (reason, as the chat
+// question gives it), or null. A row's title is a whole name of each chat in it, so a name that only
+// the chats of one row have names that row, and pinning acts on the row: no choice between them is
+// needed. A name no chat has whole may name a row with no active chat (its chat was archived, or it
+// holds only terminals), which no chat's name reaches: the one such row with every word of it.
+export function pinRowFor(rows, chats, query, reason) {
+  if (reason === "same_name" || reason === "similar") {
+    const ids = settleChat(chats, query).chats.map((c) => c.id);
+    const holding = rows.filter((row) => row.chats.some((c) => ids.includes(c.id)));
+    return holding.length === 1 && ids.every((id) => holding[0].chats.some((c) => c.id === id)) ? holding[0] : null;
+  }
+  if (reason === "no_match" || reason === "partial") {
+    const found = matchPinned(rows.filter((row) => row.chats.length === 0), query);
+    return found.match === "all_words" && found.rows.length === 1 ? found.rows[0] : null;
+  }
+  return null;
+}
+
+const PIN_DONE = new Set(["pinned", "unpinned"]);
+
+// pin_chat's answer. Paseo pins a row (a workspace with its active chats), so a chat's pin carries
+// the other chats of its row along. chat is the chat the user named, if they named one; row is null
+// when the chat has no row to pin: it is archived, or Paseo shows no row for it.
+export function pinResult({ action, outcome, row = null, chat = null, now = Date.now() }) {
+  const named = chat ? `${truncate(chat.title, 70)} (${chat.project})` : `${truncate(row.name, 70)} (${row.project})`;
+  // The row's own name, where it is not the chat's title: what the sidebar shows.
+  const rowName = row && chat && ![normalize(chat.title), normalize(chat.project)].includes(normalize(row.name)) ? ` "${truncate(row.name, 70)}"` : "";
+  const others = row ? row.chats.filter((c) => c.id !== chat?.id) : [];
+  const titles = others.map((c) => truncate(c.title, 70)).join("; ");
+  let holds = "";
+  if (row && chat && others.length) holds = ` Paseo pins the whole row, so ${others.length === 1 ? "its other chat goes" : `its ${others.length} other chats go`} with it: ${titles}.`;
+  if (row && !chat) holds = others.length ? ` The row holds: ${titles}.` : " The row holds no active chat.";
+  const text = {
+    pinned: `Pinned ${named}: its row${rowName} is in the Pinned section at the top of Paseo's sidebar now.${holds}`,
+    unpinned: `Unpinned ${named}: its row${rowName} left the Pinned section of Paseo's sidebar.${holds}`,
+    already_pinned: `${named} is already pinned, since ${ago(row?.pinnedAt, now)}; nothing changed.`,
+    not_pinned: `${named} is not pinned; nothing changed.`,
+    archived: `Nothing changed: ${named} is archived, so it is not in Paseo's sidebar.${action === "unpin" ? " If a pinned row is left from it, list_pinned_chats gives that row's workspace_id to unpin it." : ""}`,
+    no_row: `Nothing changed: Paseo's sidebar shows no row for ${named}.`,
+  }[outcome];
+  return {
+    text,
+    data: {
+      ...(chat ? { chat_id: chat.id, short_id: chat.id.slice(0, 7) } : {}),
+      ...(row ? { workspace_id: row.id, name: row.name } : {}),
+      project: row?.project ?? chat.project,
+      action,
+      outcome,
+      done: PIN_DONE.has(outcome),
+      ...(row ? { pinned_at: toIso(row.pinnedAt), chats: row.chats.map((c) => chatData(c, now)) } : {}),
+    },
+  };
+}
+
+// pin_chat's answer to a workspace_id that names no row of Paseo's sidebar.
+export function rowQuestion(workspaceId) {
+  return {
+    text: `No row of Paseo's sidebar has the workspace id "${workspaceId}", so nothing was done. It may have been archived; list_pinned_chats gives each pinned row's workspace_id.`,
+    data: { needs_clarification: { kind: "workspace", query: String(workspaceId ?? ""), candidates: [] } },
+  };
+}
+
 // ---- Images -----------------------------------------------------------------------------------
 
 // A picture in a Paseo chat is markdown image syntax in an agent's message: the daemon turns an

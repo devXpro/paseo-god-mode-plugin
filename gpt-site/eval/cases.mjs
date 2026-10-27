@@ -628,6 +628,35 @@ const pinnedCases = [
   },
 ];
 
+// Pinning (pin_chat): Paseo pins a chat's row, its workspace. A pin is a write, so only on a command,
+// once; a question about pins is none. A chat picked by its pin is found with list_pinned_chats
+// first; the deploy scripts row holds no chat, so its own name or its workspace_id reaches it. proxy
+// holds two chats, the pinned DNSSEC plan and the fleet map: "the chat in proxy" names neither. The
+// webhook chat is titled in Latin (Telegram): said in Cyrillic it is a partial match, which a write
+// asks about, so only the first call is scored.
+const pinCases = [
+  { id: "pin.ru.after-start", group: "pin", lang: "ru", context: STARTED, phrase: "закрепи его", expect: { first: ["pin_chat[action=pin]"], args: { chat: NEW, action: "pin" }, writes: 1, delivered: 1, maxCalls: 1 } },
+  { id: "pin.ru.named", group: "pin", lang: "ru", phrase: "закрепи чат про вебхук телеграм-бота", expect: { first: ["pin_chat[action=pin]"], args: { chat: CHATS.TG, action: "pin" }, writes: null, maxCalls: 2 } },
+  { id: "pin.en.named", group: "pin", lang: "en", phrase: "pin the README chat", expect: { first: ["pin_chat[action=pin]"], args: { chat: CHATS.README, action: "pin" }, writes: 1, delivered: 1, maxCalls: 1 } },
+  { id: "pin.en.unpin-it", group: "pin", lang: "en", context: REL_CTX, phrase: "unpin it", expect: { first: ["pin_chat[action=unpin]"], args: { chat: REL, action: "unpin" }, writes: 1, delivered: 1, maxCalls: 1 } },
+  {
+    id: "pin.ru.unpin-pinned",
+    group: "pin",
+    lang: "ru",
+    phrase: "открепи закреплённый чат в прокси",
+    expect: { first: ["list_pinned_chats"], acceptable: ["pin_chat[action=unpin]"], target: "pin_chat", args: { action: "unpin" }, writes: 1, delivered: 1, maxCalls: 3 },
+  },
+  {
+    id: "pin.ru.unpin-empty",
+    group: "pin",
+    lang: "ru",
+    phrase: "открепи скрипты деплоя",
+    expect: { first: ["pin_chat[action=unpin]", "list_pinned_chats"], target: "pin_chat", args: { action: "unpin" }, writes: 1, delivered: 1, maxCalls: 2 },
+  },
+  { id: "pin.en.project-two", group: "pin", lang: "en", phrase: "pin the chat in proxy", expect: { first: ["pin_chat[action=pin]"], acceptable: ["list_chats", "list_pinned_chats"], delivered: 0, maxCalls: 1, final: "ask" } },
+  { id: "pin.ru.question", group: "pin", lang: "ru", phrase: "а в пасео можно закреплять чаты?", expect: { first: [], acceptable: ["list_pinned_chats"], writes: 0, maxCalls: 1 } },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -641,5 +670,6 @@ export const CASES = [
   ...slash.map((c) => ({ block: "slash", ...c })),
   ...modelCases.map((c) => ({ block: "models", ...c })),
   ...pinnedCases.map((c) => ({ block: "pinned", ...c })),
+  ...pinCases.map((c) => ({ block: "pin", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];

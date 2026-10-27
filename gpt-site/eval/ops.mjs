@@ -7,7 +7,7 @@
 
 import { NEW_CHAT_ID } from "./world.mjs";
 
-const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", stop_chat: "ok", update_site: "ok", run_slash_command: "auto" };
+const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", stop_chat: "ok", pin_chat: "ok", update_site: "ok", run_slash_command: "auto" };
 
 // Release fixtures relative to the Site version under test: the Mac has the same, a newer one, or
 // GitHub has a newer one than the Mac.
@@ -183,8 +183,53 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       if (picked.ask) return picked.ask;
       scope = picked.project.name;
     }
-    const rows = world.pins.filter((p) => !project || p.project === scope).map((p) => ({ ...p, chats: active().filter((c) => p.chatIds.includes(c.id)) }));
+    const rows = world.pins
+      .filter((p) => p.pinnedAt && (!project || p.project === scope))
+      .sort((a, b) => String(b.pinnedAt).localeCompare(String(a.pinnedAt)))
+      .map((p) => ({ ...p, chats: active().filter((c) => p.chatIds.includes(c.id)) }));
     return text.pinnedResult(rows, { scope, query, now });
+  }
+
+  // Once pin_chat exists: pins and unpins a chat's row, answered by the version's own pinResult and
+  // pinRowFor. A chat in none of world.pins has a row of its own, made once; an unpinned row stays in
+  // world.pins with no pinnedAt.
+  const ownRows = new Map();
+  const rowOf = (c) => {
+    const pinned = world.pins.find((p) => p.chatIds.includes(c.id));
+    if (pinned) return pinned;
+    if (!ownRows.has(c.id)) {
+      ownRows.set(c.id, { id: `wks_${c.id.replaceAll("-", "").slice(0, 16)}`, name: c.workspace ?? c.title, project: c.project, branch: null, pinnedAt: null, status: "done", chatIds: [c.id] });
+    }
+    return ownRows.get(c.id);
+  };
+  const shown = (row) => ({ ...row, chats: active().filter((c) => row.chatIds.includes(c.id)) });
+  async function pinChat(_url, { chat, workspaceId, action } = {}) {
+    const outcome = takeOutcome("pin_chat");
+    log("pinChat", { chat, workspaceId, action }, outcome);
+    const rows = [...new Set([...world.pins, ...active().map(rowOf)])];
+    let target = null;
+    let row;
+    if (workspaceId) {
+      row = rows.find((r) => r.id === workspaceId);
+      if (!row) return text.rowQuestion(workspaceId);
+    } else {
+      const picked = pickChat(chat);
+      if (picked.ask) {
+        const found = text.pinRowFor(rows.map(shown), active(), chat, picked.ask.data.needs_clarification?.reason);
+        row = found ? rows.find((r) => r.id === found.id) : null;
+        if (!row) return picked.ask;
+      } else {
+        target = picked.chat;
+        if (target.archived) return text.pinResult({ action, outcome: "archived", chat: target, now });
+        row = rowOf(target);
+      }
+    }
+    const pin = action === "pin";
+    if (pin === Boolean(row.pinnedAt)) return text.pinResult({ action, outcome: pin ? "already_pinned" : "not_pinned", row: shown(row), chat: target, now });
+    fail(outcome);
+    row.pinnedAt = pin ? new Date(now).toISOString() : null;
+    if (!world.pins.includes(row)) world.pins.push(row);
+    return text.pinResult({ action, outcome: pin ? "pinned" : "unpinned", row: shown(row), chat: target, now });
   }
 
   function turnsOf(c, from, count) {
@@ -635,6 +680,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       ...(slash ? { listSlashCommands, runSlashCommand } : {}),
       ...(models ? { listModels } : {}),
       ...(typeof text.pinnedResult === "function" ? { listPinnedChats } : {}),
+      ...(typeof text.pinResult === "function" ? { pinChat } : {}),
     },
   };
 }

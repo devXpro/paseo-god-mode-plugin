@@ -34,9 +34,12 @@ import {
   latestFirstWithin,
   normalize,
   pinnedResult,
+  pinResult,
+  pinRowFor,
   releaseData,
   repliedOutcome,
   resolve,
+  rowQuestion,
   settleChat,
   snippet,
   toIso,
@@ -389,19 +392,38 @@ export async function listChats(pairingUrl, { project, status = "all", query, in
   });
 }
 
-// The rows of the Pinned section at the top of Paseo's sidebar. Paseo pins a workspace (its
-// pinnedAt), not a chat, and cannot filter by pins, so every page of workspaces is read; archived
-// workspaces never come back. Latest pin first, as Paseo orders them: an order the user dragged is
-// kept on their device, out of the daemon's reach.
-async function fetchPinned(client) {
-  const pinned = [];
+// The rows of Paseo's sidebar: every workspace, page by page, since Paseo filters them by neither
+// pin nor id. Archived workspaces never come back.
+async function fetchAllWorkspaces(client) {
+  const all = [];
   let cursor = null;
   do {
     const { entries, pageInfo } = await client.fetchWorkspaces({ page: { limit: WORKSPACE_PAGE, ...(cursor ? { cursor } : {}) } });
-    pinned.push(...entries.filter((w) => w.pinnedAt));
+    all.push(...entries);
     cursor = pageInfo?.hasMore ? pageInfo.nextCursor : null;
   } while (cursor);
+  return all;
+}
+
+// The rows of the Pinned section at the top of Paseo's sidebar. Paseo pins a workspace (its
+// pinnedAt), not a chat. Latest pin first, as Paseo orders them: an order the user dragged is kept
+// on their device, out of the daemon's reach.
+async function fetchPinned(client) {
+  const pinned = (await fetchAllWorkspaces(client)).filter((w) => w.pinnedAt);
   return pinned.sort((a, b) => String(b.pinnedAt).localeCompare(String(a.pinnedAt)));
+}
+
+// A sidebar row: a workspace with its active chats, newest first.
+function toRow(w, chats) {
+  return {
+    id: w.id,
+    name: w.name,
+    project: w.projectDisplayName,
+    branch: w.gitRuntime?.currentBranch ?? null,
+    pinnedAt: w.pinnedAt ?? null,
+    status: w.status,
+    chats: chats.filter((c) => c.workspaceId === w.id),
+  };
 }
 
 export async function listPinnedChats(pairingUrl, args = {}) {
@@ -418,17 +440,7 @@ export async function listPinnedChatsOn(client, { project, query } = {}) {
     if (picked.ask) return picked.ask;
     scope = picked.project.name;
   }
-  const rows = workspaces
-    .filter((w) => !project || w.projectDisplayName === scope)
-    .map((w) => ({
-      id: w.id,
-      name: w.name,
-      project: w.projectDisplayName,
-      branch: w.gitRuntime?.currentBranch ?? null,
-      pinnedAt: w.pinnedAt,
-      status: w.status,
-      chats: chats.filter((c) => c.workspaceId === w.id),
-    }));
+  const rows = workspaces.filter((w) => !project || w.projectDisplayName === scope).map((w) => toRow(w, chats));
   return pinnedResult(rows, { scope, query });
 }
 
@@ -1095,6 +1107,40 @@ export async function archiveChatOn(client, { chat } = {}) {
     text: `Archived ${truncate(target.title, 70)}. Its history is kept; a new message to it brings it back.`,
     data: { ...ids, outcome: "archived", done: true, archived_at: toIso(archivedAt) },
   };
+}
+
+export async function pinChat(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => pinChatOn(client, args));
+}
+
+// pin_chat over an open connection (tests drive it with a fake client). Paseo pins a sidebar row, a
+// workspace, as its own Pin and Unpin do: a chat is pinned through its row, and a row with no chat
+// is reached by its name or its workspace id. A pin already as asked is left alone, since pinning
+// again would move the row to the top of Pinned.
+export async function pinChatOn(client, { chat, workspaceId, action } = {}) {
+  const [workspaces, chats] = await Promise.all([fetchAllWorkspaces(client), fetchChats(client)]);
+  const rows = workspaces.map((w) => toRow(w, chats));
+  let target = null;
+  let row;
+  if (workspaceId) {
+    row = rows.find((r) => r.id === workspaceId);
+    if (!row) return rowQuestion(workspaceId);
+  } else {
+    const picked = await pickChat(client, chat, chats);
+    if (picked.ask) {
+      row = pinRowFor(rows, chats, chat, picked.ask.data.needs_clarification.reason);
+      if (!row) return picked.ask;
+    } else {
+      target = picked.chat;
+      if (target.archived) return pinResult({ action, outcome: "archived", chat: target });
+      row = rows.find((r) => r.id === target.workspaceId);
+      if (!row) return pinResult({ action, outcome: "no_row", chat: target });
+    }
+  }
+  const pin = action === "pin";
+  if (pin === Boolean(row.pinnedAt)) return pinResult({ action, outcome: pin ? "already_pinned" : "not_pinned", row, chat: target });
+  const { pinnedAt } = await client.setWorkspacePinned(row.id, pin);
+  return pinResult({ action, outcome: pin ? "pinned" : "unpinned", row: { ...row, pinnedAt }, chat: target });
 }
 
 // ---- Models -------------------------------------------------------------------------------------

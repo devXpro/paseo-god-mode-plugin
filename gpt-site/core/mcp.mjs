@@ -11,7 +11,7 @@ import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 const READ_VIEWS = ["text", "commands", "thinking"];
 // Tools that act on agents or plugins: when one fails, nobody knows whether it took effect.
-const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "archive_chat", "run_slash_command", "update_site", "plugin_action"]);
+const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "archive_chat", "pin_chat", "run_slash_command", "update_site", "plugin_action"]);
 const CALL_DEADLINE_MS = 45_000;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
@@ -56,7 +56,7 @@ export function buildInstructions(config) {
   const lines = [
     "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
     "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages. Paseo plugins → plugin_read; slash commands (/compact) → run_slash_command, list_slash_commands.",
-    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
+    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it", "pin it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
     "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Pass a chat\'s id when an earlier result gave it: titles repeat. Otherwise pass the name the user said, with no list_chats first; the tool acts only on one clear match. needs_clarification means nothing was done: ask the user which one, unless their words pick one ("the latest" is the one updated most recently) or this conversation already read or used exactly one of them; then call again with its id.',
     "A write result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived, so never send it again unless the user asks for another message; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
@@ -146,7 +146,7 @@ const CLARIFY_OUT = {
 const PINNED_OUT = {
   type: "object",
   properties: {
-    workspace_id: { type: "string", description: "The pinned workspace. For the other tools, pass a chat's id." },
+    workspace_id: { type: "string", description: "The pinned workspace. pin_chat takes it for a row with no chat; for the other tools, pass a chat's id." },
     name: { type: "string", description: "The row's name as Paseo's sidebar shows it: the workspace's title, else its branch or folder." },
     project: { type: "string" },
     branch: nullableString,
@@ -685,6 +685,37 @@ export const TOOLS = [
     annotations: { ...write, destructiveHint: true },
   },
   {
+    name: "pin_chat",
+    description:
+      'Use this only when the user\'s latest words tell you to pin or unpin a chat in Paseo\'s sidebar ("pin it", "pin the chat we just started", "unpin the fleet map"). Paseo pins the chat\'s row, its workspace: pinned, the row moves to the Pinned section at the top of the sidebar, with any other chat it holds; unpinned, it leaves that section. Pass the chat as for the other tools: its id when a result gave one (start_chat\'s chat_id for a chat just started), else the name the user said; it acts only on one clear match, and needs_clarification means nothing changed: ask which. A chat picked by its pin ("unpin the pinned chat in proxy") is found with list_pinned_chats first; a row with no chat takes its name, or its workspace_id from there. No read-back needed: one more call undoes it. done=false means nothing changed.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["pin", "unpin"], description: "pin: into the Pinned section at the top of the sidebar; unpin: out of it." },
+        chat: CHAT,
+        workspace_id: { type: "string", description: "Instead of chat, for a row with no chat: its workspace_id from list_pinned_chats." },
+      },
+      required: ["action"],
+    },
+    outputSchema: object({
+      chat_id: { type: "string", description: "The chat asked for." },
+      short_id: { type: "string" },
+      workspace_id: { type: "string", description: "The row Paseo pins: the chat's workspace." },
+      name: { type: "string", description: "The row's name as the sidebar shows it: the workspace's title, else its branch or folder." },
+      project: { type: "string" },
+      action: { type: "string", enum: ["pin", "unpin"] },
+      outcome: {
+        type: "string",
+        enum: ["pinned", "unpinned", "already_pinned", "not_pinned", "archived", "no_row"],
+        description: "pinned, unpinned: done. already_pinned, not_pinned: it already was so. archived: the chat is archived, so not in the sidebar. no_row: Paseo shows no row for the chat.",
+      },
+      done: { type: "boolean", description: "true: the sidebar changed, never call it again for this request. false: nothing changed." },
+      pinned_at: time,
+      chats: { type: "array", items: CHAT_OUT, description: "Every active chat in the row: they are pinned and unpinned together." },
+    }),
+    annotations: { ...write, idempotentHint: true },
+  },
+  {
     name: "list_slash_commands",
     description:
       'Use this when the user asks which slash commands a chat has, or what one of them does ("what commands are there?", "what does /compact do?"). One call returns the chat\'s commands, each with what it does, its arguments, and whether God Mode runs it at once, after the user\'s yes, or not at all (with the reason and what to use instead). To run a command, call run_slash_command directly; no list first. Not for the shell commands an agent ran: that is read_chat view commands.',
@@ -955,6 +986,13 @@ async function dispatch(name, args, config, ops, log, caller) {
       return (need("chat") && { invalid: need("chat") }) || ops.stopChat(url, { chat: args.chat });
     case "archive_chat":
       return (need("chat") && { invalid: need("chat") }) || ops.archiveChat(url, { chat: args.chat });
+    case "pin_chat": {
+      if (!["pin", "unpin"].includes(args.action)) return { invalid: 'action must be "pin" or "unpin".' };
+      // A chat's row, or a row by its workspace id: exactly one of them.
+      const given = ["chat", "workspace_id"].filter((n) => !need(n));
+      if (given.length !== 1) return { invalid: "Pass chat or workspace_id, one of them." };
+      return ops.pinChat(url, given[0] === "chat" ? { chat: args.chat, action: args.action } : { workspaceId: args.workspace_id.trim(), action: args.action });
+    }
     case "list_slash_commands":
       if (need("chat")) return { invalid: need("chat") };
       return ops.listSlashCommands(url, { chat: args.chat, query: args.query || undefined, limit: args.limit });

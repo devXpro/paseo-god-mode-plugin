@@ -24,6 +24,7 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
 | `archive_chat` | write, destructive | `chat`* | Archive a chat that is not working; a new message brings it back. |
+| `pin_chat` | write, idempotent | `action`* (pin, unpin), `chat`, `workspace_id` | Pin or unpin a chat's row in Paseo's sidebar; a row with no chat by its name or `workspace_id`. |
 | `list_slash_commands` | read | `chat`*, `query`, `limit` | A chat's slash commands, each with what it does and whether God Mode runs it at once, after a yes, or not at all. See [slash-commands.md](slash-commands.md). |
 | `run_slash_command` | write, destructive, open world | `chat`*, `command`*, `args`, `if_busy` (interrupt), `confirmation`, `wait_seconds` | Run one of a chat's slash commands (`/compact`, `/code-review`, your own); anything above low risk asks first, a working chat waits for the user's word. See [slash-commands.md](slash-commands.md). |
 | `plugin_read` | read | `plugin`, `operation`, `args` | What the user's Paseo plugins offer, and one of their reads. See [plugin-tools.md](plugin-tools.md). |
@@ -60,6 +61,17 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   reached by its id. `query` takes the rows with every word of it among their names, branches,
   projects and chat titles, else those with at least half; when no row has them, every row comes
   back with `query_match: "none"`, so ChatGPT can match a name said in another language itself.
+- **Pinning.** `pin_chat` pins or unpins the row of a chat with Paseo's own pin request, so its other
+  chats go with it and the answer names them (`chats`). The chat is named as for the other tools; a
+  name that only the chats of one row share, such as the row's title, names that row, since there is
+  nothing to choose. A row with no chat (its chat was archived, or it holds only terminals) is reached
+  by every word of its name when no chat has the name and only that row has the words, or by its
+  `workspace_id` from `list_pinned_chats`; exactly one of `chat` and `workspace_id` is given. A pin or unpin already
+  in place answers `already_pinned` or `not_pinned` and changes nothing: pinning again would move the
+  row to the top of Pinned. An archived chat (`archived`), a chat with no row (`no_row`), an unclear
+  name and an unknown `workspace_id` change nothing either. No read-back: one more call undoes it.
+  Which chat is open on a screen is not known to God Mode (Paseo keeps it for its notifications and
+  gives it to no client), so "the chat I have open" needs its name.
 - **Models.** `start_chat` takes a model by its id or by its name as the user said it ("Opus 4.8",
   "GPT-6-Astra", or "Astra" alone), and the model brings its runtime. A model, thinking level or mode
   the project's runtime does not offer returns `needs_clarification` with the choices, and nothing
