@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   answerApprovalOn,
+  answerQuestionsOn,
   archiveChatOn,
   listSlashCommandsOn,
   pinChatOn,
@@ -139,6 +140,7 @@ const send = (daemon, chatRef, extra = {}) => sendMessageOn(daemon, { chat: chat
 const WRITES = {
   send_message: (daemon, ref) => send(daemon, ref),
   answer_approval: (daemon, ref) => answerApprovalOn(daemon, { chat: ref, decision: "allow" }),
+  answer_questions: (daemon, ref) => answerQuestionsOn(daemon, { chat: ref, request: "perm-1", answers: [{ question: "1", options: ["1"] }] }),
   stop_chat: (daemon, ref) => stopChatOn(daemon, { chat: ref }),
   archive_chat: (daemon, ref) => archiveChatOn(daemon, { chat: ref }),
   pin_chat: (daemon, ref) => pinChatOn(daemon, { chat: ref, action: "pin" }),

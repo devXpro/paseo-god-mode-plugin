@@ -11,7 +11,7 @@ import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 const READ_VIEWS = ["text", "commands", "thinking"];
 // Tools that act on agents or plugins: when one fails, nobody knows whether it took effect.
-const WRITES = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "archive_chat", "pin_chat", "run_slash_command", "update_site", "plugin_action"]);
+const WRITES = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "run_slash_command", "update_site", "plugin_action"]);
 const CALL_DEADLINE_MS = 45_000;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
@@ -212,6 +212,49 @@ const OUTCOME_OUT = {
     error: { type: "string" },
     same_title: { type: "array", items: CHAT_OUT, description: "archived: the active chats with that archived chat's title, most likely its continuation." },
     needs_clarification: CLARIFY_OUT,
+  },
+};
+
+// A question an agent asks the user (Claude's AskUserQuestion, Codex's questions) and its options.
+const QUESTION_OUT = {
+  type: "object",
+  properties: {
+    n: { type: "integer", description: "Pass it as answer_questions' question." },
+    header: { type: "string", description: "Its short title, as Paseo's tabs show it." },
+    question: { type: "string" },
+    multi_select: { type: "boolean", description: "Several options can be chosen." },
+    own_words: { type: "boolean", description: "The user may answer in their own words: answer_questions' text." },
+    options: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          n: { type: "integer", description: "Pass it in answer_questions' options." },
+          label: { type: "string" },
+          description: nullableString,
+          recommended: { type: "boolean", description: "The agent recommends it. Never choose it for the user." },
+        },
+      },
+    },
+  },
+};
+
+// A request a chat waits on, as read_approval gives it.
+const REQUEST_OUT = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "Pass it to answer_questions as request." },
+    n: { type: "integer", description: "Its number among the chat's requests, for answer_approval's request." },
+    kind: { type: "string", enum: ["tool", "plan", "question", "mode", "other"] },
+    what: { type: "string" },
+    answer_with: {
+      type: "string",
+      enum: ["answer_questions", "answer_approval", "paseo"],
+      description: "answer_questions: it asks the user questions; answer_approval: allow or deny it; paseo: God Mode cannot answer it (why says why), the user answers it in Paseo.",
+    },
+    why: { type: "string" },
+    questions: { type: "array", items: QUESTION_OUT },
+    actions: { type: "array", description: "The buttons Paseo shows for it.", items: { type: "object", properties: { label: { type: "string" }, behavior: { type: "string" } } } },
   },
 };
 
@@ -647,9 +690,17 @@ export const TOOLS = [
     annotations: write,
   },
   {
+    name: "read_approval",
+    description:
+      'Use this when a chat waits for the user (its state says "waiting for an answer" or "waiting for approval") and the user asks what it asks or wants ("what does it ask?", "read me the options"), and before answering an agent\'s questions. One call returns every request the chat waits on, each with its id and the tool that answers it; a request that asks questions (Claude\'s AskUserQuestion, Codex\'s questions) comes with every question: its header and text, whether several options can be chosen or the user may answer in their own words, and its numbered options, the recommended one marked. Read the questions and their options to the user, then send what they choose with answer_questions; a plain request is allowed or denied with answer_approval.',
+    inputSchema: { type: "object", properties: { chat: CHAT }, required: ["chat"] },
+    outputSchema: object({ chat: CHAT_OUT, note: NOTE, requests: { type: "array", items: REQUEST_OUT } }),
+    annotations: readOnly,
+  },
+  {
     name: "answer_approval",
     description:
-      "Use this when a chat is waiting for an approval and the user tells you to allow or deny it. Allowing runs what the agent asked for: if the user has not just heard exactly what that is, say it in one sentence and wait for their yes first; \"allow it\" right after you read it out is that yes. Use the chat id from earlier results. done=false means nothing was answered; never say it was. If nothing is waiting but the agent asked a question in its text (\"translate it?\"), \"allow it\" or \"yes\" answers that question: use send_message.",
+      "Use this when a chat is waiting for an approval and the user tells you to allow or deny it. Allowing runs what the agent asked for: if the user has not just heard exactly what that is, say it in one sentence and wait for their yes first; \"allow it\" right after you read it out is that yes. Use the chat id from earlier results. done=false means nothing was answered; never say it was. A request that asks questions (\"waiting for an answer\") takes answers, not allow: read it with read_approval and send the user's choices with answer_questions; deny dismisses it. If nothing is waiting but the agent asked a question in its text (\"translate it?\"), \"allow it\" or \"yes\" answers that question: use send_message.",
     inputSchema: {
       type: "object",
       properties: {
@@ -659,7 +710,66 @@ export const TOOLS = [
       },
       required: ["chat", "decision"],
     },
-    outputSchema: object({ chat_id: { type: "string" }, done: { type: "boolean" }, decision: { type: "string" }, what: nullableString }),
+    outputSchema: object({
+      chat_id: { type: "string" },
+      done: { type: "boolean" },
+      kind: { type: "string", description: "The request's kind; question: it takes answers, given with answer_questions." },
+      decision: { type: "string" },
+      what: nullableString,
+    }),
+    annotations: write,
+  },
+  {
+    name: "answer_questions",
+    description:
+      'Use this only to send the user\'s own answers to the questions a chat asks (its state says "waiting for an answer"), after read_approval gave the request: pass its id and, for every question, the options the user chose by number, or their own words in text where the question takes them. Never choose for the user, not even the recommended option: read each question with its options first, and if they answered only some, ask about the rest before calling. "The recommended ones" or "as it suggests" is the user choosing the options marked recommended. One answer is one call: delivered=true means the agent got it, never send it again. invalid_answers, gone, not_questions and unsupported mean nothing was sent: tell the user why; after gone, read the request again.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat: CHAT,
+        request: { type: "string", description: "The request's id from read_approval." },
+        answers: {
+          type: "array",
+          minItems: 1,
+          description: "One entry per question; every question needs its answer.",
+          items: {
+            type: "object",
+            properties: {
+              question: { type: "string", description: "The question's n from read_approval, or its header." },
+              options: { type: "array", items: { type: "string" }, description: "The n (or the label) of each option the user chose: one, or several where multi_select allows them." },
+              text: { type: "string", description: "The user's own words, only where own_words allows them: instead of an option, or besides them where several can be chosen." },
+            },
+            required: ["question"],
+          },
+        },
+        wait_seconds: WAIT,
+      },
+      required: ["chat", "request", "answers"],
+    },
+    outputSchema: object({
+      chat_id: { type: "string" },
+      short_id: { type: "string" },
+      project: { type: "string" },
+      request: { type: "string" },
+      outcome: {
+        type: "string",
+        enum: ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "invalid_answers", "gone", "not_questions", "unsupported"],
+        description: "replied, waiting_for_approval, error, still_working, not_waiting: the answers arrived and this is what the agent did next. invalid_answers: problems says what is missing or wrong; gone: the chat no longer waits on that request; not_questions: use answer_approval; unsupported: the user answers it in Paseo (reason). Those four sent nothing.",
+      },
+      delivered: { type: "boolean", description: "true: the agent got the answers, never send them again. false: nothing was sent." },
+      answered: {
+        type: "array",
+        description: "What was sent for each question.",
+        items: { type: "object", properties: { n: { type: "integer" }, header: { type: "string" }, question: { type: "string" }, answer: { type: "string" } } },
+      },
+      problems: { type: "array", items: { type: "string" } },
+      questions: { type: "array", items: QUESTION_OUT, description: "invalid_answers: the questions again, to ask the user." },
+      reason: { type: "string" },
+      reply: { type: "string" },
+      images: { type: "integer", description: "Images in the reply; show_images shows them." },
+      approval: { type: "string" },
+      error: { type: "string" },
+    }),
     annotations: write,
   },
   {
@@ -980,8 +1090,16 @@ async function dispatch(name, args, config, ops, log, caller) {
       if (need("chat", "text")) return { invalid: need("chat", "text") };
       if (args.if_archived !== undefined && args.if_archived !== "restore") return { invalid: 'if_archived must be "restore".' };
       return ops.sendMessage(url, { chat: args.chat, text: args.text, ifBusy: args.if_busy, ifArchived: args.if_archived, waitSeconds: args.wait_seconds ?? config.waitSeconds });
+    case "read_approval":
+      return (need("chat") && { invalid: need("chat") }) || ops.readApproval(url, { chat: args.chat });
     case "answer_approval":
       return (need("chat", "decision") && { invalid: need("chat", "decision") }) || ops.answerApproval(url, { chat: args.chat, decision: args.decision, request: args.request });
+    case "answer_questions":
+      if (need("chat", "request")) return { invalid: need("chat", "request") };
+      if (!Array.isArray(args.answers) || args.answers.length === 0 || !args.answers.every((a) => a !== null && typeof a === "object" && !Array.isArray(a))) {
+        return { invalid: "answers must be a list of {question, options, text}, one per question." };
+      }
+      return ops.answerQuestions(url, { chat: args.chat, request: args.request, answers: args.answers, waitSeconds: args.wait_seconds ?? config.waitSeconds });
     case "stop_chat":
       return (need("chat") && { invalid: need("chat") }) || ops.stopChat(url, { chat: args.chat });
     case "archive_chat":

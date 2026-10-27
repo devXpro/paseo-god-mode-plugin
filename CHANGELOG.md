@@ -7,6 +7,34 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-27
+
+### Added
+
+- `read_approval`: everything a chat waits on, in full. A request that asks the user questions
+  (Claude's AskUserQuestion, Codex's request_user_input and its asynchronous questions) comes with
+  every question: its header, its text, whether several options can be chosen or the user may answer
+  in their own words, and its numbered options with the recommended one marked.
+- `answer_questions`: sends the user's answers to such a request, the way Paseo's own question form
+  does, and tells what the agent did next. It takes the request's id from `read_approval` and, for
+  every question, the options the user chose or their own words where the question takes them.
+  Nothing is sent while a question has no answer, an option or a question is unknown, a single
+  choice gets two, or the request is gone, asks for a secret or cannot be read; the questions come
+  back to ask the user. Its description says never to choose for the user, not even the recommended
+  option.
+
+### Changed
+
+- A chat that asks questions reads as "waiting for an answer: 2 questions: Release, Daemon" in every
+  list, instead of as an approval named after its first question.
+
+### Fixed
+
+- `answer_approval` with allow on a question request sends nothing now and points to
+  `answer_questions`. Claude's AskUserQuestion turned that allow down with "requires
+  updatedInput.answers…", and Codex's question took the first option of every question for an
+  answer. Deny still dismisses the questions.
+
 ## [0.14.0] - 2026-10-27
 
 ### Added

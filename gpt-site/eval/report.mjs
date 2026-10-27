@@ -9,7 +9,7 @@ import { createWorld, NEW_CHAT_ID } from "./world.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const text = await import(join(HERE, "..", "core", "text.mjs"));
-const WRITE = new Set(["start_chat", "send_message", "answer_approval", "stop_chat", "pin_chat", "update_site", "run_slash_command"]);
+const WRITE = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "pin_chat", "update_site", "run_slash_command"]);
 const READ_CHAT_TOOLS = new Set(["read_chat", "read_activity"]);
 const SPEC = /^(\w+)(?:\[(\w+)=([^\]]+)\])?$/;
 const cases = new Map(CASES.map((c) => [c.id, c]));
@@ -17,7 +17,7 @@ const cases = new Map(CASES.map((c) => [c.id, c]));
 // ---- Resolution against the fake world ------------------------------------------------------
 
 const world = createWorld();
-const chats = [...world.chats, { id: NEW_CHAT_ID, title: "Документация модуля auth", project: "jobby-jobs", updatedAt: new Date().toISOString() }].sort(
+const chats = [...world.chats, world.asking, { id: NEW_CHAT_ID, title: "Документация модуля auth", project: "jobby-jobs", updatedAt: new Date().toISOString() }].sort(
   (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
 );
 const resolveChat = (value) => (value ? text.resolve(chats, value, { text: (c) => `${c.title} ${c.project}` }).match?.id ?? null : null);
@@ -49,6 +49,11 @@ function checkArgs(call, args) {
     else if (key === "startedProvider" && call.structured?.provider !== want) problems.push(`provider=${JSON.stringify(call.structured?.provider ?? null)}`);
     else if (key === "startedModel" && call.structured?.model !== want) problems.push(`model=${JSON.stringify(call.structured?.model ?? null)}`);
     else if (key === "command" && !want.includes(String(got ?? "").trim().replace(/^\/+/, "").split(/\s/)[0].toLowerCase())) problems.push(`command=${JSON.stringify(got)}`);
+    // What answer_questions sent for each question, in order, as its result says: a label, or a pattern for the user's own words.
+    else if (key === "answered") {
+      const sent = (call.structured?.answered ?? []).map((a) => a.answer);
+      if (sent.length !== want.length || !want.every((w, i) => (w instanceof RegExp ? w.test(sent[i]) : sent[i] === w))) problems.push(`answered=${JSON.stringify(sent)}`);
+    }
   }
   return problems;
 }
@@ -63,6 +68,7 @@ function writeOutcome(call) {
     return ["replied", "still_working", "waiting_for_approval", "not_waiting", "error"].includes(s.outcome) ? "delivered" : "unknown";
   }
   if (call.tool === "update_site") return s.started ? "delivered" : "noop";
+  if (call.tool === "answer_questions") return s.delivered ? "delivered" : "noop";
   if (call.tool === "run_slash_command") {
     if (s.outcome === "busy") return "busy";
     if (s.outcome === "needs_confirmation") return "confirm";
@@ -80,7 +86,7 @@ function similar(a, b) {
   return shared / Math.min(x.size, y.size) >= 0.6;
 }
 const writeKey = (call) => (call.tool === "start_chat" ? `start:${resolveProject(call.args.project)}` : `${call.tool}:${resolveChat(call.args.chat)}`);
-const writeText = (call) => call.args.text ?? call.args.prompt ?? call.args.decision ?? call.args.action ?? "";
+const writeText = (call) => call.args.text ?? call.args.prompt ?? call.args.decision ?? call.args.action ?? (call.args.answers ? JSON.stringify(call.args.answers) : "");
 
 const ID_LEAK = /#[0-9a-f]{6,}|\b[0-9a-f]{8}-[0-9a-f]{4}|\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b/i;
 

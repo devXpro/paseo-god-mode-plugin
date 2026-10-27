@@ -23,8 +23,8 @@ reported. The short version for users is in the [README](../README.md#security).
 
 ## Writes
 
-The tools that change something: `start_chat`, `send_message`, `answer_approval`, `stop_chat`,
-`archive_chat`, `pin_chat`, `run_slash_command`, `plugin_action`, `update_site`.
+The tools that change something: `start_chat`, `send_message`, `answer_approval`, `answer_questions`,
+`stop_chat`, `archive_chat`, `pin_chat`, `run_slash_command`, `plugin_action`, `update_site`.
 
 - **Only on a command.** The server instructions tell ChatGPT to call a write tool only when the
   user's latest words tell it to act now, or are "yes" to its own "Send it?"; drafting, discussing or
@@ -37,6 +37,12 @@ The tools that change something: `start_chat`, `send_message`, `answer_approval`
   `needs_clarification`, and nothing is done. A write never chooses by recency or by which chat is
   running or waiting. `send_message` by the id of an archived chat whose title an active chat now has
   answers `archived` and sends nothing unless `if_archived: "restore"`. This is a server check.
+- **Answers to an agent's questions are the user's.** `answer_questions` sends only what it is given
+  for a request that is still pending, by that request's id, and only when every question has a
+  valid answer; it never fills one in, and `answer_approval` will not allow a question request (Codex
+  would answer it with the first options). Picking the user's options, the recommended one included,
+  is ChatGPT's to avoid by rule. A question that asks for a secret is left to Paseo. These are server
+  checks, except the rule.
 - **Read-back for risky agent actions.** With `PASEO_CONFIRM_RISKY` on (the default), approving a
   request, stopping or archiving a chat, and updating God Mode need the user to have heard exactly
   what will happen and said yes. This is a rule ChatGPT follows, not a server check.

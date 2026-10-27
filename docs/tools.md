@@ -21,7 +21,9 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `list_models` | read | `provider` | The agent runtimes Paseo can start (Claude, Codex…), each with its models, their thinking levels and its permission modes, from Paseo's own catalog. |
 | `start_chat` | write | `project`*, `prompt`*, `wait_seconds`, `provider`, `model`, `thinking`, `mode` | Start one new chat in a project with the task as its first message, like New chat, on the runtime and model asked for, checked against Paseo's catalog first. |
 | `send_message` | write | `chat`*, `text`*, `if_busy` (steer, interrupt), `if_archived` (restore), `wait_seconds` | Send one message to an existing chat. |
-| `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for. |
+| `read_approval` | read | `chat`* | Everything a chat waits on, in full: a request that asks questions comes with every question and its numbered options, the recommended one marked. |
+| `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for; a request that asks questions takes `answer_questions`. |
+| `answer_questions` | write | `chat`*, `request`*, `answers`* (`question`, `options`, `text`), `wait_seconds` | Send the user's answers to the questions a chat asks (Claude's AskUserQuestion, Codex's questions), the way Paseo's question form does. |
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
 | `archive_chat` | write, destructive | `chat`* | Archive a chat that is not working; a new message brings it back. |
 | `pin_chat` | write, idempotent | `action`* (pin, unpin), `chat`, `workspace_id` | Pin or unpin a chat's row in Paseo's sidebar; a row with no chat by its name or `workspace_id`. |
@@ -72,6 +74,22 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   name and an unknown `workspace_id` change nothing either. No read-back: one more call undoes it.
   Which chat is open on a screen is not known to God Mode (Paseo keeps it for its notifications and
   gives it to no client), so "the chat I have open" needs its name.
+- **Questions an agent asks.** Claude's AskUserQuestion and Codex's questions (request_user_input,
+  and its asynchronous ones) wait in Paseo as a request of kind `question`, and such a chat reads as
+  "waiting for an answer". `read_approval` gives the request's id and every question: its number and
+  header, its text, whether several options can be chosen (`multi_select`) or the user may answer in
+  their own words (`own_words`), and its numbered options, the one the agent recommends marked
+  `recommended`. `answer_questions` takes that id and one entry per question, `{question, options,
+  text}`: the question by number or header, the options by number or label (a label also without
+  its "(Recommended)"), own words in `text`. As in Paseo's form, every question needs its answer,
+  one option unless several are allowed, and own words only where they are taken; then it sends
+  allow with the request's input and the answers keyed by header, labels joined with ", ", and waits
+  for the agent's reply. Anything missing, unknown or twice comes back as `invalid_answers` with the
+  problems and the questions, and nothing is sent; so do a request that is gone (`gone`), one that
+  asks no questions (`not_questions`), and one God Mode cannot fill (`unsupported`: a secret, an
+  unreadable form, two questions with one header). `answer_approval` sends nothing for allow on a
+  question request; deny dismisses it. The rules for ChatGPT: read the questions and their options to
+  the user, send only what they chose, never the recommended option on their behalf.
 - **Models.** `start_chat` takes a model by its id or by its name as the user said it ("Opus 4.8",
   "GPT-6-Astra", or "Astra" alone), and the model brings its runtime. A model, thinking level or mode
   the project's runtime does not offer returns `needs_clarification` with the choices, and nothing

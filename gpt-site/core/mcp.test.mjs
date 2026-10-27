@@ -32,7 +32,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "answerApproval", "stopChat", "archiveChat", "pinChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -144,7 +144,7 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes twenty-one tools, output schemas and honest annotations", async () => {
+test("tools/list exposes twenty-three tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
@@ -159,7 +159,9 @@ test("tools/list exposes twenty-one tools, output schemas and honest annotations
       "list_models",
       "start_chat",
       "send_message",
+      "read_approval",
       "answer_approval",
+      "answer_questions",
       "stop_chat",
       "archive_chat",
       "pin_chat",
@@ -186,6 +188,11 @@ test("tools/list exposes twenty-one tools, output schemas and honest annotations
   assert.equal(byName.list_models.annotations.readOnlyHint, true);
   assert.equal(byName.list_models.inputSchema.required, undefined, "list_models without a provider lists them all");
   assert.equal(byName.send_message.annotations.readOnlyHint, false);
+  assert.equal(byName.read_approval.annotations.readOnlyHint, true);
+  assert.equal(byName.answer_questions.annotations.readOnlyHint, false);
+  assert.equal(byName.answer_questions.annotations.destructiveHint, false);
+  assert.deepEqual(byName.answer_questions.inputSchema.required, ["chat", "request", "answers"], "answers go to the request read_approval gave");
+  assert.deepEqual(byName.answer_questions.inputSchema.properties.answers.items.required, ["question"]);
   assert.equal(byName.stop_chat.annotations.destructiveHint, true);
   assert.equal(byName.archive_chat.annotations.readOnlyHint, false);
   assert.equal(byName.archive_chat.annotations.destructiveHint, true);
@@ -231,7 +238,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "answer_approval", "stop_chat", "archive_chat", "pin_chat", "list_slash_commands", "run_slash_command"]) {
+  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "list_slash_commands", "run_slash_command"]) {
     const chat = byName[tool].inputSchema.properties.chat.description;
     assert.match(chat, /Ids are for calls only/, tool);
     assert.match(chat, /Keep the chat being discussed/, tool);
@@ -268,6 +275,17 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.start_chat.description, /do not poll/);
   assert.match(byName.answer_approval.description, /wait for their yes first/);
   assert.match(byName.answer_approval.description, /use send_message/);
+  // Questions an agent asks: read in full, answered with the user's own choices, never guessed.
+  assert.match(byName.answer_approval.description, /A request that asks questions \("waiting for an answer"\) takes answers, not allow: read it with read_approval and send the user's choices with answer_questions; deny dismisses it\./);
+  assert.match(byName.read_approval.description, /^Use this when a chat waits for the user \(its state says "waiting for an answer" or "waiting for approval"\)/);
+  assert.match(byName.read_approval.description, /its numbered options, the recommended one marked/);
+  assert.match(byName.read_approval.description, /Read the questions and their options to the user, then send what they choose with answer_questions/);
+  assert.match(byName.answer_questions.description, /^Use this only to send the user's own answers to the questions a chat asks/);
+  assert.match(byName.answer_questions.description, /Never choose for the user, not even the recommended option/);
+  assert.match(byName.answer_questions.description, /if they answered only some, ask about the rest before calling/);
+  assert.match(byName.answer_questions.description, /"The recommended ones" or "as it suggests" is the user choosing the options marked recommended/);
+  assert.match(byName.answer_questions.description, /delivered=true means the agent got it, never send it again/);
+  assert.match(byName.answer_questions.outputSchema.properties.questions.items.properties.options.items.properties.recommended.description, /Never choose it for the user/);
   assert.match(byName.stop_chat.description, /wait for their yes/);
   assert.match(byName.archive_chat.description, /wait for their yes/);
   assert.match(byName.archive_chat.description, /a new message to it brings it back/);
@@ -410,6 +428,28 @@ test("pin_chat passes a chat or a workspace id, and anything else is a JSON-RPC 
   assert.equal(calls.length, 2, "nothing ran for the bad calls");
 });
 
+test("read_approval and answer_questions pass their arguments, and bad answers are a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured({ PASEO_WAIT_SECONDS: "8" }), ops });
+  await handle(call("read_approval", { chat: "#a22524f" }));
+  const answers = [{ question: "1", options: ["1"] }, { question: "Daemon", text: "after the weekend" }];
+  await handle(call("answer_questions", { chat: "#a22524f", request: "permission-7d1e", answers }));
+  await handle(call("answer_questions", { chat: "#a22524f", request: "permission-7d1e", answers, wait_seconds: 0 }));
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.url, c.args]),
+    [
+      ["readApproval", SECRET, { chat: "#a22524f" }],
+      ["answerQuestions", SECRET, { chat: "#a22524f", request: "permission-7d1e", answers, waitSeconds: 8 }],
+      ["answerQuestions", SECRET, { chat: "#a22524f", request: "permission-7d1e", answers, waitSeconds: 0 }],
+    ],
+  );
+  for (const bad of [{ chat: "x", answers }, { request: "p", answers }, { chat: "x", request: "p" }, { chat: "x", request: "p", answers: [] }, { chat: "x", request: "p", answers: ["1"] }, { chat: "x", request: "p", answers: { question: "1" } }]) {
+    assert.equal((await handle(call("answer_questions", bad))).error?.code, -32602, JSON.stringify(bad));
+  }
+  assert.equal((await handle(call("read_approval", {}))).error?.code, -32602);
+  assert.equal(calls.length, 3, "nothing ran for the bad calls");
+});
+
 test("missing required arguments are a JSON-RPC error and nothing runs", async () => {
   const { ops, calls } = fakeOps();
   const handle = createMcpHandler({ config: configured(), ops });
@@ -439,6 +479,9 @@ test("a failed write never reads as done", async () => {
     pinChat: () => {
       throw new Error("no answer within 45 s");
     },
+    answerQuestions: () => {
+      throw new Error("Permission request 'permission-7d1e' requires updatedInput.answers keyed by a question's full text or header");
+    },
     runSlashCommand: () => {
       throw new Error("no answer within 45 s");
     },
@@ -454,6 +497,7 @@ test("a failed write never reads as done", async () => {
   assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
   assert.match((await handle(call("archive_chat", { chat: "x" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("pin_chat", { chat: "x", action: "pin" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("answer_questions", { chat: "x", request: "p", answers: [{ question: "1", options: ["1"] }] }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("run_slash_command", { chat: "x", command: "compact" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.doesNotMatch((await handle(call("read_chat", { chat: "x" }))).result.content[0].text, /took effect/);
 });
@@ -585,6 +629,32 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy", delivered: false }],
     ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "not_waiting", delivered: true }],
     ["answer_approval", { chat_id: sampleChat.id, done: false, what: null }],
+    ["answer_approval", { chat_id: sampleChat.id, done: false, kind: "question", what: "2 questions: Release, Daemon" }],
+    [
+      "read_approval",
+      {
+        chat: sampleChat,
+        requests: [
+          {
+            id: "permission-7d1e",
+            n: 1,
+            kind: "question",
+            what: "2 questions: Release, Daemon",
+            answer_with: "answer_questions",
+            questions: [
+              { n: 1, header: "Release", question: "Continue the release?", multi_select: false, own_words: true, options: [{ n: 1, label: "Continue (Recommended)", description: null, recommended: true }, { n: 2, label: "Stop", description: "Look first.", recommended: false }] },
+            ],
+          },
+          { id: "perm-1", n: 2, kind: "tool", what: "run: npm publish", answer_with: "answer_approval", actions: [{ label: "Allow", behavior: "allow" }] },
+          { id: "permission-item-5", n: 3, kind: "question", what: "Key: Paste the API key", answer_with: "paseo", why: "it asks for a secret, which must not go through ChatGPT", questions: [] },
+        ],
+      },
+    ],
+    ["answer_questions", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", request: "permission-7d1e", answered: [{ n: 1, header: "Release", question: "Continue the release?", answer: "Continue (Recommended)" }], outcome: "replied", delivered: true, reply: "Releasing." }],
+    ["answer_questions", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", request: "permission-7d1e", outcome: "invalid_answers", delivered: false, problems: ["question 2 (Daemon) has no answer yet"], questions: [] }],
+    ["answer_questions", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", request: "permission-old", outcome: "gone", delivered: false }],
+    ["answer_questions", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", request: "permission-item-5", outcome: "unsupported", delivered: false, reason: "it asks for a secret" }],
+    ["answer_questions", clarification],
     ["stop_chat", { chat_id: sampleChat.id, done: true }],
     ["archive_chat", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "archived", done: true, archived_at: "2026-10-17T12:00:00.000Z" }],
     ["archive_chat", { chat_id: sampleChat.id, short_id: "a22524f", outcome: "busy", done: false }],

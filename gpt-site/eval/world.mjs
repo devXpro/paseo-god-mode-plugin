@@ -5,6 +5,8 @@
 const MIN = 60_000;
 
 export const NEW_CHAT_ID = "9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f";
+// The chat that asks the user questions, there only for cases that set scenario.asking.
+export const ASKING_CHAT_ID = "6c7d8e9f-0a1b-4c2d-9e3f-4a5b6c7d8e9f";
 
 export function createWorld(now = Date.now()) {
   const ago = (minutes) => new Date(now - minutes * MIN).toISOString();
@@ -318,5 +320,53 @@ export function createWorld(now = Date.now()) {
     { entry: { provider: "copilot", label: "Copilot", status: "unavailable", enabled: true } },
   ];
 
-  return { now, projects, chats, pins, providers, ago };
+  // Claude asks two questions through AskUserQuestion, the option it recommends marked in each, as a
+  // release check asks them (Paseo adds allowOther). Only cases with scenario.asking see this chat, so
+  // in every other case the fleet map stays the one chat waiting for the user.
+  const asking = chat({
+    id: ASKING_CHAT_ID,
+    title: "Выпусти релиз 0.4 моста по чек-листу",
+    project: "paseo-chatgpt-voice",
+    workspace: "релиз 0.4 моста",
+    status: "running",
+    attention: "permission",
+    permissions: [
+      {
+        id: "permission-ask-04",
+        provider: "claude",
+        kind: "question",
+        name: "AskUserQuestion",
+        title: "Один тест упал разово и прошёл трижды после. Продолжать релиз 0.4?",
+        input: {
+          questions: [
+            {
+              header: "Релиз",
+              question: "Один тест упал разово и прошёл трижды после. Продолжать релиз 0.4?",
+              multiSelect: false,
+              allowOther: true,
+              options: [
+                { label: "Продолжать (Recommended)", description: "Отметить флак в release notes и выпустить." },
+                { label: "Стоп", description: "Сначала разобраться с флаком." },
+              ],
+            },
+            {
+              header: "Демон",
+              question: "Ставить демон из тега после релиза?",
+              multiSelect: false,
+              allowOther: true,
+              options: [
+                { label: "Не трогать (Recommended)", description: "Демон 0.3 остаётся." },
+                { label: "Поставить из тега", description: "make install из v0.4.0, с перезапуском." },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    updatedAt: ago(3),
+    createdAt: ago(90),
+    turns: [{ at: ago(30), end: ago(3), user: "Выпусти релиз 0.4 моста по чек-листу.", agent: ["Тесты прошли, кроме одного разового падения. Перед релизом спрашиваю."], calls: [shell("go test ./...")] }],
+  });
+
+  return { now, projects, chats, pins, providers, ago, asking };
 }

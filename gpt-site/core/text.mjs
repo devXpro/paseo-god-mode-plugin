@@ -367,6 +367,16 @@ export function ago(iso, now = Date.now()) {
 // title, the command, the file, rather than the tool's internal name.
 export function describePermission(permission, max = 120) {
   const detail = permission.detail ?? {};
+  // Questions the agent asks the user (Claude's AskUserQuestion, Codex's questions): by their
+  // headers, or the one question whole.
+  const questions = permission.kind === "question" && Array.isArray(permission.input?.questions) ? permission.input.questions : [];
+  if (questions.length === 1 && typeof questions[0]?.question === "string") {
+    return truncate([questions[0].header, questions[0].question].filter((s) => typeof s === "string" && s.trim()).join(": "), max);
+  }
+  if (questions.length > 1) {
+    const headers = questions.map((q) => (typeof q?.header === "string" ? q.header.trim() : "")).filter(Boolean);
+    return truncate(`${questions.length} questions${headers.length ? `: ${headers.join(", ")}` : ""}`, max);
+  }
   if (permission.kind === "plan" && typeof permission.input?.plan === "string") {
     const heading = permission.input.plan.split("\n").find((line) => line.trim()) ?? "";
     return truncate(`plan: ${heading.replace(/^#+\s*(plan:\s*)?/i, "")}`, max);
@@ -381,7 +391,8 @@ export function describePermission(permission, max = 120) {
 // caller asked the daemon (overview, read_activity).
 export function chatState(chat) {
   if (chat.permissions.length > 0) {
-    return `waiting for approval: ${describePermission(chat.permissions[0], 80)}`;
+    const what = chat.permissions[0].kind === "question" ? "an answer" : "approval";
+    return `waiting for ${what}: ${describePermission(chat.permissions[0], 80)}`;
   }
   const helpers = chat.subagentsRunning > 0 ? `${chat.subagentsRunning} subagent(s) working` : null;
   if (chat.status === "running" || chat.status === "initializing") return helpers ? `running, ${helpers}` : "running";

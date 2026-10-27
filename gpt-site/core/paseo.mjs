@@ -86,6 +86,7 @@ import {
   withoutRepeatAfterCompaction,
 } from "./slash.mjs";
 import { catalogEntry, chooseStart, modelsData, modelsText, pickProvider, runtimeOf } from "./models.mjs";
+import { answeredResult, answerResponse, approvalResult, prepareAnswers, questionsNeedAnswers } from "./questions.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 const MAX_WAIT_SECONDS = 25;
@@ -1044,6 +1045,9 @@ export async function answerApprovalOn(client, { chat, decision, request } = {})
     }
   }
   const behavior = decision === "allow" ? "allow" : "deny";
+  // Questions take answers (answer_questions); denying dismisses them, as Paseo's own Dismiss does.
+  if (permission.kind === "question" && behavior === "allow") return questionsNeedAnswers(target, permission);
+  const what = describePermission(permission);
   // Press the same button the app would show ("Implement", "Reject", …).
   const action = permission.actions?.find((a) => a.behavior === behavior);
   const response = {
@@ -1052,11 +1056,42 @@ export async function answerApprovalOn(client, { chat, decision, request } = {})
     ...(behavior === "deny" ? { message: "Denied by voice." } : {}),
   };
   await client.respondToPermissionAndWait(target.id, permission.id, response, 10_000);
-  const what = describePermission(permission);
   return {
     text: `${behavior === "allow" ? "Allowed" : "Denied"}: ${what} in ${truncate(target.title, 70)}.`,
-    data: { chat_id: target.id, done: true, decision: behavior, what },
+    data: { chat_id: target.id, done: true, kind: permission.kind, decision: behavior, what },
   };
+}
+
+// ---- Questions ----------------------------------------------------------------------------------
+// read_approval and answer_questions. A question request (questions.mjs) is answered with the
+// options the user chose, sent as Paseo's own form sends them: allow, with the request's input and
+// its answers keyed by header.
+
+export async function readApproval(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => readApprovalOn(client, args));
+}
+
+// read_approval over an open connection (tests drive it with a fake client): every request the chat
+// waits on, questions and options in full.
+export async function readApprovalOn(client, { chat } = {}) {
+  const picked = await pickChat(client, chat, undefined, { read: true });
+  if (picked.ask) return picked.ask;
+  return withNote(approvalResult(picked.chat), picked.note);
+}
+
+export async function answerQuestions(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => answerQuestionsOn(client, args));
+}
+
+// answer_questions over an open connection (tests drive it with a fake client). Nothing is sent
+// unless the request is still the one read_approval gave and the answers fill its every question.
+export async function answerQuestionsOn(client, { chat, request, answers, waitSeconds = 15 } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const prepared = prepareAnswers(picked.chat, request, answers);
+  if (prepared.refused) return prepared.refused;
+  await client.respondToPermissionAndWait(picked.chat.id, prepared.permission.id, answerResponse(prepared.permission, prepared.filled), 10_000);
+  return answeredResult(picked.chat, request, prepared.filled, await awaitReply(client, picked.chat.id, waitSeconds));
 }
 
 export async function stopChat(pairingUrl, args = {}) {

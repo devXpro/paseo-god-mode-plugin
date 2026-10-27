@@ -12,6 +12,8 @@
 //   node core/probe.mjs start <project> <prompt…> [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
+//   node core/probe.mjs request <chat>
+//   node core/probe.mjs answer <chat> <request id> --answers JSON [--wait 15]
 //   node core/probe.mjs stop <chat>
 //   node core/probe.mjs archive <chat>
 //   node core/probe.mjs pin|unpin <chat> | --workspace W
@@ -31,6 +33,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   answerApproval,
+  answerQuestions,
   archiveChat,
   listChats,
   listModels,
@@ -41,6 +44,7 @@ import {
   pluginAction,
   pluginRead,
   readActivity,
+  readApproval,
   readChat,
   runSlashCommand,
   searchMessages,
@@ -82,6 +86,7 @@ const { values, positionals } = parseArgs({
     save: { type: "string" },
     request: { type: "string" },
     args: { type: "string" },
+    answers: { type: "string" },
     confirm: { type: "string" },
     workspace: { type: "string" },
     json: { type: "boolean" },
@@ -138,6 +143,8 @@ const operations = {
   send: () =>
     sendMessage(url, { chat: first, text: rest.join(" "), ifBusy: values["if-busy"], waitSeconds: number(values.wait, 15) }),
   approve: () => answerApproval(url, { chat: first, decision: rest[0], request: values.request }),
+  request: () => readApproval(url, { chat: first }),
+  answer: () => answerQuestions(url, { chat: first, request: rest[0], answers: JSON.parse(values.answers ?? "[]"), waitSeconds: number(values.wait, 15) }),
   stop: () => stopChat(url, { chat: first }),
   archive: () => archiveChat(url, { chat: first }),
   pin: () => pinChat(url, { chat: first, workspaceId: values.workspace, action: "pin" }),

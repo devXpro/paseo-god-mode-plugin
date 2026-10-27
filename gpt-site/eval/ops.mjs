@@ -7,7 +7,7 @@
 
 import { NEW_CHAT_ID } from "./world.mjs";
 
-const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", stop_chat: "ok", pin_chat: "ok", update_site: "ok", run_slash_command: "auto" };
+const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", answer_questions: "auto", stop_chat: "ok", pin_chat: "ok", update_site: "ok", run_slash_command: "auto" };
 
 // Release fixtures relative to the Site version under test: the Mac has the same, a newer one, or
 // GitHub has a newer one than the Mac.
@@ -35,7 +35,7 @@ const CLAUDE_COMMANDS = [
   { name: "usage", description: "Show session cost, plan usage, and what's contributing to your limits", argumentHint: "", kind: "command" },
 ];
 
-export function createOps({ world, scenario = {}, text, slash = null, models = null, PaseoOffline, siteVersion = "0.5.0", record = () => {} }) {
+export function createOps({ world, scenario = {}, text, slash = null, models = null, questions = null, PaseoOffline, siteVersion = "0.5.0", record = () => {} }) {
   const { resolve, chatData, chatLine, candidatesText, describePermission, latestFirstWithin, toIso, toolCallData, truncate, snippet, releaseData, describeRelease, chatState } = text;
   // Since 0.6.0: reads pick the one active chat, read_activity and subagent counts exist.
   const modern = typeof text.activityData === "function";
@@ -57,6 +57,8 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
   };
   const log = (op, args, outcome) => state.recording && record({ op, args, outcome });
 
+  // The chat that asks questions joins only the cases that want it (see world.asking).
+  if (scenario.asking && !world.chats.includes(world.asking)) world.chats.push(world.asking);
   const active = () => world.chats.filter((c) => !c.archived).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   const isRunning = (c) => ["running", "initializing"].includes(c.status);
   const isWaiting = (c) => c.permissions.length > 0 || c.attention === "permission";
@@ -528,6 +530,8 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     const picked = pickChat(chat);
     if (picked.ask) return picked.ask;
     const target = picked.chat;
+    // Since 0.15.0 a question request takes answers, not allow.
+    if (questions && target.permissions[0]?.kind === "question" && decision === "allow") return questions.questionsNeedAnswers(target, target.permissions[0], now);
     if (target.permissions.length === 0) {
       return {
         text: `${chatLine(target, now)}\nNothing is waiting for approval here, so nothing was allowed or denied. If the agent asked the user a question in its text, answer it with send_message.`,
@@ -541,6 +545,33 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     target.status = decision === "allow" ? "running" : "idle";
     const behavior = decision === "allow" ? "allow" : "deny";
     return { text: `${behavior === "allow" ? "Allowed" : "Denied"}: ${what} in ${truncate(target.title, 70)}.`, data: { chat_id: target.id, done: true, decision: behavior, what } };
+  }
+
+  // Since 0.15.0: the questions a chat asks, read and answered by the version's own questions.mjs.
+  async function readApproval(_url, { chat } = {}) {
+    log("readApproval", { chat });
+    const picked = pickChat(chat, { read: true });
+    if (picked.ask) return picked.ask;
+    return withNote(questions.approvalResult(picked.chat, now), picked.note);
+  }
+
+  async function answerQuestions(_url, { chat, request, answers, waitSeconds } = {}) {
+    const outcome = takeOutcome("answer_questions");
+    log("answerQuestions", { chat, request, answers, waitSeconds }, outcome);
+    const picked = pickChat(chat);
+    if (picked.ask) return picked.ask;
+    const target = picked.chat;
+    const prepared = questions.prepareAnswers(target, request, answers);
+    if (prepared.refused) return prepared.refused;
+    fail(outcome);
+    target.permissions = target.permissions.filter((p) => p !== prepared.permission);
+    target.attention = null;
+    target.updatedAt = new Date(now).toISOString();
+    const said = prepared.filled.answered.map((a) => a.answer).join("; ");
+    const reply = waitSeconds === 0 ? null : `Принял: ${said}. Продолжаю.`;
+    const after = reply === null ? { text: "Not waiting for the reply; offer to check later.", data: { outcome: "not_waiting", delivered: true } } : { text: `Agent replied: ${reply}`, data: { outcome: "replied", delivered: true, reply } };
+    if (reply) target.turns.at(-1)?.agent.push(reply);
+    return questions.answeredResult(target, request, prepared.filled, after);
   }
 
   async function stopChat(_url, { chat } = {}) {
@@ -681,6 +712,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       ...(models ? { listModels } : {}),
       ...(typeof text.pinnedResult === "function" ? { listPinnedChats } : {}),
       ...(typeof text.pinResult === "function" ? { pinChat } : {}),
+      ...(questions ? { readApproval, answerQuestions } : {}),
     },
   };
 }

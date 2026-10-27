@@ -18,7 +18,7 @@
 //   state       expected outcome kind of the write: delivered | busy | failed | noop
 //   final       what the spoken answer should do: ask | draft | already_done
 
-import { NEW_CHAT_ID } from "./world.mjs";
+import { ASKING_CHAT_ID, NEW_CHAT_ID } from "./world.mjs";
 
 export const CHATS = {
   FLEET: "a22524fe-055b-44b8-a9b6-82c9910d7e21",
@@ -29,6 +29,7 @@ export const CHATS = {
   SMOKE: "f6a7b8c9-4d5e-4f60-8a12-3b4c5d6e7f81",
   TG: "0a1b2c3d-5e6f-4a70-9b81-c2d3e4f5a6b7",
   NEW: NEW_CHAT_ID,
+  ASKING: ASKING_CHAT_ID,
 };
 const { FLEET, AUTH, REL, DNS, NEW } = CHATS;
 
@@ -657,6 +658,74 @@ const pinCases = [
   { id: "pin.ru.question", group: "pin", lang: "ru", phrase: "а в пасео можно закреплять чаты?", expect: { first: [], acceptable: ["list_pinned_chats"], writes: 0, maxCalls: 1 } },
 ];
 
+// Questions an agent asks (0.15.0 on): the bridge release chat asks two through AskUserQuestion, the
+// option it recommends marked in each (world.asking, there only with scenario.asking). The questions
+// are read with read_approval, answered with answer_questions, and only with what the user chose:
+// "allow it" or half an answer chooses nothing. A recommended option is chosen only when the user says so.
+const ASKS = { asking: true };
+const ASK_OVERVIEW = [
+  { user: "что там?" },
+  { call: "overview", args: { hours: 12 } },
+  { assistant: "Тебя ждёт «Выпусти релиз 0.4 моста по чек-листу»: агент задал два вопроса, про релиз и про демон. А «Карта флота» просит разрешения запустить e2e." },
+];
+const ASK_READ = [
+  { user: "что он спрашивает в релизе моста?" },
+  { call: "read_approval", args: { chat: ASKING_CHAT_ID } },
+  {
+    assistant:
+      "Два вопроса. Первый, «Релиз»: один тест упал разово и прошёл трижды после, продолжать релиз 0.4? Варианты: продолжать, это он рекомендует, или стоп. Второй, «Демон»: ставить демон из тега после релиза? Варианты: не трогать, рекомендует, или поставить из тега. Что ответить?",
+  },
+];
+const questionCases = [
+  {
+    id: "q.ru.what",
+    group: "questions",
+    lang: "ru",
+    scenario: ASKS,
+    context: ASK_OVERVIEW,
+    phrase: "а что он спрашивает в релизе моста?",
+    expect: { first: ["read_approval"], acceptable: ["read_chat", "read_activity"], args: { chat: CHATS.ASKING }, writes: 0, maxCalls: 1 },
+  },
+  {
+    id: "q.ru.answer",
+    group: "questions",
+    lang: "ru",
+    scenario: ASKS,
+    context: ASK_READ,
+    phrase: "релиз продолжай, демон не трогай",
+    expect: { first: ["answer_questions"], args: { chat: CHATS.ASKING, answered: ["Продолжать (Recommended)", "Не трогать (Recommended)"] }, writes: 1, delivered: 1, maxCalls: 1 },
+  },
+  {
+    id: "q.ru.recommended",
+    group: "questions",
+    lang: "ru",
+    scenario: ASKS,
+    context: ASK_READ,
+    phrase: "давай как он рекомендует",
+    expect: { first: ["answer_questions"], args: { answered: ["Продолжать (Recommended)", "Не трогать (Recommended)"] }, writes: 1, delivered: 1, maxCalls: 1 },
+  },
+  {
+    id: "q.en.numbers",
+    group: "questions",
+    lang: "en",
+    scenario: ASKS,
+    context: ASK_READ,
+    phrase: "the first option for the release, and install the daemon from the tag",
+    expect: { first: ["answer_questions"], args: { answered: ["Продолжать (Recommended)", "Поставить из тега"] }, writes: 1, delivered: 1, maxCalls: 1 },
+  },
+  {
+    id: "q.ru.own-words",
+    group: "questions",
+    lang: "ru",
+    scenario: ASKS,
+    context: ASK_READ,
+    phrase: "релиз стоп, а про демон ответь своими словами: решим после выходных",
+    expect: { first: ["answer_questions"], args: { answered: ["Стоп", /выходн/i] }, writes: 1, delivered: 1, maxCalls: 1 },
+  },
+  { id: "q.ru.half", group: "questions", lang: "ru", scenario: ASKS, context: ASK_READ, phrase: "релиз продолжай", expect: { first: [], acceptable: ["answer_questions"], delivered: 0, maxCalls: 1, final: "ask" } },
+  { id: "q.ru.allow", group: "questions", lang: "ru", scenario: ASKS, context: ASK_READ, phrase: "да, разреши ему", expect: { first: [], acceptable: ["answer_approval", "read_approval"], delivered: 0, maxCalls: 1, final: "ask" } },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -671,5 +740,6 @@ export const CASES = [
   ...modelCases.map((c) => ({ block: "models", ...c })),
   ...pinnedCases.map((c) => ({ block: "pinned", ...c })),
   ...pinCases.map((c) => ({ block: "pin", ...c })),
+  ...questionCases.map((c) => ({ block: "questions", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];
