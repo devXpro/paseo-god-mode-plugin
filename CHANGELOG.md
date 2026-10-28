@@ -7,6 +7,25 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-28
+
+### Added
+
+- `output.chronological` in a plugin's description: the fields of a read's answer that are lists
+  running from the oldest item to the newest, such as a conversation. When the text for speech has to
+  be cut, such a list is shortened from its start instead of its end: the newest items stay, one per
+  line, oldest first, and the text says how many earlier ones are not shown. `structuredContent` is
+  never cut. Before, a long conversation kept its oldest messages in the text and lost the newest: in
+  one real direct message, 4 of 19 shown and the 15 that came last gone.
+
+### Changed
+
+- `plugin_read` with a plugin now lists that plugin's other reads, with their arguments, next to its
+  actions (`reads` in the answer, an "Other reads" line in the text). A model that went straight to a
+  plugin without asking for the catalog first was told only of the actions, and took a plugin such as
+  Jobby, which describes a read for a card's whole conversation, for one with nothing beyond its main
+  read.
+
 ## [0.15.0] - 2026-10-27
 
 ### Added

@@ -56,11 +56,13 @@ import {
   DESCRIBE_METHOD,
   issueConfirmation,
   judgeOutcome,
+  otherReads,
   parseCapabilities,
   pickOperation,
   pickPlugin,
   prepareArgs,
   projectResult,
+  readsLine,
   readSummary,
   resultLines,
   signature,
@@ -1556,7 +1558,8 @@ export async function pluginRead(pairingUrl, args = {}) {
 }
 
 // plugin_read over an open connection: without a plugin, what every plugin offers; with one, one
-// of its reads (its main one unless named), trimmed to the fields it marked worth reading.
+// of its reads (its main one unless named), trimmed to the fields it marked worth reading, and
+// the plugin's other reads and its actions.
 export async function pluginReadOn(client, { plugin, operation, args } = {}) {
   if (!String(plugin ?? "").trim()) {
     const entries = await describePlugins(client);
@@ -1585,11 +1588,26 @@ export async function pluginReadOn(client, { plugin, operation, args } = {}) {
       data: { ...data, refused: true, reason: verdict.reason, result },
     };
   }
+  // The plugin's other reads come with the answer as its actions do: the catalog lists them too,
+  // but a model that went straight to the plugin never asked for it.
+  const reads = otherReads(caps, op.id);
   return {
-    text: [`${caps.title} · ${op.title}`, op.description && truncate(op.description, 300), op.untrusted && UNTRUSTED_NOTE, resultLines(result), actionsLine(caps)]
+    text: [
+      `${caps.title} · ${op.title}`,
+      op.description && truncate(op.description, 300),
+      op.untrusted && UNTRUSTED_NOTE,
+      resultLines(result, 1500, op.chronological),
+      readsLine(caps, op.id),
+      actionsLine(caps),
+    ]
       .filter(Boolean)
       .join("\n"),
-    data: { ...data, result, actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary) },
+    data: {
+      ...data,
+      result,
+      ...(reads.length ? { reads: reads.map(readSummary) } : {}),
+      actions: caps.operations.filter((o) => o.kind === "action").map(actionSummary),
+    },
   };
 }
 

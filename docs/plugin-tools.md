@@ -23,6 +23,7 @@ What it answers (`structuredContent`, every field optional):
 | `result` | The plugin's answer, trimmed to its `output.fields`; always an object. |
 | `refused`, `reason` | The read's `outcome` says the plugin could not give it. |
 | `untrusted` | The read is marked untrusted. |
+| `reads` | The plugin's other reads (`id`, `title`, `description`, `args`, `main`), so a deeper read of the same plugin, such as one item's full detail, needs no catalog first. Left out when it has none. |
 | `actions` | The plugin's actions with their arguments, so `plugin_action` needs no lookup first. |
 | `needs_clarification` | The plugin or the operation was not clear; `candidates` to ask the user about. |
 
@@ -105,7 +106,11 @@ such as `level: 10 | 50 | 100 (required) – Brightness in percent`.
 - A list or a bare value is wrapped as `{ "value": … }`, so `result` is always an object.
 - The text is `key: value` lines (empty strings and nulls left out, nested values as JSON), cut at
   1,500 characters for a read and 800 for an action. A read's text starts with its title and
-  description and ends with the plugin's actions.
+  description (the first 300 characters of it) and ends with the plugin's other reads and then its
+  actions. The cut applies to the `result` lines only, and a value is cut from its end, except a list
+  the plugin declares in `output.chronological` (it runs oldest to newest): that one is shortened from
+  its start, keeping the newest items, one per line, and says how many earlier ones are not shown. The
+  whole answer is always in `structuredContent`.
 
 ## Outcomes
 

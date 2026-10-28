@@ -72,6 +72,10 @@ In `contribute()`, next to the other handlers: `server.handle(describeRpc, () =>
 - Use `fixed` to split one RPC into plain operations (`dim`, `off`) instead of offering a mode.
 - Use `output.fields` to keep plumbing and anything sensitive out of the answer; the same list is
   needed on actions whose RPC answers with a whole state.
+- A read that answers with a list in time order (a conversation, a log) names it in
+  `output.chronological`, so that the text for speech keeps its newest items; see
+  [chronological](plugin-capabilities.md#chronological-lists-that-run-in-time-order). Page a long one
+  from the end rather than hand over all of it.
 
 ## outcome, target and untrusted
 

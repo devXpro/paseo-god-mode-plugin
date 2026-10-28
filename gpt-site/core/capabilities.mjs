@@ -70,10 +70,13 @@ function parseOperation(raw) {
   if (overlap) return { skip: `fixed argument "${overlap}" is also offered to the caller` };
   // The fields of the answer worth reading out, for reads and for actions that answer with a state.
   const fields = Array.isArray(raw.output?.fields) ? raw.output.fields.filter((f) => typeof f === "string") : null;
+  // Which of those fields are lists that run from the oldest item to the newest: a conversation, a
+  // log. Shortened for speech, such a list keeps its end.
+  const chronological = Array.isArray(raw.output?.chronological) ? raw.output.chronological.filter((f) => typeof f === "string") : [];
   const { outcome, skip: badOutcome } = parseOutcome(raw.outcome);
   if (badOutcome) return { skip: badOutcome };
   const untrusted = raw.untrusted === true;
-  const op = { id, kind: raw.kind, method, title, description: text(raw.description, 600), input, fixed, fields, outcome, untrusted };
+  const op = { id, kind: raw.kind, method, title, description: text(raw.description, 600), input, fixed, fields, chronological, outcome, untrusted };
   if (raw.kind === "read") return { op: { ...op, default: raw.default === true } };
   const { target, skip: badTarget } = parseTarget(raw.target);
   if (badTarget) return { skip: badTarget };
@@ -301,12 +304,49 @@ export function targetFacts(target, output) {
   return { facts: Object.fromEntries(target.show.map((field) => [field, SECRET_KEY.test(field) && typeof output[field] === "string" ? "[redacted]" : plain(output[field])])) };
 }
 
-// "key: value" lines for speech, leaving out empty strings and nulls; nested values stay JSON.
-export function resultLines(value, max = 1500) {
-  const lines = Object.entries(value)
-    .filter(([, v]) => v !== "" && v !== null && v !== undefined)
-    .map(([key, v]) => `${key}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
-  return truncate(lines.join("\n") || "(empty)", max);
+const asLine = (key, v) => `${key}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`;
+const asRow = (item) => (typeof item === "object" ? JSON.stringify(item) : String(item));
+
+// A list that runs from the oldest item to the newest, as many of its newest items as fit in
+// `budget` characters, one per line and back in time order, under a heading that says how many
+// of the earlier ones are not shown here. The newest item is always shown, cut if it alone is too
+// long: it is the one that matters.
+function newestWithin(key, items, budget) {
+  const rows = items.map(asRow);
+  const head = (shown) =>
+    shown === rows.length
+      ? `${key}:`
+      : `${key} (the latest ${shown} of ${rows.length}, oldest first; the ${rows.length - shown} earlier are in the structured result):`;
+  let shown = 0;
+  let used = head(1).length;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    used = head(rows.length - i).length + rows.slice(i).reduce((sum, row) => sum + row.length + 1, 0);
+    if (used > budget) break;
+    shown = rows.length - i;
+  }
+  if (shown > 0) return [head(shown), ...rows.slice(rows.length - shown)].join("\n");
+  // truncate() adds " …" past its limit, and the newline before the row is one more.
+  const heading = head(1);
+  return `${heading}\n${truncate(rows[rows.length - 1], Math.max(80, budget - heading.length - 3))}`;
+}
+
+// "key: value" lines for speech, leaving out empty strings and nulls; nested values stay JSON. Cut
+// at `max`, from the end, except for the lists named in `chronological` (fields that run from the
+// oldest item to the newest): when the lines are too long those are shortened from the start, so
+// what is current is what stays, and the cut is said. The cut is of the text only; the structured
+// answer is never touched.
+export function resultLines(value, max = 1500, chronological = []) {
+  const entries = Object.entries(value).filter(([, v]) => v !== "" && v !== null && v !== undefined);
+  const whole = entries.map(([key, v]) => asLine(key, v)).join("\n") || "(empty)";
+  const isLog = ([key, v]) => chronological.includes(key) && Array.isArray(v) && v.length > 1;
+  const logs = entries.filter(isLog);
+  if (whole.length <= max || !logs.length) return truncate(whole, max);
+
+  const others = entries.filter((entry) => !isLog(entry)).map(([key, v]) => asLine(key, v));
+  const left = max - others.reduce((sum, line) => sum + line.length + 1, 0);
+  const budget = Math.floor(left / logs.length) - 1;
+  const lines = entries.map((entry) => (isLog(entry) ? newestWithin(entry[0], entry[1], budget) : asLine(entry[0], entry[1])));
+  return truncate(lines.join("\n"), max);
 }
 
 export function readSummary(op) {
@@ -321,6 +361,19 @@ export function actionsLine(capabilities) {
   const actions = capabilities.operations.filter((op) => op.kind === "action");
   if (!actions.length) return "";
   return `Actions (plugin_action): ${actions.map((op) => `${op.id}${op.confirm === "always" ? " [asks first]" : ""}${signature(op) === "no arguments" ? "" : ` (${signature(op)})`}`).join("; ")}.`;
+}
+
+// The plugin's reads other than the one just made, said with every read the way the actions are.
+// A model that went straight to a plugin never saw the catalog; told only of the actions, it
+// concluded the plugin had no read beyond its main one, though it described several.
+export function otherReads(capabilities, exceptId) {
+  return capabilities.operations.filter((op) => op.kind === "read" && op.id !== exceptId);
+}
+
+export function readsLine(capabilities, exceptId) {
+  const reads = otherReads(capabilities, exceptId);
+  if (!reads.length) return "";
+  return `Other reads (plugin_read): ${reads.map((op) => `${op.id}${op.default ? " [main]" : ""}${signature(op) === "no arguments" ? "" : ` (${signature(op)})`}`).join("; ")}.`;
 }
 
 // ---- Confirmation -----------------------------------------------------------------------------

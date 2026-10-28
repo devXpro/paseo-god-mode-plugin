@@ -14,6 +14,7 @@ import {
   pickPlugin,
   prepareArgs,
   projectResult,
+  resultLines,
   signature,
   judgeOutcome,
   targetFacts,
@@ -175,6 +176,32 @@ test("plugin_read reads the main status by a spoken name, trimmed, and lists the
   assert.doesNotMatch(text, /s3cr3t|wiring/);
   assert.match(text, /Actions \(plugin_action\): dim \(level: 10 \| 50 \| 100 \(required\)\); off \[asks first\]/);
   assert.deepEqual(client.calls.at(-1), ["lamp", "lamp.get", {}]);
+});
+
+// A model that asks a plugin for its status straight away never saw the catalog. It was told of
+// the actions and of nothing else, and so took a plugin that described a second read for one with
+// only its main read.
+test("plugin_read lists the plugin's other reads with the answer, not the one it just made", async () => {
+  const client = fakeClient(installed());
+  const main = await pluginReadOn(client, { plugin: "lamp" });
+  assert.deepEqual(main.data.reads.map((r) => [r.id, r.main]), [["history", false]]);
+  assert.match(main.data.reads[0].args, /days/);
+  assert.match(main.text, /Other reads \(plugin_read\): history \(days: /);
+  assert.ok(main.text.indexOf("Other reads (plugin_read)") < main.text.indexOf("Actions (plugin_action)"), "reads come before the actions");
+
+  const other = await pluginReadOn(client, { plugin: "lamp", operation: "history", args: { days: 2 } });
+  assert.deepEqual(other.data.reads.map((r) => [r.id, r.main]), [["state", true]]);
+  assert.match(other.text, /Other reads \(plugin_read\): state \[main\]\./);
+  assert.doesNotMatch(other.text, /Other reads[^\n]*history/);
+});
+
+test("a plugin whose only read is the one just made has no reads to list", async () => {
+  const raw = lamp();
+  raw.operations = raw.operations.filter((op) => op.id !== "history");
+  const client = fakeClient([{ id: "lamp", rpc: { "meta.describe": () => raw, "lamp.get": () => ({ on: true }) } }]);
+  const { text, data } = await pluginReadOn(client, { plugin: "lamp" });
+  assert.equal("reads" in data, false);
+  assert.doesNotMatch(text, /Other reads/);
 });
 
 test("an exact plugin id asks that plugin alone", async () => {
@@ -549,4 +576,176 @@ test("an action the plugin refuses reads as not done, with its reason; one witho
   const lampClient = fakeClient([{ id: "lamp", rpc: { "meta.describe": () => lamp(), "lamp.set": () => ({ on: false, ok: false, error: "fuse" }) } }]);
   const dimmed = await pluginActionOn(lampClient, { plugin: "lamp", operation: "dim", args: { level: 10 }, secret: SECRET, now: NOW });
   assert.equal(dimmed.data.outcome, "done");
+});
+
+// ---- Long conversations -----------------------------------------------------------------------
+//
+// A conversation runs oldest to newest, and the part of it that matters is the end. Cut from its end
+// for speech, as every other value is, it kept the oldest messages and lost the newest: 4 of 19 shown
+// in one real direct message, the 15 that came last gone. A plugin that says a list runs in time
+// order gets it shortened from the start instead, and the cut said. The structured answer is whole
+// either way.
+
+// `n` messages, m1 the oldest, each about `size` characters of text, as a plugin sends them.
+function talk(n, size = 80) {
+  return Array.from({ length: n }, (_, i) => ({
+    at: `2026-10-26T14:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}Z`,
+    author: i % 3 === 0 ? "Me" : "Andrii",
+    text: `m${i + 1} ${"x".repeat(Math.max(0, size - String(i + 1).length - 2))}`,
+    is_mine: i % 3 === 0,
+  }));
+}
+
+// The numbers of the messages a text still carries, in the order it carries them.
+const seen = (text) => [...text.matchAll(/"text":"m(\d+) /g)].map((match) => Number(match[1]));
+
+test("a long conversation is shortened from its start: the newest stay, in time order, and the cut is said", () => {
+  const text = resultLines({ messages: talk(40), error: "" }, 1500, ["messages"]);
+  const shown = seen(text);
+  assert.ok(text.length <= 1500, `${text.length} characters`);
+  assert.equal(shown.at(-1), 40, "the newest message is there");
+  assert.ok(shown.length > 3 && shown.length < 40, `${shown.length} shown`);
+  assert.deepEqual(shown, Array.from({ length: shown.length }, (_, i) => 40 - shown.length + 1 + i), "the newest ones, oldest first, none missing in between");
+  assert.ok(text.startsWith(`messages (the latest ${shown.length} of 40, oldest first; the ${40 - shown.length} earlier are in the structured result):\n`));
+  assert.ok(!text.includes('"text":"m1 '), "the oldest is what was dropped");
+});
+
+test("without the declaration a long list is cut from its end, as every other value is", () => {
+  const text = resultLines({ messages: talk(40), error: "" }, 1500);
+  const shown = seen(text);
+  assert.ok(text.length <= 1500);
+  assert.equal(shown[0], 1);
+  assert.ok(!shown.includes(40), "the newest is the part that goes");
+  assert.ok(text.endsWith("…"));
+});
+
+test("a conversation that fits is left exactly as it was", () => {
+  const messages = talk(3);
+  const text = resultLines({ messages, error: "" }, 1500, ["messages"]);
+  assert.equal(text, resultLines({ messages, error: "" }, 1500));
+  assert.deepEqual(seen(text), [1, 2, 3]);
+  assert.doesNotMatch(text, /the latest/);
+});
+
+test("at the limit nothing changes; just over it one message a line still holds all; far over it is shortened", () => {
+  const list = (extra) => [...talk(5), { at: "2026-10-26T15:00:00Z", author: "Andrii", text: "m6 " + "y".repeat(extra), is_mine: false }];
+  const extra = 1500 - `messages: ${JSON.stringify(list(0))}`.length;
+  assert.ok(extra > 0);
+
+  const exact = resultLines({ messages: list(extra) }, 1500, ["messages"]);
+  assert.equal(exact.length, 1500);
+  assert.ok(exact.startsWith("messages: [{"), "whole, one line, as before");
+
+  // One character over, the one-line form no longer fits but one message to a line does (it spends
+  // fewer characters on brackets), so nothing has to be dropped.
+  const over = resultLines({ messages: list(extra + 1) }, 1500, ["messages"]);
+  assert.ok(over.length <= 1500);
+  assert.ok(over.startsWith("messages:\n"));
+  assert.deepEqual(seen(over), [1, 2, 3, 4, 5, 6]);
+
+  // Far over it, the oldest go and the newest stay.
+  const far = resultLines({ messages: list(extra + 400) }, 1500, ["messages"]);
+  assert.ok(far.length <= 1500);
+  assert.ok(far.startsWith("messages (the latest "));
+  assert.equal(seen(far).at(-1), 6);
+  assert.ok(!seen(far).includes(1));
+});
+
+test("a newest message longer than the whole budget is still shown, cut, with the earlier ones counted", () => {
+  const messages = [...talk(9), { at: "2026-10-26T16:00:00Z", author: "Andrii", text: `m10 ${"z".repeat(5000)}`, is_mine: false }];
+  const text = resultLines({ messages }, 1500, ["messages"]);
+  assert.ok(text.length <= 1500, `${text.length} characters`);
+  assert.ok(text.startsWith("messages (the latest 1 of 10, oldest first; the 9 earlier are in the structured result):\n"));
+  assert.match(text, /"text":"m10 z+/);
+  assert.ok(text.endsWith("…"), "the cut of that one message is marked too");
+  assert.deepEqual(seen(text), [10]);
+});
+
+test("several chronological lists share what is left, and a plain field is never cut", () => {
+  const text = resultLines({ a: talk(30), note: "keep me whole", b: talk(30) }, 1500, ["a", "b"]);
+  assert.ok(text.length <= 1500);
+  assert.ok(text.includes("\nnote: keep me whole\n"), "the order of the fields is kept");
+  assert.equal(seen(text).filter((number) => number === 30).length, 2, "each list keeps its newest");
+  assert.ok(text.indexOf("a (the latest") < text.indexOf("note:") && text.indexOf("note:") < text.indexOf("b (the latest"));
+});
+
+test("a plain field's size comes off what the list may use, and the list still ends with the newest", () => {
+  const text = resultLines({ messages: talk(40), before: "1793000000.000031", earlier: 30 }, 1500, ["messages"]);
+  assert.ok(text.length <= 1500);
+  assert.ok(text.endsWith("before: 1793000000.000031\nearlier: 30") || text.includes("earlier: 30"));
+  assert.equal(seen(text).at(-1), 40);
+});
+
+test("a declared field that is not a list, or a list of one, is left alone", () => {
+  assert.equal(resultLines({ messages: "plain text" }, 1500, ["messages"]), "messages: plain text");
+  const one = talk(1);
+  assert.equal(resultLines({ messages: one }, 1500, ["messages"]), resultLines({ messages: one }, 1500));
+  assert.equal(resultLines({ other: 1 }, 1500, ["messages"]), "other: 1");
+  assert.equal(resultLines({}, 1500, ["messages"]), "(empty)");
+});
+
+test("a plugin declares which of its lists run in time order, and only strings count", () => {
+  const raw = lamp();
+  raw.operations[0].output = { fields: ["on", "log"], chronological: ["log", 3, null, { x: 1 }] };
+  const { capabilities } = parseCapabilities(raw);
+  assert.deepEqual(capabilities.operations[0].chronological, ["log"]);
+  assert.deepEqual(capabilities.operations[1].chronological, [], "undeclared: none");
+  raw.operations[0].output = { fields: ["on"], chronological: "log" };
+  assert.deepEqual(parseCapabilities(raw).capabilities.operations[0].chronological, [], "not a list: none");
+});
+
+function chatty() {
+  return {
+    schema: "paseo.capabilities/1",
+    title: "Work chats",
+    summary: "Messages that wait on the user.",
+    aliases: ["chats"],
+    operations: [
+      { id: "board", kind: "read", method: "chat.board", title: "What waits", default: true, input: { type: "object", properties: {} } },
+      {
+        id: "conversation",
+        kind: "read",
+        method: "chat.conversation",
+        title: "The conversation behind a card",
+        description: "The conversation, newest page first.",
+        input: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        output: { fields: ["messages", "total"], chronological: ["messages"] },
+        untrusted: true,
+      },
+      {
+        id: "log",
+        kind: "read",
+        method: "chat.log",
+        title: "A log that does not say it is in time order",
+        input: { type: "object", properties: {} },
+        output: { fields: ["messages"] },
+      },
+    ],
+  };
+}
+
+test("plugin_read keeps the newest messages in the text of a long conversation, and the structured answer whole", async () => {
+  const messages = talk(40);
+  const client = fakeClient([{ id: "chat", rpc: { "meta.describe": () => chatty(), "chat.conversation": () => ({ messages, total: 40, secret_note: "dropped" }) } }]);
+  const { text, data } = await pluginReadOn(client, { plugin: "chat", operation: "conversation", args: { id: "c1" } });
+
+  assert.deepEqual(data.result, { messages, total: 40 }, "every message, in the plugin's order, nothing trimmed");
+  assert.equal(data.untrusted, true);
+  const shown = seen(text);
+  assert.equal(shown.at(-1), 40);
+  assert.ok(shown.length < 40);
+  assert.deepEqual(shown, Array.from({ length: shown.length }, (_, i) => 40 - shown.length + 1 + i));
+  assert.match(text, /messages \(the latest \d+ of 40, oldest first; the \d+ earlier are in the structured result\):/);
+  assert.match(text, /\ntotal: 40\n/);
+  assert.match(text, /Other reads \(plugin_read\): board \[main\]; log\./, "the other reads still come with the answer");
+  assert.ok(text.indexOf("Other reads") > text.indexOf("total: 40"), "after the answer, not inside it");
+});
+
+test("a read that does not declare its list in time order is cut from the end through plugin_read too", async () => {
+  const messages = talk(40);
+  const client = fakeClient([{ id: "chat", rpc: { "meta.describe": () => chatty(), "chat.log": () => ({ messages }) } }]);
+  const { text, data } = await pluginReadOn(client, { plugin: "chat", operation: "log" });
+  assert.equal(data.result.messages.length, 40);
+  assert.equal(seen(text)[0], 1);
+  assert.ok(!seen(text).includes(40));
 });
