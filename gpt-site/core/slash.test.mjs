@@ -83,6 +83,7 @@ test("Claude: built-ins get God Mode's verdict, the user's and plugins' own comm
   }
   assert.match(c.clear.reason, /archive_chat and start_chat|start_chat/);
   assert.match(c.heapdump.reason, /credentials/);
+  assert.match(c.model.reason, /use set_chat_model, which changes them in Paseo itself/);
   assert.equal(c["__remote-workflow"].source, "internal");
   assert.equal(c["gm-ping"].source, "custom");
   assert.match(c["gm-ping"].effect, /^Runs the project's own command: God Mode test command; answers pong$/);
@@ -124,6 +125,7 @@ test("Codex: compact and goal are Paseo's app-server calls, skills and prompts a
   for (const name of ["review", "init", "model", "new", "diff", "status"]) {
     assert.equal(c[name].available, false, `${name} is listed as not available`);
   }
+  assert.match(c.model.reason, /use set_chat_model/, "Codex's /model too");
   assert.match(c.review.reason, /native review \(its review\/start API/);
   assert.match(c.review.reason, /Paseo 0\.11\.4 does not expose it/);
   const plan = findCommand(catalog, "plan");
@@ -286,4 +288,18 @@ test("the list reads as groups, or in detail for a query, and says where command
   assert.doesNotMatch(one, /bypassed/);
   const other = describeCommands("opencode", [{ name: "summarize", description: "Summarise", argumentHint: "" }]);
   assert.match(listText({ chatLine: "X", catalog: other, shown: other.entries, total: 1, query: "" }), /only in Claude Code and Codex chats[^\n]*\nListed: summarize\./);
+});
+
+test("/model and /effort send the model to set_chat_model; /fast and /advisor stay with Paseo on the computer", () => {
+  const list = ["model", "effort", "fast", "advisor"].map((name) => ({ name, description: "x", argumentHint: "", kind: "command" }));
+  const c = byName(describeCommands("claude", list));
+  for (const name of ["model", "effort"]) {
+    assert.equal(c[name].available, false, name);
+    assert.match(c[name].reason, /use set_chat_model/, name);
+  }
+  for (const name of ["fast", "advisor"]) {
+    assert.equal(c[name].available, false, name);
+    assert.match(c[name].reason, /change it in Paseo on the computer/, name);
+    assert.doesNotMatch(c[name].reason, /set_chat_model/, `${name}: set_chat_model does not touch it`);
+  }
 });

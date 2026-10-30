@@ -24,7 +24,7 @@ reported. The short version for users is in the [README](../README.md#security).
 ## Writes
 
 The tools that change something: `start_chat`, `send_message`, `answer_approval`, `answer_questions`,
-`stop_chat`, `archive_chat`, `pin_chat`, `run_slash_command`, `plugin_action`, `update_site`.
+`stop_chat`, `archive_chat`, `pin_chat`, `set_chat_model`, `run_slash_command`, `plugin_action`, `update_site`.
 
 - **Only on a command.** The server instructions tell ChatGPT to call a write tool only when the
   user's latest words tell it to act now, or are "yes" to its own "Send it?"; drafting, discussing or

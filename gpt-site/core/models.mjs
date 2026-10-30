@@ -200,6 +200,116 @@ export function modelsData(providers) {
   }));
 }
 
+// ---- A chat that already runs -------------------------------------------------------------------
+// set_chat_model changes the model and thinking level of an existing chat. The checks are start_chat's,
+// since Paseo's own setters accept any string, and the chat keeps its runtime: no Paseo request changes
+// it.
+
+// The runtimes whose model and thinking setters God Mode has read in Paseo's code. The others differ
+// (OpenCode drops a thinking variant its new model lacks), so they stay out until someone reads them.
+export const CHANGEABLE = ["claude", "codex"];
+
+// The catalog's model a chat runs on, from the id Paseo reports: null when the catalog does not list it
+// (a retired or custom model). A chat with no model of its own runs the runtime's default.
+function currentModel(provider, modelId) {
+  const listed = provider.models.find((m) => m.id === modelId || m.aliases?.includes(modelId));
+  return listed ?? (modelId ? null : (defaultModel(provider) ?? null));
+}
+
+// What a change of a chat's model and thinking level comes to: the model and level asked for, checked
+// against the chat's own runtime, and the level it keeps. chat is { provider, model, thinking } as Paseo
+// reports it. Returns { change: { provider, model, thinking, after } }, where model is the model to set
+// (null: it stays) and thinking the level (undefined: it stays, null: it is cleared), after is the model
+// the chat runs on then; or { ask } for something Paseo does not offer, or { other } for a model of
+// another runtime.
+export function chooseChange(catalog, chat, requested = {}) {
+  const own = catalog.find((p) => p.id === chat.provider);
+  const current = currentModel(own, chat.model);
+  let model = null;
+  if (requested.model) {
+    const picked = pickModel([own], requested.model);
+    if (picked.ask) {
+      const elsewhere = pickModel(catalog.filter((p) => p.available && p !== own), requested.model);
+      return elsewhere.ask ? picked : { other: { provider: elsewhere.provider, model: elsewhere.model } };
+    }
+    if (picked.model.id !== current?.id) model = picked.model;
+  }
+  // A level is checked against the model the chat runs on after this one.
+  const after = model ?? current ?? defaultModel(own);
+  const name = after?.label ?? own.label;
+  const levels = after?.thinkingOptions ?? [];
+  let thinking;
+  if (requested.thinking) {
+    if (levels.length === 0) return clarify("thinking", requested.thinking, `${name} offers no thinking levels, so none can be set. Tell the user.`, []);
+    const picked = pickThinking(after, requested.thinking);
+    if (picked.ask) return picked;
+    if (picked.thinking !== chat.thinking) thinking = picked.thinking;
+  } else if (model && chat.thinking && !levels.some((o) => o.id === chat.thinking)) {
+    // Paseo would keep a level the new model does not have. One with no levels at all drops it.
+    if (levels.length === 0) thinking = null;
+    else {
+      const ids = levels.map((o) => o.id);
+      return clarify("thinking", chat.thinking, `${name} has no thinking level "${chat.thinking}", which this chat runs at. Its levels: ${ids.join(", ")}. Nothing was changed: ask the user which level, then call again with the model and that level.`, ids);
+    }
+  }
+  return { change: { provider: own, model, thinking, after } };
+}
+
+// A chat's model and thinking level in words: "Sonnet 5.5, thinking Max".
+function runsOn(provider, { model, thinking }) {
+  const listed = provider?.models.find((m) => m.id === model || m.aliases?.includes(model));
+  const level = listed?.thinkingOptions?.find((o) => o.id === thinking);
+  return [listed?.label ?? model ?? "its default model", thinking && `thinking ${level?.label ?? thinking}`].filter(Boolean).join(", ");
+}
+
+// When a change reaches a chat that is working: Paseo applies a thinking level from the next turn, a
+// Codex model likewise, and a Claude model from the agent's next call to it.
+function appliesLater(providerId, { model, thinking }) {
+  const parts = [];
+  if (model) parts.push(providerId === "claude" ? "the model applies from the agent's next call to it (a reply being written finishes on the old one)" : "the model applies from its next turn");
+  if (thinking !== undefined) parts.push(thinking === null ? "the thinking level is dropped from its next turn" : "the thinking level applies from its next turn");
+  return parts.join(" and ");
+}
+
+// set_chat_model's answer. outcome: changed, partial (only some of it applied), unchanged (already so),
+// archived, other_runtime, unavailable or error. before and after are { model, thinking } ids as Paseo
+// reports them; after is read back from Paseo, never the request echoed. change is what chooseChange
+// settled on, busy whether the chat was working, notice Paseo's own note on the change.
+export function changeResult({ outcome, chat, provider = null, before, after = before, change = null, busy = false, notice = null, error = null, other = null }) {
+  const named = `${truncate(chat.title, 70)} (${chat.project})`;
+  const runtime = provider?.label ?? chat.provider ?? "this runtime";
+  const runs = runsOn(provider, after);
+  const kept = "Its history is kept and no new chat was started.";
+  const later = busy && change ? ` It is working now, so ${appliesLater(provider?.id, change)}.` : " The next message runs on it.";
+  const text = {
+    changed: `Changed ${named}: it runs on ${runs} now, it was ${runsOn(provider, before)}. ${kept}${later}`,
+    partial: `Partly changed ${named}: it runs on ${runs} now, but not all of what was asked: ${error}. ${kept}`,
+    unchanged: `${named} already runs on ${runs}; nothing changed.`,
+    archived: `Nothing changed: ${named} is archived. Tell the user.`,
+    other_runtime: other
+      ? `Nothing changed: ${other.model.label} is a ${other.provider.label} model, and a ${runtime} chat cannot change its runtime, so ${named} stays on ${runs}. A chat on ${other.model.label} is a new one, start_chat, without this chat's history: ask the user.`
+      : "",
+    unavailable: `Nothing changed: ${error}`,
+    error: `Not changed: ${error}. ${named} runs on ${runs}.`,
+  }[outcome];
+  return {
+    text,
+    data: {
+      chat_id: chat.id,
+      short_id: chat.id.slice(0, 7),
+      project: chat.project,
+      provider: provider?.id ?? chat.provider ?? "",
+      outcome,
+      done: outcome === "changed" || outcome === "partial",
+      before: { model: before.model ?? null, thinking: before.thinking ?? null },
+      after: { model: after.model ?? null, thinking: after.thinking ?? null },
+      busy,
+      ...(notice ? { notice } : {}),
+      ...(error ? { error } : {}),
+    },
+  };
+}
+
 export function modelsText(providers) {
   const usable = providers.filter((p) => p.available);
   const lines = [

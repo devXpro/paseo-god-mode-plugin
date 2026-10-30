@@ -9,7 +9,7 @@ import { createWorld, NEW_CHAT_ID } from "./world.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const text = await import(join(HERE, "..", "core", "text.mjs"));
-const WRITE = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "pin_chat", "update_site", "run_slash_command"]);
+const WRITE = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "pin_chat", "set_chat_model", "update_site", "run_slash_command"]);
 const READ_CHAT_TOOLS = new Set(["read_chat", "read_activity"]);
 const SPEC = /^(\w+)(?:\[(\w+)=([^\]]+)\])?$/;
 const cases = new Map(CASES.map((c) => [c.id, c]));
@@ -48,6 +48,11 @@ function checkArgs(call, args) {
     // What the started chat runs on, as the result says: however the model was named in the call.
     else if (key === "startedProvider" && call.structured?.provider !== want) problems.push(`provider=${JSON.stringify(call.structured?.provider ?? null)}`);
     else if (key === "startedModel" && call.structured?.model !== want) problems.push(`model=${JSON.stringify(call.structured?.model ?? null)}`);
+    // What set_chat_model's result says the chat runs on now, and the workspace start_chat's chat is in.
+    else if (key === "changedModel" && call.structured?.after?.model !== want) problems.push(`after.model=${JSON.stringify(call.structured?.after?.model ?? null)}`);
+    else if (key === "changedThinking" && call.structured?.after?.thinking !== want) problems.push(`after.thinking=${JSON.stringify(call.structured?.after?.thinking ?? null)}`);
+    else if (key === "startedWorkspace" && call.structured?.workspace_id !== want) problems.push(`workspace_id=${JSON.stringify(call.structured?.workspace_id ?? null)}`);
+    else if (key === "newWorkspace" && call.structured?.new_workspace !== want) problems.push(`new_workspace=${JSON.stringify(call.structured?.new_workspace ?? null)}`);
     else if (key === "command" && !want.includes(String(got ?? "").trim().replace(/^\/+/, "").split(/\s/)[0].toLowerCase())) problems.push(`command=${JSON.stringify(got)}`);
     // What answer_questions sent for each question, in order, as its result says: a label, or a pattern for the user's own words.
     else if (key === "answered") {
@@ -86,7 +91,7 @@ function similar(a, b) {
   return shared / Math.min(x.size, y.size) >= 0.6;
 }
 const writeKey = (call) => (call.tool === "start_chat" ? `start:${resolveProject(call.args.project)}` : `${call.tool}:${resolveChat(call.args.chat)}`);
-const writeText = (call) => call.args.text ?? call.args.prompt ?? call.args.decision ?? call.args.action ?? (call.args.answers ? JSON.stringify(call.args.answers) : "");
+const writeText = (call) => call.args.text ?? call.args.prompt ?? call.args.decision ?? call.args.action ?? (call.args.answers ? JSON.stringify(call.args.answers) : [call.args.model, call.args.thinking].filter(Boolean).join(" "));
 
 const ID_LEAK = /#[0-9a-f]{6,}|\b[0-9a-f]{8}-[0-9a-f]{4}|\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b/i;
 

@@ -5,7 +5,8 @@ import { createMcpHandler, readConfig, TOOLS } from "./mcp.mjs";
 import { PaseoOffline } from "./paseo.mjs";
 import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
-import { chatData, pinnedResult, pinResult, rowQuestion } from "./text.mjs";
+import { changeResult } from "./models.mjs";
+import { chatData, pinnedResult, pinResult, rowQuestion, rowsQuestion } from "./text.mjs";
 
 const SECRET = "https://app.paseo.sh/#offer=secret-offer";
 
@@ -32,7 +33,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "setChatModel", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -118,6 +119,7 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.match(plain.result.instructions, /Answer in the user's language/);
   assert.doesNotMatch(plain.result.instructions, /по SEO/);
   assert.doesNotMatch(plain.result.instructions, /закинуть/, "language hints only for their language");
+  assert.doesNotMatch(plain.result.instructions, /переключи|форт/, "nor the hints about switching a model");
   assert.match(plain.result.instructions, /no read-back needed/);
   const marker = "→ search_messages.";
   const routingEnd = text.indexOf(marker) + marker.length;
@@ -125,7 +127,10 @@ test("instructions follow the language and the confirmation setting, and route e
   const slash = "slash commands (/compact) → run_slash_command, list_slash_commands.";
   const slashEnd = text.indexOf(slash) + slash.length;
   assert.ok(slashEnd > slash.length && slashEnd <= 512, `slash command routing sits in the first 512 characters too (ends at ${slashEnd})`);
-  assert.match(text, /"archive it", "compact it", "pin it"\), or are "yes"/);
+  assert.match(text, /"archive it", "compact it", "pin it", "switch it to Sonnet", "set its effort to max"\), or are "yes"/);
+  assert.match(text, /Switching a chat's model or effort, or opening a chat in a workspace, is a command too: «переключи на …»/);
+  assert.match(text, /«а можно переключить\?», «может, поставить max\?» are questions: ask first\./);
+  assert.match(text, /and "effort" as «форт»/);
 });
 
 test("the server version changes with anything the model reads", async () => {
@@ -144,7 +149,7 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes twenty-three tools, output schemas and honest annotations", async () => {
+test("tools/list exposes twenty-four tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
@@ -165,6 +170,7 @@ test("tools/list exposes twenty-three tools, output schemas and honest annotatio
       "stop_chat",
       "archive_chat",
       "pin_chat",
+      "set_chat_model",
       "list_slash_commands",
       "run_slash_command",
       "plugin_read",
@@ -201,6 +207,14 @@ test("tools/list exposes twenty-three tools, output schemas and honest annotatio
   assert.equal(byName.pin_chat.annotations.idempotentHint, true, "a pin already as asked is left alone");
   assert.deepEqual(byName.pin_chat.inputSchema.required, ["action"], "a chat or, instead, a row's workspace_id");
   assert.deepEqual(byName.pin_chat.inputSchema.properties.action.enum, ["pin", "unpin"]);
+  assert.equal(byName.set_chat_model.annotations.readOnlyHint, false);
+  assert.equal(byName.set_chat_model.annotations.destructiveHint, false, "one more call puts it back");
+  assert.equal(byName.set_chat_model.annotations.idempotentHint, true, "a model already set is left alone");
+  assert.deepEqual(byName.set_chat_model.inputSchema.required, ["chat"], "model, thinking or both: the call checks that");
+  assert.deepEqual(Object.keys(byName.set_chat_model.inputSchema.properties), ["chat", "model", "thinking"], "no site defaults, no mode: only what is asked");
+  assert.deepEqual(byName.set_chat_model.outputSchema.properties.outcome.enum, ["changed", "partial", "unchanged", "archived", "other_runtime", "unavailable", "error"]);
+  assert.deepEqual(byName.start_chat.inputSchema.required, ["prompt"], "a project, or an existing workspace in its place");
+  assert.ok(byName.start_chat.inputSchema.properties.workspace, "start_chat can open a chat in an existing workspace");
   assert.equal(byName.update_status.annotations.readOnlyHint, true);
   assert.equal(byName.update_site.annotations.destructiveHint, true);
   assert.match(byName.update_site.description, /wait for the user's yes before calling/);
@@ -238,7 +252,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "list_slash_commands", "run_slash_command"]) {
+  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "set_chat_model", "list_slash_commands", "run_slash_command"]) {
     const chat = byName[tool].inputSchema.properties.chat.description;
     assert.match(chat, /Ids are for calls only/, tool);
     assert.match(chat, /Keep the chat being discussed/, tool);
@@ -300,6 +314,20 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.pin_chat.description, /a row with no chat takes its name, or its workspace_id from there/);
   assert.match(byName.pin_chat.description, /No read-back needed/);
   assert.match(byName.list_pinned_chats.outputSchema.properties.pinned.items.properties.workspace_id.description, /pin_chat takes it for a row with no chat/);
+  // A chat's model and thinking level change in the same chat, never through a new one.
+  assert.match(byName.set_chat_model.description, /^Use this when the user's latest words tell you to change which model an existing chat runs on, or its thinking level \(effort\), in that same chat/);
+  assert.match(byName.set_chat_model.description, /"set its effort to max"/);
+  assert.match(byName.set_chat_model.description, /The chat keeps its history and its conversation goes on: no new chat starts, and a chat that is working is changed too/);
+  assert.match(byName.set_chat_model.description, /a Claude chat cannot move to Codex, other_runtime says so, and a chat on that model is a new one \(start_chat\) without this chat's history, so ask the user/);
+  assert.match(byName.set_chat_model.description, /never call it again for this request/);
+  assert.match(byName.set_chat_model.description, /needs_clarification means nothing changed: ask the user which model or level, then call again/);
+  assert.match(byName.set_chat_model.description, /This is the way for \/model and \/effort, which run_slash_command does not\./);
+  assert.match(byName.set_chat_model.inputSchema.properties.thinking.description, /only where the new model offers it/);
+  // Another tab in a workspace that exists, rather than a new workspace.
+  assert.match(byName.start_chat.description, /To open the chat in a workspace that already exists, as another tab beside its chats/);
+  assert.match(byName.start_chat.description, /pass workspace: its workspace_id from earlier results \(list_chats, list_pinned_chats, start_chat\) or its name as the user said it/);
+  assert.match(byName.start_chat.description, /Without workspace the chat gets a workspace of its own, as New chat does\./);
+  assert.match(byName.start_chat.inputSchema.properties.workspace.description, /Leave empty for a workspace of its own/);
   assert.match(byName.read_chat.description, /view "thinking"/);
   assert.match(byName.update_site.description, /after one update_status call/);
   assert.match(byName.update_site.description, /update the God Mode plugin in Paseo first/);
@@ -375,6 +403,7 @@ test("start_chat passes the user's choices and the site settings apart", async (
     model: undefined,
     thinking: undefined,
     mode: "plan",
+    workspace: undefined,
     defaults: { model: "claude-sonnet-5-5", thinking: undefined, mode: "bypassPermissions" },
     waitSeconds: 10,
   });
@@ -384,6 +413,45 @@ test("start_chat passes the user's choices and the site settings apart", async (
     { provider: calls[1].args.provider, model: calls[1].args.model, thinking: calls[1].args.thinking, mode: calls[1].args.mode },
     { provider: "codex", model: "GPT-6-Astra", thinking: "high", mode: undefined },
   );
+});
+
+test("start_chat opens in an existing workspace by its id or name, with a project or without one", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured(), ops });
+  await handle(call("start_chat", { workspace: " wks_5e1d9a07c3b2f4e6 ", prompt: "run tests" }));
+  await handle(call("start_chat", { project: "proxy", workspace: "Fleet map D", prompt: "run tests" }));
+  assert.deepEqual(
+    calls.map((c) => [c.args.project, c.args.workspace]),
+    [
+      [undefined, "wks_5e1d9a07c3b2f4e6"],
+      ["proxy", "Fleet map D"],
+    ],
+  );
+  for (const bad of [{ prompt: "run tests" }, { project: " ", workspace: " ", prompt: "run tests" }, { project: "proxy" }, { workspace: "Fleet map D" }]) {
+    assert.equal((await handle(call("start_chat", bad))).error?.code, -32602, JSON.stringify(bad));
+  }
+  assert.equal(calls.length, 2, "nothing ran for the bad calls");
+});
+
+test("set_chat_model passes only what was asked, and nothing to change is a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured({ PASEO_NEW_CHAT_MODEL: "claude-sonnet-5-5", PASEO_NEW_CHAT_THINKING: "max" }), ops });
+  await handle(call("set_chat_model", { chat: "#a22524f", model: " Sonnet 5.5 " }));
+  await handle(call("set_chat_model", { chat: "fleet", thinking: "max" }));
+  await handle(call("set_chat_model", { chat: "fleet", model: "Opus 5.5", thinking: "max" }));
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.url, c.args]),
+    [
+      ["setChatModel", SECRET, { chat: "#a22524f", model: "Sonnet 5.5", thinking: undefined }],
+      ["setChatModel", SECRET, { chat: "fleet", model: undefined, thinking: "max" }],
+      ["setChatModel", SECRET, { chat: "fleet", model: "Opus 5.5", thinking: "max" }],
+    ],
+    "the site's defaults for new chats never reach a chat that exists",
+  );
+  for (const bad of [{ chat: "fleet" }, { chat: "fleet", model: " ", thinking: "" }, { chat: "fleet", model: 5 }, { model: "Opus 5.5" }, { chat: " ", model: "Opus 5.5" }]) {
+    assert.equal((await handle(call("set_chat_model", bad))).error?.code, -32602, JSON.stringify(bad));
+  }
+  assert.equal(calls.length, 3, "nothing ran for the bad calls");
 });
 
 test("list_models lists every runtime, or the one asked for", async () => {
@@ -485,6 +553,9 @@ test("a failed write never reads as done", async () => {
     runSlashCommand: () => {
       throw new Error("no answer within 45 s");
     },
+    setChatModel: () => {
+      throw new Error("relay closed");
+    },
     stopChat: () => {
       throw new PaseoOffline("connect timed out");
     },
@@ -497,6 +568,7 @@ test("a failed write never reads as done", async () => {
   assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
   assert.match((await handle(call("archive_chat", { chat: "x" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("pin_chat", { chat: "x", action: "pin" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("set_chat_model", { chat: "x", thinking: "max" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("answer_questions", { chat: "x", request: "p", answers: [{ question: "1", options: ["1"] }] }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("run_slash_command", { chat: "x", command: "compact" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.doesNotMatch((await handle(call("read_chat", { chat: "x" }))).result.content[0].text, /took effect/);
@@ -747,6 +819,28 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["pin_chat", pinResult({ action: "unpin", outcome: "no_row", chat: pinnedChat }).data],
     ["pin_chat", rowQuestion("wks_gone").data],
     ["pin_chat", clarification],
+  );
+  // A chat's model and thinking level changed in place, and every way that call can end.
+  const sonnet = { id: "claude-sonnet-5-5", label: "Sonnet 5.5", thinkingOptions: [{ id: "max", label: "Max" }] };
+  const claude = { id: "claude", label: "Claude", models: [{ id: "claude-opus-5-5", label: "Opus 5.5", thinkingOptions: [{ id: "medium", label: "Medium" }] }, sonnet] };
+  const was = { model: "claude-opus-5-5", thinking: "medium" };
+  const now = { model: "claude-sonnet-5-5", thinking: "max" };
+  const changed = { outcome: "changed", chat: pinnedChat, provider: claude, before: was, after: now, change: { model: sonnet, thinking: "max", after: sonnet } };
+  cases.push(
+    ["set_chat_model", changeResult(changed).data],
+    ["set_chat_model", changeResult({ ...changed, busy: true, notice: "Thinking level applies next turn" }).data],
+    ["set_chat_model", changeResult({ outcome: "unchanged", chat: pinnedChat, provider: claude, before: now }).data],
+    ["set_chat_model", changeResult({ outcome: "archived", chat: { ...pinnedChat, archived: true }, provider: claude, before: was }).data],
+    ["set_chat_model", changeResult({ outcome: "other_runtime", chat: pinnedChat, provider: claude, before: was, other: { provider: { label: "Codex" }, model: { label: "GPT-6.1-Sol" } } }).data],
+    ["set_chat_model", changeResult({ outcome: "unavailable", chat: { ...pinnedChat, provider: "opencode" }, before: { model: null, thinking: null }, error: "God Mode changes only Claude and Codex chats." }).data],
+    ["set_chat_model", changeResult({ outcome: "partial", chat: pinnedChat, provider: claude, before: was, after: { model: "claude-sonnet-5-5", thinking: "medium" }, error: "Paseo refused it: Thinking option 'off' is not available" }).data],
+    ["set_chat_model", changeResult({ outcome: "error", chat: pinnedChat, provider: claude, before: was, error: "Paseo refused it: Failed to apply agent config" }).data],
+    ["set_chat_model", clarification],
+    // start_chat in an existing workspace, and the ways its name can fail to settle.
+    ["start_chat", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", workspace_id: "wks_fleet", new_workspace: false, outcome: "replied", reply: "pong" }],
+    ["start_chat", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", workspace_id: "wks_new", new_workspace: true, outcome: "still_working" }],
+    ["start_chat", rowsQuestion("fleet", "same_name", rows).data],
+    ["start_chat", rowsQuestion("zebra", "no_match", rows).data],
   );
   for (const [tool, data] of cases) {
     assert.deepEqual(validate(schemaOf(tool), data), [], tool);

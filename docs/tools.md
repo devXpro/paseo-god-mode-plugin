@@ -19,7 +19,7 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `show_images` | read | `chat`, `turn`, `image`, `count` | The pictures and screenshots in a chat, shown on the user's screen in a widget and, where ChatGPT allows, given to the model. |
 | `search_messages` | read | `query`*, `project`, `chat`, `include_archived`, `scan`, `limit` | Where something was said, across the most recent chats or in one. |
 | `list_models` | read | `provider` | The agent runtimes Paseo can start (Claude, Codex…), each with its models, their thinking levels and its permission modes, from Paseo's own catalog. |
-| `start_chat` | write | `project`*, `prompt`*, `wait_seconds`, `provider`, `model`, `thinking`, `mode` | Start one new chat in a project with the task as its first message, like New chat, on the runtime and model asked for, checked against Paseo's catalog first. |
+| `start_chat` | write | `prompt`*, `project`, `workspace`, `wait_seconds`, `provider`, `model`, `thinking`, `mode` | Start one new chat with the task as its first message, like New chat, in a project (with a workspace of its own) or as another tab of a workspace that exists, on the runtime and model asked for, checked against Paseo's catalog first. A project or a workspace is given. |
 | `send_message` | write | `chat`*, `text`*, `if_busy` (steer, interrupt), `if_archived` (restore), `wait_seconds` | Send one message to an existing chat. |
 | `read_approval` | read | `chat`* | Everything a chat waits on, in full: a request that asks questions comes with every question and its numbered options, the recommended one marked. |
 | `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for; a request that asks questions takes `answer_questions`. |
@@ -27,6 +27,7 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
 | `archive_chat` | write, destructive | `chat`* | Archive a chat that is not working; a new message brings it back. |
 | `pin_chat` | write, idempotent | `action`* (pin, unpin), `chat`, `workspace_id` | Pin or unpin a chat's row in Paseo's sidebar; a row with no chat by its name or `workspace_id`. |
+| `set_chat_model` | write, idempotent | `chat`*, `model`, `thinking` | Change the model and the thinking level (effort) of a chat that exists, in that chat: its history stays and no new chat starts. |
 | `list_slash_commands` | read | `chat`*, `query`, `limit` | A chat's slash commands, each with what it does and whether God Mode runs it at once, after a yes, or not at all. See [slash-commands.md](slash-commands.md). |
 | `run_slash_command` | write, destructive, open world | `chat`*, `command`*, `args`, `if_busy` (interrupt), `confirmation`, `wait_seconds` | Run one of a chat's slash commands (`/compact`, `/code-review`, your own); anything above low risk asks first, a working chat waits for the user's word. See [slash-commands.md](slash-commands.md). |
 | `plugin_read` | read | `plugin`, `operation`, `args` | What the user's Paseo plugins offer, and one of their reads. See [plugin-tools.md](plugin-tools.md). |
@@ -95,6 +96,26 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   the project's runtime does not offer returns `needs_clarification` with the choices, and nothing
   starts. The site's defaults for new chats apply only where they fit: a Claude mode never reaches
   a Codex chat.
+- **A chat's model and thinking level.** `set_chat_model` changes them in the chat itself with Paseo's own
+  request for it, in one request (the model first, since a level means something only against the model
+  that offers it). The chat keeps its history and its runtime, and a chat that is working is changed
+  too: Paseo applies a thinking level from the chat's next turn, a Codex model likewise, a Claude model
+  from the agent's next call to it, and the answer says so (`busy`, `notice`). `model` and `thinking`
+  are checked like `start_chat`'s, against the catalog of the chat's folder, because Paseo takes any string
+  here: a model or level it does not list, a level the new model lacks that the chat runs at, and a model of
+  another runtime (a Claude chat cannot move to Codex; `other_runtime`, and a chat on that model is a new
+  one with `start_chat`) change nothing and come back with the choices. A model with no levels at all drops
+  the chat's level. What the chat runs on afterwards (`after`) is read back from Paseo; `partial` and
+  `error` say what it still runs on. Only Claude and Codex chats: other runtimes answer `unavailable`.
+  The site's defaults for new chats never apply here. `/model` and `/effort` stay out of
+  `run_slash_command`; their reason names this tool.
+- **Another tab in a workspace.** `start_chat` with `workspace` opens the chat in a workspace that exists,
+  in its folder, instead of making one. A workspace is its `workspace_id` (chats in the answers carry it;
+  so does `start_chat`'s own answer, for a second chat beside the first) or its name as the sidebar shows
+  it, or the title of a chat in it, with or without the project after it. Like a chat's name it must be
+  whole, or every word of it, and fit one workspace: twins, a partial name and no match change nothing and
+  come back with the most recent workspaces, told apart by their chats. Without `workspace`, the chat gets
+  a workspace of its own, as before.
 - **Speech, not ids.** Text answers name chats by their title; ids travel in `structuredContent`.
 - **Writes say whether they arrived.** `start_chat`, `send_message` and `run_slash_command` answer
   `delivered: true` when the message reached the agent (replied, still working, or not waited for);

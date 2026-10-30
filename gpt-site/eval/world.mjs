@@ -27,7 +27,8 @@ export function createWorld(now = Date.now()) {
     { name: "paseo-god-mode-plugin", directory: "/Users/roman/projects/paseo-god-mode-plugin" },
   ];
 
-  const chat = (fields) => ({ workspace: null, attention: null, permissions: [], archived: false, subagents: [], ...fields });
+  // Every chat runs on Claude Code, Opus 5.5 at medium, unless a later line says otherwise.
+  const chat = (fields) => ({ workspace: null, attention: null, permissions: [], archived: false, subagents: [], provider: "claude", model: "claude-opus-5-5", thinking: "medium", ...fields });
 
   const chats = [
     chat({
@@ -367,6 +368,14 @@ export function createWorld(now = Date.now()) {
     createdAt: ago(90),
     turns: [{ at: ago(30), end: ago(3), user: "Выпусти релиз 0.4 моста по чек-листу.", agent: ["Тесты прошли, кроме одного разового падения. Перед релизом спрашиваю."], calls: [shell("go test ./...")] }],
   });
+
+  // The workspace each chat sits in, as the sidebar's rows have it: a pinned row's id, else a row of its own
+  // (the id ops.mjs gives that row). Two chats run on other models, so a change has something to change from.
+  const RUNS_ON = { "d4e5f6a7-2b3c-4d5e-8f60-718293a4b5c6": ["claude-sonnet-5-5", "high"], "e5f6a7b8-3c4d-4e5f-9a01-2b3c4d5e6f70": ["claude-haiku-5-5", "medium"] };
+  for (const c of [...chats, asking]) {
+    c.workspaceId = pins.find((p) => p.chatIds.includes(c.id))?.id ?? `wks_${c.id.replaceAll("-", "").slice(0, 16)}`;
+    if (RUNS_ON[c.id]) [c.model, c.thinking] = RUNS_ON[c.id];
+  }
 
   return { now, projects, chats, pins, providers, ago, asking };
 }

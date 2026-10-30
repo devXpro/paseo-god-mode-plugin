@@ -7,7 +7,7 @@
 
 import { NEW_CHAT_ID } from "./world.mjs";
 
-const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", answer_questions: "auto", stop_chat: "ok", pin_chat: "ok", update_site: "ok", run_slash_command: "auto" };
+const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", answer_questions: "auto", stop_chat: "ok", pin_chat: "ok", set_chat_model: "ok", update_site: "ok", run_slash_command: "auto" };
 
 // Release fixtures relative to the Site version under test: the Mac has the same, a newer one, or
 // GitHub has a newer one than the Mac.
@@ -205,10 +205,12 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     return ownRows.get(c.id);
   };
   const shown = (row) => ({ ...row, chats: active().filter((c) => row.chatIds.includes(c.id)) });
+  // Every row of the sidebar: the pinned ones and the rows of the chats that are in none.
+  const sidebarRows = () => [...new Set([...world.pins, ...active().map(rowOf)])];
   async function pinChat(_url, { chat, workspaceId, action } = {}) {
     const outcome = takeOutcome("pin_chat");
     log("pinChat", { chat, workspaceId, action }, outcome);
-    const rows = [...new Set([...world.pins, ...active().map(rowOf)])];
+    const rows = sidebarRows();
     let target = null;
     let row;
     if (workspaceId) {
@@ -454,12 +456,35 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     return { text: models.modelsText(shown), data: { providers: models.modelsData(shown) } };
   }
 
-  async function startChat(_url, { project, prompt, provider, model, thinking, mode, defaults, waitSeconds } = {}) {
-    const args = { project, prompt, provider, model, thinking, mode, waitSeconds };
-    const picked = pickProject(project);
-    if (picked.ask) {
-      log("startChat", args, "needs_clarification");
-      return picked.ask;
+  async function startChat(_url, { project, workspace, prompt, provider, model, thinking, mode, defaults, waitSeconds } = {}) {
+    const args = { project, workspace, prompt, provider, model, thinking, mode, waitSeconds };
+    // Since the workspace argument: an existing row of the sidebar, by its id or a name, in place of a project.
+    let place;
+    if (workspace && typeof text.settleRow === "function") {
+      let rows = sidebarRows();
+      if (project) {
+        const named = pickProject(project);
+        if (named.ask) {
+          log("startChat", args, "needs_clarification");
+          return named.ask;
+        }
+        rows = rows.filter((r) => r.project === named.project.name);
+      }
+      const raw = String(workspace).trim();
+      const byId = rows.find((r) => r.id === raw);
+      const settled = byId ? { row: shown(byId) } : text.settleRow(rows.map(shown), raw);
+      if (!settled.row) {
+        log("startChat", args, "needs_clarification");
+        return text.rowsQuestion(raw, settled.ask, settled.rows, { now });
+      }
+      place = { name: settled.row.project, workspaceId: settled.row.id, workspace: settled.row.name };
+    } else {
+      const picked = pickProject(project);
+      if (picked.ask) {
+        log("startChat", args, "needs_clarification");
+        return picked.ask;
+      }
+      place = { name: picked.project.name };
     }
     let runtime = null;
     if (models) {
@@ -478,11 +503,16 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     state.created += 1;
     const id = state.created === 1 ? NEW_CHAT_ID : `${NEW_CHAT_ID.slice(0, 35)}${state.created}`;
     const result = outcomeOf(outcome);
+    const workspaceId = place.workspaceId ?? `wks_${id.replaceAll("-", "").slice(0, 16)}`;
     world.chats.push({
       id,
       title: truncate(prompt, 60),
-      project: picked.project.name,
-      workspace: null,
+      project: place.name,
+      workspace: place.workspace ?? null,
+      workspaceId,
+      provider: runtime?.data.provider ?? "claude",
+      model: runtime?.data.model ?? "claude-opus-5-5",
+      thinking: runtime?.data.thinking ?? null,
       status: result.data.outcome === "still_working" ? "running" : "idle",
       attention: result.data.outcome === "replied" ? "finished" : null,
       permissions: [],
@@ -492,8 +522,53 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       createdAt: new Date(now).toISOString(),
       turns: [{ at: new Date(now).toISOString(), end: null, user: prompt, agent: result.data.reply ? [result.data.reply] : [], calls: [] }],
     });
+    // A chat that joins a row of the sidebar is one of its chats from then on.
+    if (place.workspaceId) {
+      const row = sidebarRows().find((r) => r.id === place.workspaceId);
+      row.chatIds.push(id);
+      ownRows.set(id, row);
+    }
     const on = runtime ? ` (${runtime.text})` : "";
-    return { text: `Started a new chat in ${picked.project.name}${on}; the task arrived.\n${result.text}`, data: { chat_id: id, short_id: id.slice(0, 7), project: picked.project.name, ...runtime?.data, ...result.data } };
+    const where = place.workspaceId ? `${place.name}, in its workspace "${truncate(place.workspace, 70)}"` : place.name;
+    const joined = typeof text.settleRow === "function" ? { workspace_id: workspaceId, new_workspace: !place.workspaceId } : {};
+    return { text: `Started a new chat in ${where}${on}; the task arrived.\n${result.text}`, data: { chat_id: id, short_id: id.slice(0, 7), project: place.name, ...joined, ...runtime?.data, ...result.data } };
+  }
+
+  // Since set_chat_model: a chat's model and thinking level changed in place, chosen and worded by the
+  // version's own chooseChange and changeResult over the fake catalog.
+  async function setChatModel(_url, { chat, model, thinking } = {}) {
+    const args = { chat, model, thinking };
+    const picked = pickChat(chat);
+    if (picked.ask) {
+      log("setChatModel", args, "needs_clarification");
+      return picked.ask;
+    }
+    const target = picked.chat;
+    const before = { model: target.model ?? null, thinking: target.thinking ?? null };
+    const provider = catalog.find((p) => p.id === (target.provider ?? "claude"));
+    const done = (kind, fields = {}) => {
+      log("setChatModel", args, kind);
+      return models.changeResult({ outcome: kind, chat: target, provider, before, ...fields });
+    };
+    if (target.archived) return done("archived");
+    const chosen = models.chooseChange(catalog, { provider: provider.id, ...before }, { model, thinking });
+    if (chosen.ask) {
+      log("setChatModel", args, "needs_clarification");
+      return chosen.ask;
+    }
+    if (chosen.other) return done("other_runtime", { other: chosen.other });
+    const { change } = chosen;
+    if (!change.model && change.thinking === undefined) return done("unchanged");
+    fail(takeOutcome("set_chat_model"));
+    const busy = isRunning(target) || isWaiting(target);
+    if (change.model) target.model = change.model.id;
+    if (change.thinking !== undefined) target.thinking = change.thinking;
+    return done("changed", {
+      after: { model: target.model ?? null, thinking: target.thinking ?? null },
+      change,
+      busy,
+      notice: busy && change.thinking !== undefined ? "Thinking level applies next turn" : null,
+    });
   }
 
   async function sendMessage(_url, { chat, text: message, ifBusy, waitSeconds } = {}) {
@@ -712,6 +787,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       ...(models ? { listModels } : {}),
       ...(typeof text.pinnedResult === "function" ? { listPinnedChats } : {}),
       ...(typeof text.pinResult === "function" ? { pinChat } : {}),
+      ...(typeof models?.chooseChange === "function" ? { setChatModel } : {}),
       ...(questions ? { readApproval, answerQuestions } : {}),
     },
   };

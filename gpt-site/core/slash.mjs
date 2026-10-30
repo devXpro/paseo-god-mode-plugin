@@ -33,6 +33,7 @@ const each = (list, policy) => Object.fromEntries(list.map((name) => [name, poli
 
 const SESSION = "It changes this chat's session settings behind Paseo's back; change them in Paseo on the computer.";
 const MODEL = "It switches this chat's model or effort behind Paseo's back; change it in Paseo on the computer.";
+const SWITCH = "It switches this chat's model or effort behind Paseo's back; use set_chat_model, which changes them in Paseo itself.";
 const TERMINAL = "A screen or control of the agent's own terminal app; it does nothing useful in a Paseo chat.";
 const ACCOUNT = "Account, billing or access settings; do it on the computer.";
 const ELSEWHERE = "It moves the conversation to another session or device, which Paseo does not follow; start_chat opens a new chat instead.";
@@ -114,7 +115,8 @@ const CLAUDE = {
   feedback: blocked("It sends the conversation to Anthropic; not from ChatGPT."),
   export: blocked("It writes the conversation to a file or the clipboard; ask the agent instead."),
   "workflow-launch-exec": blocked("Internal to Claude Code's cloud workflows."),
-  ...each(["model", "effort", "fast", "advisor"], blocked(MODEL)),
+  ...each(["model", "effort"], blocked(SWITCH)),
+  ...each(["fast", "advisor"], blocked(MODEL)),
   ...each(["config", "output-style", "autocompact", "auto-mode-setup", "import", "mcp", "rename", "permissions", "plan", "hooks", "memory", "add-dir", "cd", "sandbox", "plugin"], blocked(SESSION)),
   ...each(
     [
@@ -196,7 +198,7 @@ function ownCodex(item) {
 const CODEX_NOT_HERE = {
   review: "Codex has a native review (its review/start API: uncommitted changes, a base branch, a commit or custom instructions), but Paseo 0.11.4 does not expose it, and as text it would reach the model as an ordinary message. Ask the agent to review the changes instead.",
   init: "The Codex terminal app sends its own AGENTS.md prompt for /init; Paseo has no equivalent. Ask the agent to write AGENTS.md instead.",
-  model: MODEL,
+  model: SWITCH,
   new: NEW_CHAT,
   diff: "Terminal-only in Codex; ask the agent to show the diff.",
   status: "Terminal-only in Codex; read_chat and read_activity tell the chat's state and how full its context is.",

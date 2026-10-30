@@ -277,6 +277,11 @@ export function chatData(chat, now = Date.now()) {
     updated_ago: chat.updatedAt ? ago(chat.updatedAt, now) : null,
     created_at: toIso(chat.createdAt),
     archived: Boolean(chat.archived),
+    // Where it sits and what it runs on, so the next call can name its workspace or change its model.
+    ...(chat.workspaceId ? { workspace_id: chat.workspaceId } : {}),
+    ...(chat.provider ? { provider: chat.provider } : {}),
+    ...(chat.model ? { model: chat.model } : {}),
+    ...(chat.thinking ? { thinking: chat.thinking } : {}),
     ...(chat.subagentsRunning !== undefined ? { subagents_running: chat.subagentsRunning } : {}),
     ...(context ? { context } : {}),
   };
@@ -555,6 +560,60 @@ export function rowQuestion(workspaceId) {
   return {
     text: `No row of Paseo's sidebar has the workspace id "${workspaceId}", so nothing was done. It may have been archived; list_pinned_chats gives each pinned row's workspace_id.`,
     data: { needs_clarification: { kind: "workspace", query: String(workspaceId ?? ""), candidates: [] } },
+  };
+}
+
+// ---- Which workspace a name means ---------------------------------------------------------------
+// start_chat can open a chat in a workspace that already exists, as another tab of its row in Paseo's
+// sidebar. A row is named by its title (else its branch or folder) or by the title of a chat in it, each
+// alone or with the project after it. As with a chat, one row must have the whole name or every word of
+// it: a partial match is never taken, and neither is a choice between equals.
+
+function rowNames(row) {
+  const project = normalize(row.project);
+  const names = [row.name, ...row.chats.map((c) => c.title)].map(normalize).filter(Boolean);
+  return [...names, ...names.map((name) => `${name} ${project}`)];
+}
+
+// Settles a name among the rows. { row }, or { ask: reason, rows } with the rows to offer, reason as the
+// chat questions give it.
+export function settleRow(rows, query) {
+  const q = normalize(query);
+  if (!q) return { ask: "no_match", rows };
+  const exact = rows.filter((row) => rowNames(row).includes(q));
+  if (exact.length) return exact.length === 1 ? { row: exact[0] } : { ask: "same_name", rows: exact };
+  const found = matchPinned(rows, query);
+  if (found.match === "all_words") return found.rows.length === 1 ? { row: found.rows[0] } : { ask: "similar", rows: found.rows };
+  return { ask: found.match === "some_words" ? "partial" : "no_match", rows: found.match === "some_words" ? found.rows : rows };
+}
+
+const ROW_QUESTIONS = {
+  same_name: (q, n) => `${n} workspaces are named "${q}"`,
+  similar: (q, n) => `"${q}" fits ${n} workspaces equally`,
+  partial: (q) => `No workspace has every word of "${q}"`,
+  no_match: (q) => `No workspace matches "${q}"`,
+};
+
+const latestChat = (row) => Math.max(0, ...row.chats.map((c) => Date.parse(c.updatedAt) || 0));
+
+// needs_clarification for the workspace start_chat was asked to open a chat in: nothing was started.
+// The rows to pick from come newest first, told apart by their chats.
+export function rowsQuestion(query, reason, rows, { now = Date.now() } = {}) {
+  const shown = [...rows].sort((a, b) => latestChat(b) - latestChat(a)).slice(0, CHOICES_SHOWN);
+  const ask =
+    reason === "no_match"
+      ? "The most recent workspaces follow; the user may have said a name in another language or spelling. Ask which one, or start the chat in the project alone, which gives it a workspace of its own:"
+      : 'Ask the user which one, naming what tells them apart. Pick one yourself (call again with its workspace_id) only if the user\'s words pick it or this conversation already used exactly that workspace:';
+  return {
+    text: [
+      `${ROW_QUESTIONS[reason](query, rows.length)}, so no chat was started.`,
+      ask,
+      ...shown.map((row) => `- ${pinnedLine(row, now)}`),
+      rows.length > shown.length && reason !== "no_match" ? `… and ${rows.length - shown.length} more; a fuller name narrows it down.` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    data: { needs_clarification: { kind: "workspace", query: String(query ?? ""), reason, candidates: shown.map((row) => pinnedData(row, now)) } },
   };
 }
 

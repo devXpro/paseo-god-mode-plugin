@@ -9,7 +9,8 @@
 //   node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 //   node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
 //   node core/probe.mjs models [provider]
-//   node core/probe.mjs start <project> <prompt…> [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
+//   node core/probe.mjs start <project|-> <prompt…> [--workspace W] [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
+//   node core/probe.mjs set <chat> [--model M] [--thinking T]
 //   node core/probe.mjs send <chat> <text…> [--wait 15] [--if-busy steer|interrupt]
 //   node core/probe.mjs approve <chat> allow|deny [--request N]
 //   node core/probe.mjs request <chat>
@@ -48,6 +49,7 @@ import {
   readChat,
   runSlashCommand,
   searchMessages,
+  setChatModel,
   showImages,
   sendMessage,
   startChat,
@@ -132,7 +134,8 @@ const operations = {
   models: () => listModels(url, { provider: first }),
   start: () =>
     startChat(url, {
-      project: first,
+      project: first === "-" ? undefined : first,
+      workspace: values.workspace,
       prompt: rest.join(" "),
       provider: values.provider,
       model: values.model,
@@ -140,6 +143,7 @@ const operations = {
       mode: values.mode,
       waitSeconds: number(values.wait, 15),
     }),
+  set: () => setChatModel(url, { chat: first, model: values.model, thinking: values.thinking }),
   send: () =>
     sendMessage(url, { chat: first, text: rest.join(" "), ifBusy: values["if-busy"], waitSeconds: number(values.wait, 15) }),
   approve: () => answerApproval(url, { chat: first, decision: rest[0], request: values.request }),

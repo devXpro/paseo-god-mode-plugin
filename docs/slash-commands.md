@@ -96,7 +96,8 @@ Checked live on Claude Code 2.1.296 through Paseo 0.11.4: a chat listed 56 comma
 | Your own and your project's commands, plugin commands (`plugin:name`), MCP prompts (`mcp__server__prompt`), commands God Mode does not know | After a yes (risk unknown) | God Mode sees only their description. A project command that shadows a built-in name counts as the project's. |
 | `/clear` | Not from ChatGPT | It starts a new Claude session inside the chat, which Paseo does not follow. Use `archive_chat` and `start_chat`. |
 | `/rewind` | Not from ChatGPT | Rolls files and the conversation back to a message id God Mode does not have. |
-| `/model`, `/effort`, `/fast`, `/advisor` | Not from ChatGPT | Would change the chat's model behind Paseo's back. |
+| `/model`, `/effort` | Not from ChatGPT | Would change the chat's model behind Paseo's back. `set_chat_model` changes the model and thinking level in Paseo itself, and the reason says so. |
+| `/fast`, `/advisor` | Not from ChatGPT | Would change the chat's settings behind Paseo's back. |
 | Session settings (`/config`, `/mcp`, `/rename`, `/add-dir`, `/output-style`, …), terminal screens, account and billing, other sessions (`/fork`, `/resume`, …), `/heapdump`, `/bug`, `/feedback`, `/export`, removed and internal commands | Not from ChatGPT | Each with its reason in the list. |
 
 ### Codex
@@ -111,7 +112,7 @@ Checked against Paseo 0.11.4's Codex provider and covered by tests with a fake d
 | Skills | After a yes | Paseo sends Codex a native skill input. |
 | Custom prompts (`prompts:name`) | After a yes | Paseo fills in `~/.codex/prompts/name.md` (`$1`…`$9`, `$ARGUMENTS`, `NAME=value`) and sends the text, as Codex's own terminal app does. |
 | `/review` | **Not available** | Codex has a native review (`review/start`: uncommitted changes, a base branch, a commit or custom instructions), but Paseo 0.11.4 does not expose it, and `/review` as text would reach the model as an ordinary message. Ask the agent to review the changes instead. |
-| `/init`, `/model`, `/new`, `/diff`, `/status`, `/fork`, `/undo` and Codex's other terminal commands | Not available | Each with its reason. |
+| `/init`, `/model`, `/new`, `/diff`, `/status`, `/fork`, `/undo` and Codex's other terminal commands | Not available | Each with its reason; `/model`'s names `set_chat_model`. |
 
 ### Other providers
 

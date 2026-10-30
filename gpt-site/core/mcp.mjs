@@ -11,7 +11,7 @@ import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 const READ_VIEWS = ["text", "commands", "thinking"];
 // Tools that act on agents or plugins: when one fails, nobody knows whether it took effect.
-const WRITES = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "run_slash_command", "update_site", "plugin_action"]);
+const WRITES = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "set_chat_model", "run_slash_command", "update_site", "plugin_action"]);
 const CALL_DEADLINE_MS = 45_000;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
@@ -41,13 +41,13 @@ function languageName(code) {
 
 // How speech recognition in a given language tends to mangle the word "Paseo".
 const DICTATION_HINTS = {
-  ru: 'Speech recognition often writes "Paseo" as "по SEO", "посыл" or "пасео".',
+  ru: 'Speech recognition often writes "Paseo" as "по SEO", "посыл" or "пасео", and "effort" as «форт».',
 };
 
 // Which words of a given language send and which only discuss: English examples do not carry
 // over to every phrasing (in Russian, "можешь закинуть" was read as an order).
 const COMMAND_HINTS = {
-  ru: 'In Russian, sending needs a direct command: «отправь», «отправляй», «закидывай», «скажи ему сейчас», or «да» to your «Отправить?». Not commands, ask «Отправить?» first: «можешь закинуть», «попроси агента …», «давай ему скажем …», «надо бы ему сказать …», «напиши промпт … и потом закинем».',
+  ru: 'In Russian, sending needs a direct command: «отправь», «отправляй», «закидывай», «скажи ему сейчас», or «да» to your «Отправить?». Not commands, ask «Отправить?» first: «можешь закинуть», «попроси агента …», «давай ему скажем …», «надо бы ему сказать …», «напиши промпт … и потом закинем». Switching a chat\'s model or effort, or opening a chat in a workspace, is a command too: «переключи на …», «смени модель», «поставь … max», «открой чат в этом воркспейсе»; «а можно переключить?», «может, поставить max?» are questions: ask first.',
 };
 
 // Server-level guidance. OpenAI: keep the essentials in the first 512
@@ -56,7 +56,7 @@ export function buildInstructions(config) {
   const lines = [
     "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
     "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages. Paseo plugins → plugin_read; slash commands (/compact) → run_slash_command, list_slash_commands.",
-    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it", "pin it"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
+    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it", "pin it", "switch it to Sonnet", "set its effort to max"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
     "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Pass a chat\'s id when an earlier result gave it: titles repeat. Otherwise pass the name the user said, with no list_chats first; the tool acts only on one clear match. needs_clarification means nothing was done: ask the user which one, unless their words pick one ("the latest" is the one updated most recently) or this conversation already read or used exactly one of them; then call again with its id.',
     "A write result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived, so never send it again unless the user asks for another message; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
@@ -103,6 +103,10 @@ const CHAT_OUT = {
     title: { type: "string" },
     project: { type: "string" },
     workspace: nullableString,
+    workspace_id: { type: "string", description: "The workspace (the sidebar row) it sits in: start_chat's workspace opens another chat there." },
+    provider: { type: "string", description: "Its agent runtime: claude, codex, …" },
+    model: { type: "string", description: "The model it runs on, when Paseo knows it: set_chat_model changes it." },
+    thinking: { type: "string", description: "Its thinking level (effort), when Paseo knows it: set_chat_model changes it." },
     status: { type: "string", description: "Paseo lifecycle: initializing, idle, running, error, closed." },
     state: { type: "string", description: "What the chat means for the user: running, waiting for approval: …, new reply, error, idle." },
     pending_approvals: { type: "array", items: { type: "string" } },
@@ -136,7 +140,7 @@ const CLARIFY_OUT = {
       type: "string",
       enum: ["same_name", "similar", "partial", "id_prefix", "no_match", "unknown_id"],
       description:
-        "Chats only. same_name: several chats have exactly this name, as a continued chat keeps its title; similar: it fits several equally; partial: no chat has all its words; id_prefix: several ids start so; no_match: no active chat has it (archived ones are not searched); unknown_id: no chat has this id.",
+        "For a chat or a workspace. same_name: several have exactly this name, as a continued chat keeps its title; similar: it fits several equally; partial: none has all its words; id_prefix: several chat ids start so; no_match: no active one has it (archived chats are not searched); unknown_id: no chat has this id.",
     },
     candidates: { type: "array", items: {} },
   },
@@ -267,6 +271,17 @@ const START_OUT = {
     model: { ...nullableString, description: "Its model id; null: the runtime's default model." },
     thinking: { ...nullableString, description: "Its thinking level, when Paseo knows it." },
     mode: { ...nullableString, description: "Its permission mode." },
+    workspace_id: { type: "string", description: "The workspace the chat is in: pass it to start_chat's workspace for another chat beside it." },
+    new_workspace: { type: "boolean", description: "true: the chat got a workspace of its own. false: it opened in the workspace asked for." },
+  },
+};
+
+// What a chat runs on, before and after set_chat_model: Paseo's ids.
+const RUNS_ON = {
+  type: "object",
+  properties: {
+    model: { ...nullableString, description: "The model id; null: the runtime's default model." },
+    thinking: { ...nullableString, description: "The thinking level; null: none set." },
   },
 };
 
@@ -643,11 +658,15 @@ export const TOOLS = [
   {
     name: "start_chat",
     description:
-      "Use this to start one new chat (a new agent) in a project when the user's latest words tell you to start it now, with their task as its first message, like New chat in Paseo. One instruction = one chat: never start it twice, not even reworded. Drafting or discussing a task is not a command: prepare the text and ask \"Start it?\". To continue or answer an existing chat, use send_message instead. delivered=true means the chat started and got the task — tell the user and offer to check later; do not poll. Set provider, model, thinking or mode only when the user asks for them: model takes the name the user said and brings its runtime; a runtime, model, level or mode Paseo does not offer comes back as needs_clarification with the choices, and nothing starts.",
+      "Use this to start one new chat (a new agent) in a project when the user's latest words tell you to start it now, with their task as its first message, like New chat in Paseo. One instruction = one chat: never start it twice, not even reworded. Drafting or discussing a task is not a command: prepare the text and ask \"Start it?\". To continue or answer an existing chat, use send_message instead. delivered=true means the chat started and got the task — tell the user and offer to check later; do not poll. Set provider, model, thinking or mode only when the user asks for them: model takes the name the user said and brings its runtime; a runtime, model, level or mode Paseo does not offer comes back as needs_clarification with the choices, and nothing starts. To open the chat in a workspace that already exists, as another tab beside its chats (\"a new chat in the same workspace\", \"in the workspace where the proxy chat is\"), pass workspace: its workspace_id from earlier results (list_chats, list_pinned_chats, start_chat) or its name as the user said it; the chat then works in that workspace's folder, and project is optional. Without workspace the chat gets a workspace of its own, as New chat does.",
     inputSchema: {
       type: "object",
       properties: {
         project: PROJECT,
+        workspace: {
+          type: "string",
+          description: "An existing workspace to open the chat in as another tab: its workspace_id from earlier results, or its name as the sidebar shows it (its title, branch or folder, or the title of a chat in it). Leave empty for a workspace of its own.",
+        },
         prompt: { type: "string", description: "The task, in the user's words." },
         wait_seconds: WAIT,
         provider: { type: "string", description: 'The agent runtime, "claude" or "codex", when the user names one without a model ("a Codex chat"). Default: the model\'s runtime, else Claude.' },
@@ -658,7 +677,7 @@ export const TOOLS = [
           description: "Permission mode. Claude: default, acceptEdits, auto, plan, bypassPermissions (skips every prompt). Codex: auto, auto-review, full-access (no prompts).",
         },
       },
-      required: ["project", "prompt"],
+      required: ["prompt"],
     },
     outputSchema: START_OUT,
     annotations: write,
@@ -822,6 +841,38 @@ export const TOOLS = [
       done: { type: "boolean", description: "true: the sidebar changed, never call it again for this request. false: nothing changed." },
       pinned_at: time,
       chats: { type: "array", items: CHAT_OUT, description: "Every active chat in the row: they are pinned and unpinned together." },
+    }),
+    annotations: { ...write, idempotentHint: true },
+  },
+  {
+    name: "set_chat_model",
+    description:
+      "Use this when the user's latest words tell you to change which model an existing chat runs on, or its thinking level (effort), in that same chat (\"switch this chat to Sonnet 5.5\", \"set its effort to max\", \"put it on Opus with max\"). The chat keeps its history and its conversation goes on: no new chat starts, and a chat that is working is changed too. Pass model and/or thinking, only what the user asked for. model takes the name as the user said it (list_models shows them) and must be one of this chat's own runtime: a Claude chat cannot move to Codex, other_runtime says so, and a chat on that model is a new one (start_chat) without this chat's history, so ask the user. thinking takes one of the model's levels: low, medium, high, xhigh, max; some Claude models also off and ultracode, Codex ultra. done=true means Paseo changed it: tell the user what it runs on now, never call it again for this request. busy=true: the chat was working, so part of it applies later. needs_clarification means nothing changed: ask the user which model or level, then call again. Use the chat being discussed unless the user names another. This is the way for /model and /effort, which run_slash_command does not.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat: CHAT,
+        model: { type: "string", description: 'The model as list_models names it or as the user said it, e.g. "Sonnet 5.5", "claude-opus-5-5". One of this chat\'s own runtime. Leave empty to keep the model.' },
+        thinking: { type: "string", description: "A thinking level (effort) the chat's model offers: low, medium, high, xhigh, max; some Claude models also off and ultracode, Codex ultra. Leave empty to keep the level; it is kept only where the new model offers it." },
+      },
+      required: ["chat"],
+    },
+    outputSchema: object({
+      chat_id: { type: "string" },
+      short_id: { type: "string" },
+      project: { type: "string" },
+      provider: { type: "string", description: "The chat's agent runtime: it never changes." },
+      outcome: {
+        type: "string",
+        enum: ["changed", "partial", "unchanged", "archived", "other_runtime", "unavailable", "error"],
+        description: "changed: done. partial: only part of it applied (error says which not). unchanged: it already ran so. archived: the chat is archived. other_runtime: the model belongs to another runtime. unavailable: God Mode changes only Claude and Codex chats, or Paseo cannot list the runtime. error: nothing changed.",
+      },
+      done: { type: "boolean", description: "true: Paseo changed it, all or part: never call it again for this request. false: nothing changed." },
+      before: { ...RUNS_ON, description: "What it ran on before." },
+      after: { ...RUNS_ON, description: "What Paseo says it runs on now, read back from Paseo." },
+      busy: { type: "boolean", description: "true: the chat was working. Its thinking level applies from its next turn; its model from the agent's next call to it (Claude) or its next turn (Codex)." },
+      notice: { type: "string", description: "Paseo's own note on the change, e.g. that a level applies next turn." },
+      error: { type: "string" },
     }),
     annotations: { ...write, idempotentHint: true },
   },
@@ -1073,10 +1124,13 @@ async function dispatch(name, args, config, ops, log, caller) {
     case "list_models":
       return ops.listModels(url, { provider: args.provider || undefined });
     case "start_chat":
+      // A project, or an existing workspace in place of it.
+      if (need("prompt")) return { invalid: need("prompt") };
+      if (need("project") && need("workspace")) return { invalid: "Pass project, or workspace to open the chat in an existing one." };
       return (
-        (need("project", "prompt") && { invalid: need("project", "prompt") }) ||
         ops.startChat(url, {
           project: args.project,
+          workspace: typeof args.workspace === "string" && args.workspace.trim() ? args.workspace.trim() : undefined,
           prompt: args.prompt,
           provider: args.provider || undefined,
           model: args.model || undefined,
@@ -1087,6 +1141,12 @@ async function dispatch(name, args, config, ops, log, caller) {
           waitSeconds: args.wait_seconds ?? config.waitSeconds,
         })
       );
+    case "set_chat_model": {
+      if (need("chat")) return { invalid: need("chat") };
+      const given = (name) => (typeof args[name] === "string" && args[name].trim() ? args[name].trim() : undefined);
+      if (!given("model") && !given("thinking")) return { invalid: "Pass model, thinking or both: what to change." };
+      return ops.setChatModel(url, { chat: args.chat, model: given("model"), thinking: given("thinking") });
+    }
     case "send_message":
       if (need("chat", "text")) return { invalid: need("chat", "text") };
       if (args.if_archived !== undefined && args.if_archived !== "restore") return { invalid: 'if_archived must be "restore".' };

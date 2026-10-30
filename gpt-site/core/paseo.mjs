@@ -40,7 +40,9 @@ import {
   repliedOutcome,
   resolve,
   rowQuestion,
+  rowsQuestion,
   settleChat,
+  settleRow,
   snippet,
   toIso,
   toolCallData,
@@ -87,7 +89,7 @@ import {
   splitCommand,
   withoutRepeatAfterCompaction,
 } from "./slash.mjs";
-import { catalogEntry, chooseStart, modelsData, modelsText, pickProvider, runtimeOf } from "./models.mjs";
+import { catalogEntry, CHANGEABLE, changeResult, chooseChange, chooseStart, modelsData, modelsText, pickProvider, runtimeOf } from "./models.mjs";
 import { answeredResult, answerResponse, approvalResult, prepareAnswers, questionsNeedAnswers } from "./questions.mjs";
 
 const CONNECT_TIMEOUT_MS = 8_000;
@@ -196,6 +198,9 @@ function toChat({ agent, project }) {
     // depend on both.
     provider: agent.provider ?? null,
     mode: agent.currentModeId ?? null,
+    // What it runs on, as Paseo's own chat list reports it (the runtime's report first).
+    model: agent.runtimeInfo?.model ?? agent.model ?? null,
+    thinking: agent.effectiveThinkingOptionId ?? agent.thinkingOptionId ?? null,
   };
 }
 
@@ -422,11 +427,34 @@ function toRow(w, chats) {
     id: w.id,
     name: w.name,
     project: w.projectDisplayName,
+    // The folder its chats work in: start_chat opens a chat there.
+    directory: w.workspaceDirectory ?? w.projectRootPath ?? null,
     branch: w.gitRuntime?.currentBranch ?? null,
     pinnedAt: w.pinnedAt ?? null,
     status: w.status,
     chats: chats.filter((c) => c.workspaceId === w.id),
   };
+}
+
+// The workspace start_chat is asked to open a chat in: a workspace_id from earlier results, or a name,
+// among the rows of Paseo's sidebar (within a project when one is named). Returns { place } with the
+// folder to work in, or { ask }.
+async function pickWorkspace(client, query, project) {
+  const [workspaces, chats] = await Promise.all([fetchAllWorkspaces(client), fetchChats(client)]);
+  let rows = workspaces.map((w) => toRow(w, chats));
+  if (project) {
+    const picked = pickProject(await fetchProjects(client), project);
+    if (picked.ask) return picked;
+    rows = rows.filter((r) => r.project === picked.project.name);
+  }
+  const raw = String(query).trim();
+  const byId = rows.find((r) => r.id === raw);
+  const settled = byId ? { row: byId } : settleRow(rows, raw);
+  if (!settled.row) return { ask: rowsQuestion(raw, settled.ask, settled.rows) };
+  const row = settled.row;
+  const directory = row.directory ?? row.chats.find((c) => c.cwd)?.cwd;
+  if (!directory) throw new Error(`Paseo gave no folder for the workspace "${row.name}"`);
+  return { place: { name: row.project, directory, workspaceId: row.id, workspace: row.name } };
 }
 
 export async function listPinnedChats(pairingUrl, args = {}) {
@@ -950,16 +978,27 @@ export async function startChat(pairingUrl, args = {}) {
 
 // start_chat over an open connection (tests drive it with a fake client). The runtime, model,
 // thinking level and mode are checked against Paseo's catalog first (see Models below); `defaults`
-// are the site's settings for new chats, used where they fit the runtime the chat gets.
-export async function startChatOn(client, { project, prompt, provider, model, thinking, mode, defaults = {}, waitSeconds = 15 } = {}) {
-  const picked = pickProject(await fetchProjects(client), project);
-  if (picked.ask) return picked.ask;
-  const chosen = chooseStart(await fetchCatalog(client, picked.project.directory), { provider, model, thinking, mode }, defaults);
+// are the site's settings for new chats, used where they fit the runtime the chat gets. Without
+// `workspace` the chat gets a workspace of its own, as Paseo's New chat does; with one it opens in that
+// workspace as another tab, in its folder, and Paseo keeps the workspace's name.
+export async function startChatOn(client, { project, workspace, prompt, provider, model, thinking, mode, defaults = {}, waitSeconds = 15 } = {}) {
+  let place;
+  if (workspace) {
+    const picked = await pickWorkspace(client, workspace, project);
+    if (picked.ask) return picked.ask;
+    ({ place } = picked);
+  } else {
+    const picked = pickProject(await fetchProjects(client), project);
+    if (picked.ask) return picked.ask;
+    place = { name: picked.project.name, directory: picked.project.directory };
+  }
+  const chosen = chooseStart(await fetchCatalog(client, place.directory), { provider, model, thinking, mode }, defaults);
   if (chosen.ask) return chosen.ask;
   const { choice } = chosen;
   const agent = await client.createAgent({
     provider: choice.provider.id,
-    cwd: picked.project.directory,
+    cwd: place.directory,
+    ...(place.workspaceId ? { workspaceId: place.workspaceId } : {}),
     initialPrompt: prompt,
     ...(choice.model ? { model: choice.model.id } : {}),
     ...(choice.thinking ? { thinkingOptionId: choice.thinking } : {}),
@@ -968,9 +1007,19 @@ export async function startChatOn(client, { project, prompt, provider, model, th
   });
   const runtime = runtimeOf(choice, agent);
   const outcome = await awaitReply(client, agent.id, waitSeconds);
+  const where = place.workspaceId ? `${place.name}, in its workspace "${truncate(place.workspace, 70)}"` : place.name;
+  const workspaceId = agent.workspaceId ?? place.workspaceId;
   return {
-    text: `Started a new chat in ${picked.project.name} (${runtime.text}); the task arrived. Do not start it again.\n${outcome.text}`,
-    data: { chat_id: agent.id, short_id: agent.id.slice(0, 7), project: picked.project.name, ...runtime.data, ...outcome.data },
+    text: `Started a new chat in ${where} (${runtime.text}); the task arrived. Do not start it again.\n${outcome.text}`,
+    data: {
+      chat_id: agent.id,
+      short_id: agent.id.slice(0, 7),
+      project: place.name,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      new_workspace: !place.workspaceId,
+      ...runtime.data,
+      ...outcome.data,
+    },
   };
 }
 
@@ -1215,6 +1264,79 @@ export async function listModelsOn(client, { provider } = {}) {
     shown = [picked.provider];
   }
   return { text: modelsText(shown), data: { providers: modelsData(shown) } };
+}
+
+export async function setChatModel(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => setChatModelOn(client, args));
+}
+
+// The model and thinking level a chat runs on, as Paseo reports them.
+const runningOn = (chat) => ({ model: chat.model, thinking: chat.thinking });
+
+// Whether Paseo reports the change, or part of it, on the chat.
+function reflects(now, { model, thinking }) {
+  return {
+    model: Boolean(model && (now.model === model.id || model.aliases?.includes(now.model))),
+    thinking: thinking !== undefined && (now.thinking ?? null) === thinking,
+  };
+}
+
+// set_chat_model over an open connection (tests drive it with a fake client). The chat keeps its history
+// and its runtime: Paseo changes the model and thinking level of the live chat with its own request for
+// it, in one request (the model first, since a level means something only against the model that offers
+// it). A working chat is changed too; Paseo applies the level from its next turn. What is asked is
+// checked against Paseo's catalog first, because Paseo's setters take any string, and what the chat
+// runs on afterwards is read back from Paseo.
+export async function setChatModelOn(client, { chat, model, thinking } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const before = runningOn(target);
+  const result = (outcome, fields = {}) => changeResult({ outcome, chat: target, before, ...fields });
+  if (target.archived) return result("archived");
+  if (!CHANGEABLE.includes(target.provider)) {
+    return result("unavailable", { error: `God Mode changes the model and thinking level only of Claude and Codex chats, and this one runs on ${target.provider ?? "an unknown runtime"}. The user can change it in Paseo on the computer.` });
+  }
+  const catalog = await fetchCatalog(client, target.cwd);
+  const runtime = catalog.find((p) => p.id === target.provider);
+  if (!runtime?.available) {
+    return result("unavailable", { provider: runtime ?? null, error: `Paseo cannot list ${target.provider} models now (${truncate(runtime?.error ?? "not set up", 150)}).` });
+  }
+  const chosen = chooseChange(catalog, { provider: target.provider, ...before }, { model, thinking });
+  if (chosen.ask) return chosen.ask;
+  if (chosen.other) return result("other_runtime", { provider: runtime, other: chosen.other });
+  const { change } = chosen;
+  if (!change.model && change.thinking === undefined) return result("unchanged", { provider: runtime });
+  const busy = isRunning(target) || isWaiting(target);
+  let notice = null;
+  let failure = null;
+  try {
+    notice = (await client.applyAgentConfig(target.id, {
+      ...(change.model ? { modelId: change.model.id } : {}),
+      ...(change.thinking !== undefined ? { thinkingOptionId: change.thinking } : {}),
+    }))?.message ?? null;
+  } catch (error) {
+    failure = `Paseo refused it: ${truncate(error?.message ?? error, 200)}`;
+  }
+  let after = null;
+  try {
+    const fetched = await client.fetchAgent(target.id);
+    if (fetched) after = runningOn(toChat(fetched));
+  } catch {
+    // The answer then says it could not look.
+  }
+  if (!after) {
+    // Nothing read back: after a failure it is unknown what was applied, after success the request stands.
+    if (failure) return result("error", { provider: runtime, error: `${failure}; it could not be read back, so it is unknown whether part of it applied` });
+    after = { model: change.model?.id ?? before.model, thinking: change.thinking === undefined ? before.thinking : change.thinking };
+  }
+  const reflected = reflects(after, change);
+  const complete = (!change.model || reflected.model) && (change.thinking === undefined || reflected.thinking);
+  if (failure || !complete) {
+    const outcome = reflected.model || reflected.thinking ? "partial" : "error";
+    return result(outcome, { provider: runtime, after, error: failure ?? "Paseo accepted it but still reports part of the old settings on the chat" });
+  }
+  return result("changed", { provider: runtime, after, change, busy, notice });
 }
 
 // ---- Slash commands -----------------------------------------------------------------------------

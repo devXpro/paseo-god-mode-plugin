@@ -61,7 +61,8 @@ A spoken request can override the runtime, model, thinking and mode for one new 
 | `show_images` | The screenshots and pictures in a chat, shown in ChatGPT by a widget and handed to the model where ChatGPT allows it: the newest, a turn's, or the N-th of a turn (`[image N]` in `read_chat`). Without a chat: the newest image of the most recent chats. |
 | `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
 | `list_models` | The runtimes Paseo can start (Claude, Codex…) with their models, thinking levels and modes. |
-| `start_chat` | A new chat in a project with your task as the first message, on the runtime and model you name. |
+| `start_chat` | A new chat in a project, or as another tab of a workspace that exists, with your task as the first message, on the runtime and model you name. |
+| `set_chat_model` | Change the model and the thinking level (effort) of a chat that exists, in that chat. |
 | `send_message` | A follow-up or an answer to an existing chat. |
 | `answer_approval` | Allow or deny what a chat is waiting for. |
 | `stop_chat` | Cancel what a chat is doing now. |

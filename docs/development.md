@@ -50,7 +50,8 @@ node core/probe.mjs activity [chat] [--max N]
 node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
 node core/probe.mjs models [provider]
-node core/probe.mjs start <project> <prompt…> [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
+node core/probe.mjs start <project|-> <prompt…> [--workspace W] [--wait 15] [--provider P] [--model M] [--thinking T] [--mode M]
+node core/probe.mjs set <chat> [--model M] [--thinking T]
 node core/probe.mjs plugins
 node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
@@ -58,7 +59,7 @@ node core/probe.mjs commands <chat> [--query Q] [--limit 60]
 node core/probe.mjs command <chat> <name> [args…] [--if-busy interrupt] [--confirm TOKEN] [--wait 15]
 ```
 
-The write commands (`start`, `send`, `approve`, `answer`, `stop`, `pin`, `unpin`, `plugin-act`,
+The write commands (`start`, `set`, `send`, `approve`, `answer`, `stop`, `pin`, `unpin`, `plugin-act`,
 `command`) act on your real agents, sidebar and plugins. `--json` prints the structured data instead of the text.
 
 ## The tool-selection eval

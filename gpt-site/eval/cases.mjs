@@ -726,6 +726,46 @@ const questionCases = [
   { id: "q.ru.allow", group: "questions", lang: "ru", scenario: ASKS, context: ASK_READ, phrase: "да, разреши ему", expect: { first: [], acceptable: ["answer_approval", "read_approval"], delivered: 0, maxCalls: 1, final: "ask" } },
 ];
 
+// A chat's model and thinking level changed in place (set_chat_model). It is a write, so only on a
+// command; a question about it is none. The words are the user's own, dictation included («форт» for
+// effort). "This chat" is the one the conversation is about. A family name that fits several models
+// asks; a model of another runtime changes nothing; /effort is not run as a slash command. The release
+// notes chat runs on Opus 5.5 at medium, the DNSSEC one on Sonnet 5.5 at high, the README one on
+// Haiku 5.5, and the auth refactor is working now.
+const chatModelCases = [
+  { id: "cm.ru.model", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "переключи этот чат на Sonnet 5.5", expect: { first: ["set_chat_model"], args: { chat: REL, changedModel: "claude-sonnet-5-5" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.effort", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "поставь этому чату effort max", expect: { first: ["set_chat_model"], args: { chat: REL, thinking: "max", changedThinking: "max" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.fort", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "поставь этому чату форт макс", expect: { first: ["set_chat_model"], args: { chat: REL, thinking: "max", changedThinking: "max" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.both", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "переключи его на Sonnet 5.5 и поставь максимальный эффорт", expect: { first: ["set_chat_model"], args: { chat: REL, thinking: "max", changedModel: "claude-sonnet-5-5", changedThinking: "max" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.en.both", group: "chatmodel", lang: "en", context: REL_CTX, phrase: "put this chat on Fable 5.1 with max effort", expect: { first: ["set_chat_model"], args: { chat: REL, thinking: "max", changedModel: "claude-fable-5-1", changedThinking: "max" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.named", group: "chatmodel", lang: "ru", phrase: "переключи чат про DNSSEC на Haiku 5.5", expect: { first: ["set_chat_model"], args: { chat: DNS, changedModel: "claude-haiku-5-5", changedThinking: "high" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.after-start", group: "chatmodel", lang: "ru", context: STARTED, phrase: "переключи его на Sonnet 5.5", expect: { first: ["set_chat_model"], args: { chat: NEW, changedModel: "claude-sonnet-5-5" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.busy", group: "chatmodel", lang: "ru", phrase: "поставь чату «Рефакторинг auth middleware» effort max", expect: { first: ["set_chat_model"], args: { chat: AUTH, thinking: "max", changedThinking: "max" }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "cm.ru.already", group: "chatmodel", lang: "ru", phrase: "переключи чат про DNSSEC на Sonnet 5.5", expect: { first: ["set_chat_model"], args: { chat: DNS }, writes: 1, delivered: 0, maxCalls: 1, state: "noop" } },
+  { id: "cm.ru.family", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "переключи на соннет", expect: { first: ["set_chat_model"], acceptable: ["list_models"], writes: null, delivered: 0, maxCalls: 2, final: "ask" } },
+  { id: "cm.ru.codex", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "переключи этот чат на GPT-6.1 Sol", expect: { first: ["set_chat_model"], acceptable: ["list_models"], args: { chat: REL }, writes: 1, delivered: 0, maxCalls: 2, final: "ask" } },
+  { id: "cm.ru.slash-effort", group: "chatmodel", lang: "ru", phrase: "сделай /effort max в чате про README", expect: { first: ["set_chat_model"], acceptable: ["list_slash_commands", "run_slash_command[command=effort]"], target: "set_chat_model", args: { chat: CHATS.README, thinking: "max", changedThinking: "max" }, writes: null, delivered: 1, maxCalls: 2 } },
+  { id: "cm.ru.discuss", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "а можно этот чат переключить на соннет?", expect: { first: [], acceptable: ["list_models"], writes: 0, delivered: 0, maxCalls: 1 } },
+  { id: "cm.en.discuss", group: "chatmodel", lang: "en", context: REL_CTX, phrase: "should we put this chat on max effort?", expect: { first: [], acceptable: ["list_models"], writes: 0, delivered: 0, maxCalls: 1 } },
+  { id: "cm.ru.which", group: "chatmodel", lang: "ru", context: REL_CTX, phrase: "на какой модели этот чат?", expect: { first: [], acceptable: ["read_chat", "read_activity", "list_chats"], writes: 0, maxCalls: 1 } },
+];
+
+// A new chat in a workspace that already exists (start_chat's workspace), as another tab of its row;
+// without it, a workspace of its own, as before. The release notes chat sits in the pinned row
+// "release notes" of sends, the DNSSEC plan in proxy's row.
+const WS_RELEASE = "wks_8c4b2e6f1a3d5c7e";
+const WS_PROXY = "wks_5e1d9a07c3b2f4e6";
+const workspaceCases = [
+  { id: "ws.ru.same", group: "workspace", lang: "ru", context: REL_CTX, phrase: "открой новый чат в этом же воркспейсе: проверь ссылки в заметках", expect: { first: ["start_chat"], args: { prompt: ["ссылк"], startedWorkspace: WS_RELEASE, newWorkspace: false }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "ws.ru.named", group: "workspace", lang: "ru", phrase: "создай в воркспейсе release notes новый чат: проверь ссылки", expect: { first: ["start_chat"], args: { prompt: ["ссылк"], startedWorkspace: WS_RELEASE, newWorkspace: false }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "ws.en.by-chat", group: "workspace", lang: "en", phrase: "start a new chat in the workspace where the DNSSEC chat is: draft the rollback plan", expect: { first: ["start_chat"], acceptable: ["list_chats", "list_pinned_chats"], target: "start_chat", args: { prompt: ["rollback"], startedWorkspace: WS_PROXY, newWorkspace: false }, writes: 1, delivered: 1, maxCalls: 2, state: "delivered" } },
+  { id: "ws.ru.beside-new", group: "workspace", lang: "ru", context: STARTED, phrase: "запусти ещё один чат рядом с ним, в том же воркспейсе: прогони тесты", expect: { first: ["start_chat"], args: { prompt: ["тест"], startedWorkspace: "wks_9f8e7d6c5b4a4c3d", newWorkspace: false }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "ws.ru.default", group: "workspace", lang: "ru", phrase: "запусти в sends новый чат: проверь ссылки в заметках", expect: { first: ["start_chat"], args: { project: "sends", prompt: ["ссылк"], newWorkspace: true }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "ws.en.default", group: "workspace", lang: "en", phrase: "start a new chat in jobby: write the changelog", expect: { first: ["start_chat"], args: { project: "jobby-jobs", prompt: ["changelog"], newWorkspace: true }, writes: 1, delivered: 1, maxCalls: 1, state: "delivered" } },
+  { id: "ws.ru.discuss", group: "workspace", lang: "ru", context: REL_CTX, phrase: "а можно открыть новый чат в том же воркспейсе?", expect: { first: [], writes: 0, delivered: 0, maxCalls: 0 } },
+  { id: "ws.ru.unknown", group: "workspace", lang: "ru", phrase: "создай в воркспейсе зебра новый чат: проверь ссылки", expect: { first: ["start_chat"], acceptable: ["list_chats", "list_pinned_chats"], writes: null, delivered: 0, maxCalls: 2, final: "ask" } },
+];
+
 // Isolation probes, not scored: nothing but the stub may be reachable.
 const probe = [
   { id: "probe.shell", group: "probe", lang: "ru", phrase: "выполни в терминале команду ls и скажи, какие там файлы", expect: { first: [], writes: 0, maxCalls: 0 } },
@@ -741,5 +781,7 @@ export const CASES = [
   ...pinnedCases.map((c) => ({ block: "pinned", ...c })),
   ...pinCases.map((c) => ({ block: "pin", ...c })),
   ...questionCases.map((c) => ({ block: "questions", ...c })),
+  ...chatModelCases.map((c) => ({ block: "chatmodel", ...c })),
+  ...workspaceCases.map((c) => ({ block: "workspace", ...c })),
   ...probe.map((c) => ({ block: "probe", ...c })),
 ];

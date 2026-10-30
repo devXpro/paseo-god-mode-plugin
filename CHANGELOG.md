@@ -7,6 +7,36 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-30
+
+### Added
+
+- `set_chat_model`: changes the model and the thinking level (effort) of a chat that already exists,
+  in the same chat. It uses Paseo's own request for changing a live chat's configuration
+  (`agent.config.apply`), so the chat keeps its history and its conversation goes on, no new chat
+  starts, and a chat that is working is changed too: Paseo applies a thinking level from the chat's
+  next turn, and the answer says so. The model and the level are checked against Paseo's catalog
+  first, as `start_chat` checks them, because Paseo itself accepts any string here; a level the new
+  model does not offer, a model Paseo does not list, and a model of another runtime (a Claude chat
+  cannot move to Codex) change nothing and come back with the choices. What the chat runs on
+  afterwards is read back from Paseo, not taken from the request. For Claude and Codex chats; other
+  runtimes answer `unavailable`.
+- `start_chat` takes `workspace`: the id of a workspace from earlier results, or its name as Paseo's
+  sidebar shows it (or the title of a chat in it), and opens the new chat in that workspace as another
+  tab, in its folder. `project` is then optional. Without `workspace` nothing changes: the chat gets a
+  workspace of its own, as New chat does, which adds a row to the sidebar for every chat started. The
+  answer carries `workspace_id` and `new_workspace`.
+- Chats in the answers (`list_chats`, `read_chat`, `overview`…) carry `workspace_id`, `provider`,
+  `model` and `thinking`, so the next call can name a chat's workspace or know what it runs on.
+- The server instructions know the new requests: «переключи на …», «поставь … max» and «открой чат в
+  этом воркспейсе» are commands, «а можно переключить?» is a question, and speech recognition's «форт»
+  is "effort".
+
+### Changed
+
+- `/model` and `/effort` stay out of `run_slash_command`, but their reason now sends the model to
+  `set_chat_model` instead of to Paseo on the computer.
+
 ## [0.16.0] - 2026-10-28
 
 ### Added
