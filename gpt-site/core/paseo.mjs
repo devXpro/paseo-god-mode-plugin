@@ -820,8 +820,10 @@ export async function showImages(pairingUrl, args = {}) {
 }
 
 // What a chat's agent and its subagents are doing now. `known` saves a second listing when the
-// caller already has the subagents.
-async function activityOf(client, chat, known) {
+// caller already has the subagents. `limit` is how many subagents are listed; the first
+// SUBAGENTS_SHOWN of them are also read in detail (current step, result), the rest come from the
+// listing alone, which already carries their model and effort.
+async function activityOf(client, chat, { known, limit = SUBAGENTS_SHOWN } = {}) {
   const [subagents, prompts, tail] = await Promise.all([
     known ?? listSubagents(client, chat.id),
     client.listAgentTimelinePrompts(chat.id).then((r) => r.prompts ?? []).catch(() => []),
@@ -829,9 +831,12 @@ async function activityOf(client, chat, known) {
   ]);
   const turnStart = prompts.at(-1);
   const startedAt = Date.parse(turnStart?.timestamp ?? "") || 0;
+  // The order activityData lists them in, so the ones read in detail are the ones listed first.
   const shown = [
     ...subagents.filter((s) => s.status === "running"),
-    ...subagents.filter((s) => s.status !== "running" && Date.parse(s.createdAt) >= startedAt),
+    ...subagents
+      .filter((s) => s.status !== "running" && Date.parse(s.createdAt) >= startedAt)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
   ].slice(0, SUBAGENTS_SHOWN);
   const detailed = new Map(
     await Promise.all(
@@ -858,7 +863,7 @@ async function activityOf(client, chat, known) {
     subagents: subagents.map((s) => detailed.get(s.id) ?? s),
     turnStartedAt: turnStart?.timestamp ?? null,
     parentStep: describeStep(own),
-    limit: SUBAGENTS_SHOWN,
+    limit,
   });
 }
 
@@ -875,7 +880,8 @@ export async function readActivityOn(client, { chat, maxChars } = {}) {
   if (chat) {
     const picked = await pickChat(client, chat, chats, { read: true });
     if (picked.ask) return picked.ask;
-    const activity = await activityOf(client, picked.chat);
+    // One chat asked for by name: every subagent of it, so its models and efforts are all there.
+    const activity = await activityOf(client, picked.chat, { limit: Infinity });
     const summary = activity.working ? "working" : "not working";
     return withNote({ text: truncate(activityText(activity), max), data: { summary, chats: [activity] } }, picked.note);
   }
@@ -886,7 +892,7 @@ export async function readActivityOn(client, { chat, maxChars } = {}) {
   if (working.length === 0) {
     return { text: "No agent or subagent is working right now.", data: { summary: "Nothing is working right now.", chats: [] } };
   }
-  const activities = await Promise.all(working.map((c) => activityOf(client, c, c.subagents)));
+  const activities = await Promise.all(working.map((c) => activityOf(client, c, { known: c.subagents })));
   const helpers = activities.reduce((n, a) => n + a.subagents_running, 0);
   const summary = `${activities.length} chat(s) working, ${helpers} subagent(s) running.`;
   return { text: truncate([summary, ...activities.map(activityText)].join("\n"), max), data: { summary, chats: activities } };

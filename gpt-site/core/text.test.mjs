@@ -33,6 +33,7 @@ import {
   withImagePlaceholders,
   withoutImages,
   snippet,
+  subagentRuntime,
   toIso,
   tokensOf,
   toolCallData,
@@ -347,7 +348,7 @@ test("activity shows running subagents first, then those finished this turn, wit
   const now = Date.parse("2026-10-16T12:00:00Z");
   const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
   const chat = { id: "b7c1d2e3-4f50", title: "Auth refactor", project: "jobby-jobs", status: "running", attention: null, permissions: [], updatedAt: at(1), createdAt: at(40) };
-  const sub = (id, status, created, updated, extra = {}) => ({ id, title: "Explore", description: `task ${id}`, status, createdAt: at(created), updatedAt: at(updated), subtitle: "Explore · Opus · 38.2k tokens", ...extra });
+  const sub = (id, status, created, updated, extra = {}) => ({ id, title: "Explore", provider: "claude", description: `task ${id}`, status, createdAt: at(created), updatedAt: at(updated), subtitle: "Explore · Opus 5.5 · Max · 38.2k tokens", ...extra });
   const subagents = [
     sub("old", "completed", 120, 110, { result: "from an earlier turn" }),
     sub("done", "completed", 33, 30, { result: "14 routes" }),
@@ -365,19 +366,85 @@ test("activity shows running subagents first, then those finished this turn, wit
   assert.equal(a.subagents[1].result, "14 routes");
   assert.equal(a.subagents[1].elapsed, "3 min");
   assert.equal(a.subagents[1].tokens, "38.2k");
+  assert.deepEqual(a.subagents.map((s) => [s.model, s.effort]), [["Opus 5.5", "Max"], ["Opus 5.5", "Max"]]);
   assert.equal(a.chat.subagents_running, 1);
   assert.equal(
     activityText(a),
     [
       "Auth refactor (jobby-jobs) is working, 35 min into the turn: waiting for 1 subagent(s).",
-      '- Explore "task run": running for 29 min, now reading session.ts.',
-      '- Explore "task done": completed after 3 min. Result: 14 routes',
+      '- Explore (Opus 5.5, Max effort) "task run": running for 29 min, now reading session.ts.',
+      '- Explore (Opus 5.5, Max effort) "task done": completed after 3 min. Result: 14 routes',
     ].join("\n"),
   );
   const idle = activityData({ chat: { ...chat, status: "idle", attention: "finished" }, subagents: [sub("bg", "running", 14, 2)], turnStartedAt: at(20), parentStep: null, now });
   assert.equal(idle.working, true, "a backgrounded subagent keeps an idle chat working");
   assert.equal(idle.current_step, null);
   assert.match(activityText(idle), /^Auth refactor \(jobby-jobs\) is working\./);
+});
+
+test("a subagent's model and effort are read out of Paseo's subtitle, in every layout it takes", () => {
+  const read = (subtitle, title = "general-purpose") => subagentRuntime(subtitle, title);
+  const unknown = { model: null, effort: null };
+  // The layouts seen on a live chat (Paseo 0.14.0).
+  assert.deepEqual(read("general-purpose · Opus 5.5 · Max · 319.7k tokens"), { model: "Opus 5.5", effort: "Max" });
+  assert.deepEqual(read("general-purpose · Sonnet 5.5 · Max · 442k tokens"), { model: "Sonnet 5.5", effort: "Max" });
+  assert.deepEqual(read("general-purpose · Haiku 5.5 · Max"), { model: "Haiku 5.5", effort: "Max" }, "no tokens reported yet");
+  assert.deepEqual(read("Explore · Opus 5.5 · Max · 284.1k tokens", "Explore"), { model: "Opus 5.5", effort: "Max" });
+  assert.deepEqual(read("general-purpose · Max · 262.3k tokens"), { model: null, effort: "Max" }, "a subagent resumed by SendMessage has an effort and no model of its own");
+  // Parts that are not known yet stay null.
+  assert.deepEqual(read("general-purpose · Opus 5.5"), { model: "Opus 5.5", effort: null }, "the model is seen before the first hook reports an effort");
+  assert.deepEqual(read("general-purpose · 12k tokens"), unknown);
+  assert.deepEqual(read("general-purpose"), unknown);
+  assert.deepEqual(read(null), unknown);
+  assert.deepEqual(read(""), unknown);
+  // Paseo's own wording for a level, and a model it has no label for.
+  assert.deepEqual(read("general-purpose · Opus 5.5 · Extra High · 1.2k tokens"), { model: "Opus 5.5", effort: "Extra High" });
+  assert.deepEqual(read("general-purpose · Extra High"), { model: null, effort: "Extra High" });
+  assert.deepEqual(read("general-purpose · claude-opus-4-1-20250805 · High · 950 tokens"), { model: "claude-opus-4-1-20250805", effort: "High" });
+  // A subtitle without the title in it reads the same; a title the descriptor lacks makes three parts unreadable.
+  assert.deepEqual(read("Opus 5.5 · Max · 3k tokens"), { model: "Opus 5.5", effort: "Max" });
+  assert.deepEqual(read("Opus 5.5 · Max · 3k tokens", null), { model: "Opus 5.5", effort: "Max" });
+  assert.deepEqual(read("general-purpose · Opus 5.5 · Max", null), unknown);
+  // A layout that fits none of these is unknown, never a guess.
+  assert.deepEqual(read("general-purpose · a · b · c · 3k tokens"), unknown);
+});
+
+test("activity gives each subagent's model and effort, null where Paseo has not reported them or the runtime is not Claude", () => {
+  const now = Date.parse("2026-11-01T12:00:00Z");
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+  const chat = { id: "6194696e-afb1-4724-9bec-bec061a5a54f", title: "Gaslight Me", project: "lacoNote", status: "running", attention: null, permissions: [], updatedAt: at(1), createdAt: at(600) };
+  const sub = (id, subtitle, extra = {}) => ({ id, title: "general-purpose", provider: "claude", description: `task ${id}`, status: "running", createdAt: at(15), updatedAt: at(1), subtitle, ...extra });
+  const subagents = [
+    sub("opus", "general-purpose · Opus 5.5 · Max · 305.1k tokens"),
+    sub("sonnet", "general-purpose · Sonnet 5.5 · Max · 180.4k tokens"),
+    sub("haiku", "general-purpose · Haiku 5.5 · High · 83.2k tokens"),
+    sub("resumed", "general-purpose · Max · 262.3k tokens"),
+    sub("fresh", null),
+    sub("other", "general-purpose · gpt-5 · High", { provider: "codex" }),
+    sub("done", "Explore · Opus 5.5 · Max", { title: "Explore", status: "completed", updatedAt: at(2) }),
+  ];
+  const all = activityData({ chat, subagents, turnStartedAt: at(30), parentStep: null, now, limit: Infinity });
+  assert.deepEqual(
+    all.subagents.map((s) => [s.id, s.model, s.effort]),
+    [
+      ["opus", "Opus 5.5", "Max"],
+      ["sonnet", "Sonnet 5.5", "Max"],
+      ["haiku", "Haiku 5.5", "High"],
+      ["resumed", null, "Max"],
+      ["fresh", null, null],
+      ["other", null, null],
+      ["done", "Opus 5.5", "Max"],
+    ],
+  );
+  assert.equal(all.subagents[2].tokens, "83.2k", "tokens still come from the same subtitle");
+  assert.equal(activityData({ chat, subagents, turnStartedAt: at(30), parentStep: null, now }).subagents.length, 6, "the default still shows six");
+  const lines = activityText(all).split("\n").filter((l) => l.startsWith("- "));
+  assert.match(lines[0], /^- general-purpose \(Opus 5\.5, Max effort\) "task opus": running for 15 min\./);
+  assert.match(lines[3], /^- general-purpose \(model not reported, Max effort\) "task resumed"/);
+  assert.match(lines[4], /^- general-purpose \(model and effort not reported\) "task fresh"/);
+  assert.match(lines[5], /^- general-purpose \(model and effort not reported\) "task other"/, "another runtime's layout is not guessed");
+  assert.match(lines[6], /^- Explore \(Opus 5\.5, Max effort\) "task done": completed after 13 min\./);
+  assert.match(activityText({ ...all, subagents: [{ ...all.subagents[0], effort: null }] }), /\(Opus 5\.5, effort not reported\)/);
 });
 
 // ---- Images ----------------------------------------------------------------------------------

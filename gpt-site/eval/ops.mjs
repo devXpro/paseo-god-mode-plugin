@@ -257,7 +257,9 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       status: s.status,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
-      subtitle: `${s.title} · ${s.tokens} tokens`,
+      provider: "claude",
+      // Paseo's subtitle: the title, then the model and the effort once it knows them, then the tokens.
+      subtitle: [s.title, s.model, s.effort, `${s.tokens} tokens`].filter(Boolean).join(" · "),
       step: s.current,
       result: s.result,
     }));

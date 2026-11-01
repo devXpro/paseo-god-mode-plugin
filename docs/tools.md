@@ -15,7 +15,7 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `include_archived`, `limit` | Find chats by title, project or state that are not in the conversation yet. |
 | `list_pinned_chats` | read | `project`, `query` | The chats in the Pinned section at the top of Paseo's sidebar, across every project, latest pin first; also the way to a chat the user picks by its pin. |
 | `read_chat` | read | `chat`*, `view` (text, commands, thinking), `turn`, `turns`, `max_chars` | What a chat said (the latest turn, or the last N at once), the commands it ran, or the agent's reasoning. |
-| `read_activity` | read | `chat`, `max_chars` | What an agent and its subagents are doing now, and how full its context window is; without `chat`, every chat at work. |
+| `read_activity` | read | `chat`, `max_chars` | What an agent and its subagents are doing now, and how full its context window is; each subagent with its model and thinking effort, as Paseo observed them (null when it has not reported them). Naming a chat lists all of its subagents; without `chat`, every chat at work, the first six subagents of each. |
 | `show_images` | read | `chat`, `turn`, `image`, `count` | The pictures and screenshots in a chat, shown on the user's screen in a widget and, where ChatGPT allows, given to the model. |
 | `search_messages` | read | `query`*, `project`, `chat`, `include_archived`, `scan`, `limit` | Where something was said, across the most recent chats or in one. |
 | `list_models` | read | `provider` | The agent runtimes Paseo can start (Claude, Codex…), each with its models, their thinking levels and its permission modes, from Paseo's own catalog. |

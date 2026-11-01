@@ -24,7 +24,11 @@ model, the 0.5.0 metadata against the new one (`eval/README.md`, `eval/results/r
   steers); an error = not confirmed. Failed write calls say "Unknown whether it took effect".
 - **`read_activity`** reads Paseo's provider subagents (`listProviderSubagents`,
   `fetchProviderSubagentTimeline`): each Task/Agent subagent's task, status, running time, current
-  step and result. A separate tool, not a `read_chat` view: OpenAI recommends one tool per action,
+  step and result. Its model and thinking effort are not fields of Paseo's descriptor, only parts of
+  its `subtitle` ("general-purpose · Opus 5.5 · Max · 45.1k tokens"); the daemon builds that from what it
+  observed (the model off the subagent's own replies, the effort Claude Code reports as in force, after
+  any downgrade), so `subagentRuntime` reads `model` and `effort` out of it for Claude and leaves them
+  null where a part is missing, as it is for a subagent resumed by SendMessage. A separate tool, not a `read_chat` view: OpenAI recommends one tool per action,
   and in the eval the view answered "what are the subagents doing?" without context 1 time in 4
   against 4 in 4. Without a chat it covers every chat at work, including idle chats whose
   backgrounded subagents still run; `overview` counts subagents too.
@@ -118,7 +122,7 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `limit`. |
 | `list_pinned_chats` | read | The Pinned section at the top of Paseo's sidebar. Paseo pins a workspace, not a chat: every pinned one across projects, latest pin first (a hand-dragged order stays on the device), each with its active chats, usually one. `project` narrows them; `query` takes the rows with every word, then half, of their name, branch, project and chat titles, and with no match all of them come back. The way to a chat the user picks by its pin: pinned is no name the other tools could resolve. |
 | `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) `commands` (the last 8 tool calls of the turn with output, plus the total) or `thinking` (the agent's reasoning, latest kept first). Every view gives the chat's context window when known. `turn` counts back from the latest, `turns` reads several at once. |
-| `read_activity` | read | What a chat's agent and its subagents are doing now: state, current step, each subagent's task, status, running time, current step or result (up to 6, running first). Without `chat`: every chat at work, idle ones with running backgrounded subagents included. |
+| `read_activity` | read | What a chat's agent and its subagents are doing now: state, current step, each subagent's task, status, model, thinking effort, running time, current step or result (running first; a named chat lists them all and reads the first 6 in detail, without `chat` the first 6 of each chat). Without `chat`: every chat at work, idle ones with running backgrounded subagents included. |
 | `show_images` | read | The images in a chat on the user's screen (a widget) and, where ChatGPT allows, in the model's context: the newest, a turn's (`turn`) or one of them (`image` = N of `[image N]`), up to `count` 4. Without `chat`: the newest image of the 8 most recent chats. See §10. |
 | `list_models` | read | Paseo's runtime catalog: each provider it can start (Claude, Codex…) with its models (default marked), their thinking levels and its modes; the ones it cannot start with the reason. `provider` narrows it. |
 | `start_chat` | write | New workspace and agent in a project, like New chat; or, with `workspace` (a `workspace_id` or a name), a new agent in a workspace that exists, as another tab and in its folder: Paseo's `create_agent_request.workspaceId`, which makes it work in that workspace's cwd and keep its name. Waits up to `wait_seconds` for the reply. `provider`, `model`, `thinking`, `mode` override the site defaults for this chat; all are checked against the project's catalog first (a model named as said brings its runtime), and the site defaults are kept only where they fit. |

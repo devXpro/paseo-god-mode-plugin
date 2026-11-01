@@ -320,6 +320,17 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.set_chat_model.description, /The chat keeps its history and its conversation goes on: no new chat starts, and a chat that is working is changed too/);
   assert.match(byName.set_chat_model.description, /a Claude chat cannot move to Codex, other_runtime says so, and a chat on that model is a new one \(start_chat\) without this chat's history, so ask the user/);
   assert.match(byName.set_chat_model.description, /never call it again for this request/);
+  // A subagent's model and effort are read, never assumed: null means Paseo has not reported them.
+  const subagent = byName.read_activity.outputSchema.properties.chats.items.properties.subagents.items.properties;
+  for (const field of ["model", "effort"]) {
+    assert.deepEqual(subagent[field].type, ["string", "null"], `${field} may be null`);
+    assert.match(subagent[field].description, /null: Paseo has not reported it; say so, never assume the main agent's/, field);
+  }
+  assert.match(subagent.model.description, /so it is what really runs, not what the prompt asked for/);
+  assert.match(subagent.effort.description, /after any downgrade the model needed/);
+  assert.match(byName.read_activity.description, /which model and thinking effort they run on/);
+  assert.match(byName.read_activity.description, /Name the chat to get every one of its subagents/);
+  assert.match(byName.read_activity.description, /A null model or effort is one Paseo has not reported: say so, do not assume the main agent's/);
   assert.match(byName.set_chat_model.description, /needs_clarification means nothing changed: ask the user which model or level, then call again/);
   assert.match(byName.set_chat_model.description, /This is the way for \/model and \/effort, which run_slash_command does not\./);
   assert.match(byName.set_chat_model.inputSchema.properties.thinking.description, /only where the new model offers it/);
@@ -679,8 +690,8 @@ test("the shapes the operations produce match the declared output schemas", () =
             subagents_running: 1,
             subagents_done: 1,
             subagents: [
-              { id: "toolu_1", title: "Explore", task: "Find call sites", status: "running", started_at: "2026-10-16T16:31:00.000Z", updated_at: "2026-10-16T16:39:00.000Z", elapsed: "9 min", current_step: "reading session.ts", result: null, tokens: "52.4k" },
-              { id: "toolu_2", title: "Explore", task: "Map routes", status: "completed", started_at: null, updated_at: null, elapsed: "3 min", current_step: null, result: "14 routes", tokens: null },
+              { id: "toolu_1", title: "Explore", task: "Find call sites", status: "running", started_at: "2026-10-16T16:31:00.000Z", updated_at: "2026-10-16T16:39:00.000Z", elapsed: "9 min", current_step: "reading session.ts", result: null, tokens: "52.4k", model: "Opus 5.5", effort: "Max" },
+              { id: "toolu_2", title: "Explore", task: "Map routes", status: "completed", started_at: null, updated_at: null, elapsed: "3 min", current_step: null, result: "14 routes", tokens: null, model: null, effort: null },
             ],
           },
         ],

@@ -825,6 +825,40 @@ export function tokensOf(subtitle) {
   return String(subtitle ?? "").match(/([\d.]+k?) tokens/)?.[1] ?? null;
 }
 
+// The effort levels Paseo writes into a subtitle for Claude (its formatEffort: "xhigh" reads
+// "Extra High"). A subtitle part standing alone is an effort only if it is one of these.
+const EFFORT_LABELS = new Set(["low", "medium", "high", "extra high", "max"]);
+
+// The model and the thinking effort a Claude subagent runs on, out of the subtitle Paseo keeps for it:
+// "general-purpose · Opus 5.5 · Max · 45.1k tokens" → { model: "Opus 5.5", effort: "Max" }.
+// Paseo builds that subtitle from what it observed, not from what was asked: the model from the
+// subagent's own replies, the effort from the level Claude Code reports as in force (after any
+// downgrade the model needed). Its parts are the title, the model, the effort and the tokens, each
+// there only once known, so a missing one stays null: a lone "Max" is an effort with no model yet
+// (a subagent resumed by SendMessage is that), never a model, and a layout that fits neither case
+// reads as unknown rather than as a guess.
+export function subagentRuntime(subtitle, title) {
+  let rest = String(subtitle ?? "").trim();
+  const name = String(title ?? "").trim();
+  if (name && (rest === name || rest.startsWith(`${name} · `))) rest = rest.slice(name.length).replace(/^ · /, "");
+  rest = rest.replace(/(^| · )[\d.]+k? tokens$/, "");
+  const parts = rest.split(" · ").filter(Boolean);
+  if (parts.length === 2) return { model: parts[0], effort: parts[1] };
+  if (parts.length === 1) return EFFORT_LABELS.has(parts[0].toLowerCase()) ? { model: null, effort: parts[0] } : { model: parts[0], effort: null };
+  return { model: null, effort: null };
+}
+
+// Only Claude's subtitle layout is known to this code; another runtime's subagents stay unknown.
+const runtimeOf = (s) => (s.provider === "claude" ? subagentRuntime(s.subtitle, s.title) : { model: null, effort: null });
+
+// "Opus 5.5, Max effort" for a subagent's line; what Paseo has not reported is said so, not left out.
+function runtimeLabel({ model, effort }) {
+  if (model && effort) return `${model}, ${effort} effort`;
+  if (model) return `${model}, effort not reported`;
+  if (effort) return `model not reported, ${effort} effort`;
+  return "model and effort not reported";
+}
+
 // What a chat and its subagents are doing now. `subagents` are Paseo's provider-subagent
 // descriptors, the shown ones carrying `step` (latest tool call or thought) and `result` (final
 // message) read from their timelines. Running ones come first, then those finished in the latest
@@ -856,6 +890,7 @@ export function activityData({ chat, subagents, turnStartedAt, parentStep, now =
       current_step: s.status === "running" ? (s.step ?? null) : null,
       result: s.status === "running" ? null : (s.result ?? null),
       tokens: tokensOf(s.subtitle),
+      ...runtimeOf(s),
     })),
   };
 }
@@ -868,8 +903,8 @@ export function activityText(activity) {
   const context = contextLine(chat.context);
   const lines = activity.subagents.map((s) =>
     s.status === "running"
-      ? `- ${s.title} "${truncate(s.task, 80)}": running for ${s.elapsed}${s.current_step ? `, now ${s.current_step}` : ""}.`
-      : `- ${s.title} "${truncate(s.task, 80)}": ${s.status} after ${s.elapsed}${s.result ? `. Result: ${truncate(s.result, 160)}` : "."}`,
+      ? `- ${s.title} (${runtimeLabel(s)}) "${truncate(s.task, 80)}": running for ${s.elapsed}${s.current_step ? `, now ${s.current_step}` : ""}.`
+      : `- ${s.title} (${runtimeLabel(s)}) "${truncate(s.task, 80)}": ${s.status} after ${s.elapsed}${s.result ? `. Result: ${truncate(s.result, 160)}` : "."}`,
   );
   return [head, context, ...lines].filter(Boolean).join("\n");
 }

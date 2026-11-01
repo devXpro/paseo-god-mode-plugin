@@ -7,6 +7,27 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-02
+
+### Added
+
+- `read_activity` gives each subagent's `model` and `effort` (its thinking level): what Paseo observed
+  the subagent running on, not what its prompt asked for. Paseo keeps them only as parts of the
+  subagent's display line ("general-purpose · Opus 5.5 · Max · 45.1k tokens"), the model read off the
+  subagent's own replies and the effort as Claude Code reports it in force, after any downgrade; God
+  Mode used to take the token count out of that line and drop the rest. A part Paseo has not reported
+  comes back `null` (a subagent resumed with SendMessage has an effort and no model of its own), and
+  the text says "not reported" instead of leaving it out. For Claude subagents; another runtime's
+  stay `null`.
+
+### Changed
+
+- `read_activity` for a named chat lists every one of its subagents, where it listed the first six.
+  The first six listed, the running ones and then the most recently finished, are still read in
+  detail; for the rest the current step and the result are `null`. Without a chat it still shows the
+  first six of each chat. The details used to be read in Paseo's order while the list was sorted by
+  recency, so a subagent near the top of the list could come without its result.
+
 ## [0.17.0] - 2026-10-30
 
 ### Added

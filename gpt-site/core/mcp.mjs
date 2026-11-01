@@ -323,9 +323,19 @@ const SUBAGENT_OUT = {
     started_at: time,
     updated_at: time,
     elapsed: { type: "string", description: 'How long it has run, or ran, e.g. "4 min".' },
-    current_step: { ...nullableString, description: "Its latest tool call or thought, while running." },
-    result: { ...nullableString, description: "Its final message, once finished." },
+    current_step: { ...nullableString, description: "Its latest tool call or thought, while running. Only the first six are read in detail: null for the rest." },
+    result: { ...nullableString, description: "Its final message, once finished. Only the first six are read in detail: null for the rest." },
     tokens: nullableString,
+    model: {
+      ...nullableString,
+      description:
+        'The model it runs on, as Paseo shows it, e.g. "Opus 5.5". Paseo reads it off the subagent\'s own replies, so it is what really runs, not what the prompt asked for, and it can differ from the main agent\'s. null: Paseo has not reported it; say so, never assume the main agent\'s.',
+    },
+    effort: {
+      ...nullableString,
+      description:
+        'The thinking effort it runs at, as Paseo shows it, e.g. "Max" or "Extra High": the level Claude Code reports as in force, after any downgrade the model needed. null: Paseo has not reported it; say so, never assume the main agent\'s.',
+    },
   },
 };
 
@@ -339,7 +349,11 @@ const ACTIVITY_OUT = {
     current_step: { ...nullableString, description: "The agent's latest tool call or message in this turn." },
     subagents_running: { type: "integer" },
     subagents_done: { type: "integer" },
-    subagents: { type: "array", items: SUBAGENT_OUT, description: "Running ones first, then the ones finished in the latest turn." },
+    subagents: {
+      type: "array",
+      items: SUBAGENT_OUT,
+      description: "Running ones first, then the ones finished in the latest turn. When a chat is named: every one of them. Without a chat: the first six of each chat; subagents_running and subagents_done count them all.",
+    },
   },
 };
 
@@ -566,7 +580,7 @@ export const TOOLS = [
   {
     name: "read_activity",
     description:
-      'Use this when the user asks what an agent is doing right now, how far it got, or what its subagents are doing ("what is it doing?", "what are the subagents up to?"). One call returns the chat\'s state, current step and how full its context window is, and each subagent\'s task, status, current step and running time; finished subagents come with their result. Leave chat empty to cover every chat where an agent or a subagent is working now. Not for what was said earlier: use read_chat.',
+      'Use this when the user asks what an agent is doing right now, how far it got, what its subagents are doing, or which model and thinking effort they run on ("what is it doing?", "what are the subagents up to?", "which models are the subagents on?"). One call returns the chat\'s state, current step and how full its context window is, and each subagent\'s task, status, model, effort, current step and running time; finished subagents come with their result. Name the chat to get every one of its subagents. Leave chat empty to cover every chat where an agent or a subagent is working now (the first six subagents of each). A null model or effort is one Paseo has not reported: say so, do not assume the main agent\'s. Not for what was said earlier: use read_chat.',
     inputSchema: {
       type: "object",
       properties: {

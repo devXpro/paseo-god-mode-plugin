@@ -57,7 +57,7 @@ A spoken request can override the runtime, model, thinking and mode for one new 
 | `overview` | Chats waiting for you, running chats, new replies, projects. |
 | `list_chats` | Finds chats by title, workspace, branch or project with Paseo's own search, archive included on request; or lists a project's chats, or chats in a state. |
 | `read_chat` | `text`: what was said, final message first; `turns: N` reads the last N turns in one call. `commands`: the shell commands and tool calls with output. `thinking`: the agent's reasoning, when the model shared any. Every view says how full the chat's context window is. |
-| `read_activity` | What an agent and its subagents are doing right now: state, current step, each subagent's task, status, running time and result. Without a chat: every chat at work. |
+| `read_activity` | What an agent and its subagents are doing right now: state, current step, each subagent's task, status, model, thinking effort, running time and result. A named chat lists all its subagents. Without a chat: every chat at work, the first six subagents of each. |
 | `show_images` | The screenshots and pictures in a chat, shown in ChatGPT by a widget and handed to the model where ChatGPT allows it: the newest, a turn's, or the N-th of a turn (`[image N]` in `read_chat`). Without a chat: the newest image of the most recent chats. |
 | `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
 | `list_models` | The runtimes Paseo can start (Claude, Codex…) with their models, thinking levels and modes. |
