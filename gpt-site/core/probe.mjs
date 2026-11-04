@@ -5,6 +5,7 @@
 //   node core/probe.mjs chats [--project P] [--status running|waiting|new|all] [--query Q] [--archived]
 //   node core/probe.mjs pinned [--project P] [--query Q]
 //   node core/probe.mjs read <chat> [--view text|commands|thinking] [--turn 1] [--turns 3] [--max N]
+//   node core/probe.mjs message <chat> [--role user|agent] [--turn 1] [--message N] [--id ID] [--mode head|tail|full] [--size N] [--offset N]
 //   node core/probe.mjs activity [chat] [--max N]
 //   node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 //   node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]
@@ -47,6 +48,7 @@ import {
   readActivity,
   readApproval,
   readChat,
+  readMessage,
   runSlashCommand,
   searchMessages,
   setChatModel,
@@ -74,6 +76,11 @@ const { values, positionals } = parseArgs({
     turn: { type: "string" },
     turns: { type: "string" },
     max: { type: "string" },
+    role: { type: "string" },
+    message: { type: "string" },
+    id: { type: "string" },
+    size: { type: "string" },
+    offset: { type: "string" },
     chat: { type: "string" },
     scan: { type: "string" },
     limit: { type: "string" },
@@ -118,6 +125,17 @@ const operations = {
       turn: number(values.turn, 1),
       turns: number(values.turns, 1),
       maxChars: number(values.max, undefined),
+    }),
+  message: () =>
+    readMessage(url, {
+      chat: first,
+      role: values.role,
+      turn: number(values.turn, undefined),
+      message: number(values.message, undefined),
+      id: values.id,
+      mode: values.mode,
+      size: number(values.size, undefined),
+      offset: number(values.offset, undefined),
     }),
   activity: () => readActivity(url, { chat: first, maxChars: number(values.max, undefined) }),
   images: () =>

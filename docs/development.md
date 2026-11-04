@@ -46,6 +46,7 @@ node core/probe.mjs pin|unpin <chat> | --workspace W
 node core/probe.mjs request <chat>
 node core/probe.mjs answer <chat> <request id> --answers '[{"question":"1","options":["2"]}]' [--wait 15]
 node core/probe.mjs read <chat> [--view text|commands] [--turn 1] [--turns 3] [--max N]
+node core/probe.mjs message <chat> [--role user|agent] [--turn 1] [--message N] [--id ID] [--mode head|tail|full] [--size N] [--offset N]
 node core/probe.mjs activity [chat] [--max N]
 node core/probe.mjs images [chat] [--turn N] [--image N] [--count N] [--save DIR]
 node core/probe.mjs search <query…> [--project P] [--chat C] [--archived] [--scan 20] [--limit 10]

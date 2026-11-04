@@ -202,6 +202,12 @@ export function chatQuestion(query, reason, chats, { read = false, now = Date.no
   };
 }
 
+// A cut at `at` (a UTF-16 index) moved off the middle of a surrogate pair, so an emoji is never split.
+function pairSafe(text, at) {
+  const code = text.charCodeAt(at);
+  return at > 0 && code >= 0xdc00 && code <= 0xdfff ? at - 1 : at;
+}
+
 // Cuts at a line or sentence end when one is in the second half, else at a word
 // boundary, so speech does not stop mid-word. `max` counts characters.
 export function truncate(value, max) {
@@ -209,10 +215,10 @@ export function truncate(value, max) {
   if (text.length <= max) {
     return text;
   }
-  const head = text.slice(0, max);
+  const head = text.slice(0, pairSafe(text, max));
   const sentence = Math.max(head.lastIndexOf("\n"), head.lastIndexOf(". "));
   const space = head.lastIndexOf(" ");
-  const cut = sentence > max / 2 ? sentence + 1 : space > max / 2 ? space : max;
+  const cut = sentence > max / 2 ? sentence + 1 : space > max / 2 ? space : head.length;
   return `${head.slice(0, cut).trimEnd()} …`;
 }
 
@@ -256,8 +262,8 @@ export function snippet(text, query, radius = 80) {
     length = longest.length;
   }
   if (at < 0) return truncate(flat, radius * 2);
-  const start = Math.max(0, at - radius);
-  const end = Math.min(flat.length, at + length + radius);
+  const start = pairSafe(flat, Math.max(0, at - radius));
+  const end = pairSafe(flat, Math.min(flat.length, at + length + radius));
   return `${start > 0 ? "…" : ""}${flat.slice(start, end).trim()}${end < flat.length ? "…" : ""}`;
 }
 
@@ -413,13 +419,22 @@ export function chatLine(chat, now = Date.now()) {
   return `${truncate(chat.title, 70)} (${chat.project}): ${chatState(chat)}${archived}, ${ago(chat.updatedAt, now)}`;
 }
 
-// The structured form of one tool call.
-export function toolCallData(item, max) {
+// The structured form of one tool call. With where it starts in the timeline (`seq`) it also says
+// whether `text` is all of it and gives the id read_message reads the whole of it by.
+export function toolCallData(item, max, seq) {
+  const text = describeToolCall(item, max);
+  const whole = callText(item);
+  // Whitespace the cut trimmed is not content.
+  const flat = (s) => s.replace(/\s+/g, " ").trim();
+  // A subagent's call is Paseo's id for the subagent: its final message is read by it, from any turn.
+  const subagent = item.detail?.type === "sub_agent" && item.callId ? subagentRef(item.callId) : null;
   return {
     kind: item.detail?.type ?? "tool",
     name: item.name,
     status: item.status,
-    text: describeToolCall(item, max),
+    text: subagent ? `${text} (its final message: read_message ${subagent})` : text,
+    ...(seq === undefined ? {} : { id: messageRef("call", seq), chars: charCount(whole), truncated: flat(text) !== flat(whole) }),
+    ...(subagent ? { result_id: subagent } : {}),
   };
 }
 
@@ -700,14 +715,30 @@ export function imageHint(turn, count) {
   return `${count} image(s) in turn ${turn}: show_images (turn ${turn}) puts them on the user's screen.`;
 }
 
+// The most of a reply a write's answer carries.
+export const REPLY_SHOWN = 1500;
+
+// A reply cut to fit, with its whole length and, when it was cut, the line that says so and how to
+// read the rest: it is the agent's last message, which read_message reads whole as turn 1.
+export function replyPart(text) {
+  const reply = truncate(text, REPLY_SHOWN);
+  const truncated = String(text ?? "").trim().length > REPLY_SHOWN;
+  return {
+    reply,
+    data: { reply, reply_chars: charCount(text), reply_truncated: truncated },
+    note: truncated ? `The reply is cut to ${REPLY_SHOWN} of its ${charCount(text)} characters: read_message (turn 1) reads it whole.` : null,
+  };
+}
+
 // The agent's final message after a write, with its images as placeholders and counted.
 export function repliedOutcome(message) {
   const { text, images } = withImagePlaceholders(message ?? "(no text)");
-  const reply = truncate(text, 1500);
-  if (images.length === 0) return { text: `Agent replied: ${reply}`, data: { outcome: "replied", delivered: true, reply } };
+  const part = replyPart(text);
+  const lines = [`Agent replied: ${part.reply}`, part.note];
+  if (images.length === 0) return { text: lines.filter(Boolean).join("\n"), data: { outcome: "replied", delivered: true, ...part.data } };
   return {
-    text: `Agent replied: ${reply}\nThe reply has ${images.length} image(s); show_images puts them on the user's screen.`,
-    data: { outcome: "replied", delivered: true, reply, images: images.length },
+    text: [...lines, `The reply has ${images.length} image(s); show_images puts them on the user's screen.`].filter(Boolean).join("\n"),
+    data: { outcome: "replied", delivered: true, ...part.data, images: images.length },
   };
 }
 
@@ -763,6 +794,8 @@ export function describeToolCall(item, max) {
       return `search "${detail.query}"${failed}`;
     case "fetch":
       return `fetch ${detail.url}${failed}`;
+    case "sub_agent":
+      return `${item.name} ${detail.subAgentType ?? ""}: ${truncate(detail.description ?? "", 160)}${failed}`;
     default:
       return `${item.name}${failed}`;
   }
@@ -888,10 +921,26 @@ export function activityData({ chat, subagents, turnStartedAt, parentStep, now =
       updated_at: toIso(s.updatedAt),
       elapsed: duration((s.status === "running" ? now : Date.parse(s.updatedAt)) - Date.parse(s.createdAt)),
       current_step: s.status === "running" ? (s.step ?? null) : null,
-      result: s.status === "running" ? null : (s.result ?? null),
+      ...resultOf(s),
       tokens: tokensOf(s.subtitle),
       ...runtimeOf(s),
     })),
+  };
+}
+
+// The most of a subagent's final message read_activity carries, and of that the most its text says.
+const RESULT_SHOWN = 300;
+const RESULT_SPOKEN = 160;
+
+// A finished subagent's final message, cut to fit, with its whole length and the id read_message
+// reads all of it by. The id is there even when the message was not read: read_message finds it.
+function resultOf(s) {
+  if (s.status === "running") return { result: null };
+  const whole = s.result ?? null;
+  return {
+    result: whole === null ? null : truncate(whole, RESULT_SHOWN),
+    ...(whole === null ? {} : { result_chars: charCount(whole), result_truncated: whole.trim().length > RESULT_SHOWN }),
+    result_id: subagentRef(s.id),
   };
 }
 
@@ -901,10 +950,152 @@ export function activityText(activity) {
     ? `${chat.title} (${chat.project}) is working${activity.turn_elapsed ? `, ${activity.turn_elapsed} into the turn` : ""}${activity.current_step ? `: ${activity.current_step}` : ""}.`
     : `${chat.title} (${chat.project}) is not working now: ${chat.state}, ${chat.updated_ago}.`;
   const context = contextLine(chat.context);
+  // Before the list, so it stays when the answer is cut to max_chars.
+  const cut = activity.subagents.some((s) => s.result && (s.result_truncated || s.result.trim().length > RESULT_SPOKEN))
+    ? "Results are cut here: read_message with a subagent's result_id reads its whole final message."
+    : null;
   const lines = activity.subagents.map((s) =>
     s.status === "running"
       ? `- ${s.title} (${runtimeLabel(s)}) "${truncate(s.task, 80)}": running for ${s.elapsed}${s.current_step ? `, now ${s.current_step}` : ""}.`
-      : `- ${s.title} (${runtimeLabel(s)}) "${truncate(s.task, 80)}": ${s.status} after ${s.elapsed}${s.result ? `. Result: ${truncate(s.result, 160)}` : "."}`,
+      : `- ${s.title} (${runtimeLabel(s)}) "${truncate(s.task, 80)}": ${s.status} after ${s.elapsed}${s.result ? `. Result: ${truncate(s.result, RESULT_SPOKEN)}` : "."}`,
   );
-  return [head, context, ...lines].filter(Boolean).join("\n");
+  return [head, context, cut, ...lines].filter(Boolean).join("\n");
+}
+
+// ---- read_message -----------------------------------------------------------------------------
+
+// The most characters one answer carries of a message, and what a head or a tail takes when no size
+// is asked for. A longer message is read in pages, never cut without saying so. A page is as long as
+// read_chat's longest answer (max_chars 6000), the size known to reach the model whole: ChatGPT cuts a
+// tool's answer that goes over a budget it does not publish.
+export const MESSAGE_PAGE = 6_000;
+export const MESSAGE_PIECE = 1_500;
+export const MESSAGE_MODES = ["head", "tail", "full"];
+export const MESSAGE_ROLES = ["user", "agent"];
+// What read_message reads by an id besides messages: a turn's thinking, a tool call, a subagent's
+// last message.
+export const MESSAGE_KINDS = [...MESSAGE_ROLES, "thinking", "call", "subagent"];
+
+// Characters are Unicode code points, so the two halves of an emoji are never split between pages
+// and the counts are what a person would count.
+export const charCount = (text) => Array.from(String(text ?? "")).length;
+
+// A message goes by its role and the timeline position where it starts. That position holds still
+// when the chat moves on; "the latest turn" does not. A turn's thinking goes by its turn's start, a
+// tool call by where it starts, a subagent by Paseo's id for it.
+export const messageRef = (role, seq) => `${role}-${seq}`;
+export const subagentRef = (id) => `subagent-${id}`;
+
+export function parseMessageRef(value) {
+  const text = String(value ?? "").trim();
+  const placed = /^(user|agent|thinking|call)-(\d+)$/.exec(text);
+  if (placed) return { role: placed[1], seq: Number(placed[2]) };
+  const subagent = /^subagent-([\w-]+)$/.exec(text);
+  return subagent ? { role: "subagent", id: subagent[1] } : null;
+}
+
+// A text made of parts the way read_chat joins them (a turn's thoughts): trimmed, the empty ones left
+// out, a blank line between.
+export const joined = (parts) => parts.map((p) => String(p ?? "").trim()).filter(Boolean).join("\n\n");
+
+// One tool call whole, as read_message gives it: what was run or asked and what came back. A file an
+// agent read, edited or wrote stays a path, as read_chat shows it.
+export function callText(item) {
+  const detail = item.detail ?? {};
+  const failed = item.status === "failed" ? " (failed)" : "";
+  const value = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v, null, 2));
+  const error = item.status === "failed" ? value(item.error?.content ?? item.error?.message ?? item.error) : "";
+  const parts = (() => {
+    switch (detail.type) {
+      case "shell":
+        return [`$ ${detail.command ?? ""}${failed}`, value(detail.output)];
+      case "plan":
+        return [`${item.name}${failed}: the plan`, value(detail.text)];
+      case "sub_agent":
+        return [`${item.name} ${detail.subAgentType ?? ""}: ${String(detail.description ?? "").trim()}${failed}`, value(detail.log)];
+      case "plain_text":
+        return [`${item.name}${failed}`, value(detail.text)];
+      case "edit":
+      case "write":
+      case "read":
+      case "search":
+      case "fetch":
+        return [describeToolCall(item, Infinity)];
+      default:
+        return [`${item.name}${failed}`, detail.input === undefined ? "" : `input: ${value(detail.input)}`, detail.output === undefined ? "" : `output: ${value(detail.output)}`];
+    }
+  })();
+  return [...parts, error && `error: ${error}`].filter(Boolean).join("\n");
+}
+
+// One window of a message: head takes the first `size` characters, tail the last `size`, full `size`
+// from `offset`. An offset past the end gives an empty window at the end.
+export function messageWindow(text, { mode = "full", size = MESSAGE_PAGE, offset = 0 } = {}) {
+  const chars = Array.from(String(text ?? ""));
+  const total = chars.length;
+  const width = Math.max(1, Math.trunc(size) || 1);
+  let start = Math.min(Math.max(0, Math.trunc(offset) || 0), total);
+  if (mode === "head") start = 0;
+  if (mode === "tail") start = Math.max(0, total - width);
+  const end = Math.min(total, start + width);
+  return { text: chars.slice(start, end).join(""), total, start, end };
+}
+
+// The part just before a window: a page of `size` ending where the window starts, or all of the
+// message's start when that is shorter.
+const partBefore = (window, size) => ({ offset: Math.max(0, window.start - size), size: Math.min(size, window.start) });
+
+// A piece of a message as fields. `found` is the message the operation located, `window` the piece.
+export function messageData({ chat, found, mode, size, window, cwd }) {
+  const images = found.images ?? [];
+  return {
+    chat,
+    total_turns: found.total,
+    turn: found.turn,
+    position: found.position,
+    role: found.role,
+    message_id: found.id,
+    // An agent writes several messages in a turn, counted from the last; a user's turn holds one.
+    ...(found.role === "agent" ? { message: found.number, ...(found.count === undefined ? {} : { agent_messages: found.count }) } : {}),
+    started_at: toIso(found.at),
+    mode,
+    total_chars: window.total,
+    offset: window.start,
+    returned_chars: window.end - window.start,
+    remaining_chars: window.total - window.end,
+    truncated: window.start > 0 || window.end < window.total,
+    next_offset: window.end < window.total ? window.end : null,
+    previous_offset: window.start > 0 ? partBefore(window, size).offset : null,
+    text: window.text,
+    ...(images.length ? { images: images.map((i) => imageRef(i, cwd)) } : {}),
+  };
+}
+
+// The same as text to read: which message, which part of it, what is left on either side and how to
+// get it, then the part itself. The way on comes before the part, so it is read even when a client
+// cuts a long answer short. `asked` is the offset the caller gave, for when it was past the end.
+export function messageText({ chatLine, found, mode, window, size, asked = 0 }) {
+  const who = {
+    user: "The user's message",
+    thinking: "The agent's thinking",
+    call: `The tool call ${found.name}`,
+    subagent: `The last message of subagent "${found.title}"`,
+  }[found.role] ?? (found.number === 1 ? "The agent's last message" : `The agent's message ${found.number}${found.count ? ` of ${found.count}` : ""} counted from the last`);
+  const shown = window.end - window.start;
+  const edge = mode === "head" ? ", the start" : mode === "tail" ? ", the end" : "";
+  let range = `${shown} of ${window.total} characters, offset ${window.start} to ${window.end}${edge}.`;
+  if (window.start === 0 && window.end === window.total) range = window.total === 0 ? "empty." : `all ${window.total} characters.`;
+  else if (shown === 0) range = `there is nothing at offset ${asked}: the message has ${window.total} characters.`;
+  const around = [];
+  if (window.end < window.total) {
+    around.push(`${window.total - window.end} more characters follow: call read_message again with message_id ${found.id}, mode full and offset ${window.end}.`);
+  }
+  if (window.start > 0) {
+    const before = partBefore(window, size);
+    around.push(`${window.start} characters come before: message_id ${found.id}, mode full, offset ${before.offset} and size ${before.size} read the part just before this one.`);
+  }
+  const images = (found.images ?? []).length ? ["", imageHint(found.turn, found.images.length)] : [];
+  // A subagent's message belongs to the subagent, not to a turn of the chat.
+  const where = found.turn === undefined ? "" : `, turn ${found.turn} of ${found.total} counted from the latest`;
+  return [chatLine, `${who}${where}: ${range}`, ...around, ...(shown > 0 ? ["", window.text] : []), ...images].join("\n");
 }

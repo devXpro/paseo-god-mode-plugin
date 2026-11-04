@@ -14,7 +14,10 @@ model, the 0.5.0 metadata against the new one (`eval/README.md`, `eval/results/r
 - **Guidance.** OpenAI's Apps SDK docs say ChatGPT and Codex read the server `instructions` next to
   the tool metadata, with the essentials in the first 512 characters, and that a tool description
   starts with "Use this when…" and says when not to. The instructions now open with a routing map
-  (one call per request); the rules that decide a call are repeated in the tool or parameter they
+  (one call first) and, in the same 512 characters, when to read on: only when an answer is cut and
+  the question needs the rest, never for a gist or a count (measured: with "one call per request" and
+  no word of reading on, a model still read on, but gave up on thinking it could not find); the rules
+  that decide a call are repeated in the tool or parameter they
   govern (the chat being discussed, ids never spoken, the read-back before allowing or stopping).
 - **Write tools act only on an explicit command.** Drafting, thinking aloud, "maybe we send it?" or
   "ok" after a draft nobody asked about get "Send it?" instead. With looser wording the model sent
@@ -105,7 +108,7 @@ lookup call is needed first.
 
 | Layer | Content | Changes with |
 | --- | --- | --- |
-| MCP server `instructions` (`initialize` and `server/discover`) | The routing map (one call per request) in the first 512 characters, then the write-command rule, the chat being discussed, the outcome of a write, no polling, no ids aloud, the read-back, language, dictation hints. | Deploy, and the site settings |
+| MCP server `instructions` (`initialize` and `server/discover`) | The routing map (one call first) and when to read on in the first 512 characters, then how far to read, the write-command rule, the chat being discussed, the outcome of a write, no polling, no ids aloud, the read-back, language, dictation hints. | Deploy, and the site settings |
 | Tool and parameter descriptions, annotations | "Use this when…" and when not; the rules that decide that tool's call, repeated there (the `chat` parameter carries the focus and the no-ids rule for every tool that takes it). | Deploy |
 | Hint lines inside tool results | Whether a write arrived, the next step when it is not obvious (busy, still working, which chat), and that a failed write is not confirmed. | Deploy |
 | ChatGPT project instructions | Style and routing only. | By hand, rarely |
@@ -121,7 +124,8 @@ unset means "the user's language". Per-language hints (how dictation mangles "Pa
 | `overview` | read | Waiting for the user, running, new replies and errors in the last `hours`, projects with chat counts. |
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `limit`. |
 | `list_pinned_chats` | read | The Pinned section at the top of Paseo's sidebar. Paseo pins a workspace, not a chat: every pinned one across projects, latest pin first (a hand-dragged order stays on the device), each with its active chats, usually one. `project` narrows them; `query` takes the rows with every word, then half, of their name, branch, project and chat titles, and with no match all of them come back. The way to a chat the user picks by its pin: pinned is no name the other tools could resolve. |
-| `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) `commands` (the last 8 tool calls of the turn with output, plus the total) or `thinking` (the agent's reasoning, latest kept first). Every view gives the chat's context window when known. `turn` counts back from the latest, `turns` reads several at once. |
+| `read_chat` | read | `view`: `text` (default; the turn's visible text, final message first, earlier ones dropped to fit `max_chars`) `commands` (the last 8 tool calls of the turn with output, plus the total) or `thinking` (the agent's reasoning, latest kept first). Every view gives the chat's context window when known. `turn` counts back from the latest, `turns` reads several at once. A digest: the user's message is cut at 300 characters (200 for several turns) whatever `max_chars` is, and what it cut is marked (`user_text_truncated`, `agent_text_truncated`, `user_chars`, `agent_chars`, a `Cut:` line) with the way to the rest: each turn's `user_message_id` and `agent_message_id`, and the cut message's id in the `Cut:` line. |
+| `read_message` | read | The exact text of one message of a chat, so nothing is read from a cut digest. `role` user or agent, `turn` (counted from the latest), `message` (which of the turn's agent messages, counted from the last). `mode`: `head` and `tail` give `size` characters (1500) from that end; `full` gives from `offset` up to 6000 characters (the longest `read_chat` answer, a size known to get past ChatGPT's undisclosed cut of long tool answers) and, when more is left, `truncated`, `remaining_chars`, `next_offset` and `previous_offset`. `message_id` (`user-166`, `agent-1117`) names the message by its place in the timeline, so the next page comes from the same message when the chat has moved on. A separate tool, not a mode of `read_chat`: one tool per action, and its answer is one message by position, not a digest of turns. |
 | `read_activity` | read | What a chat's agent and its subagents are doing now: state, current step, each subagent's task, status, model, thinking effort, running time, current step or result (running first; a named chat lists them all and reads the first 6 in detail, without `chat` the first 6 of each chat). Without `chat`: every chat at work, idle ones with running backgrounded subagents included. |
 | `show_images` | read | The images in a chat on the user's screen (a widget) and, where ChatGPT allows, in the model's context: the newest, a turn's (`turn`) or one of them (`image` = N of `[image N]`), up to `count` 4. Without `chat`: the newest image of the 8 most recent chats. See §10. |
 | `list_models` | read | Paseo's runtime catalog: each provider it can start (Claude, Codex…) with its models (default marked), their thinking levels and its modes; the ones it cannot start with the reason. `provider` narrows it. |

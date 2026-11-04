@@ -33,7 +33,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "listPinnedChats", "readChat", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "setChatModel", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "listPinnedChats", "readChat", "readMessage", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "setChatModel", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -91,13 +91,14 @@ test("instructions follow the language and the confirmation setting, and route e
   const { ops } = fakeOps();
   const ru = await createMcpHandler({ config: readConfig({ PASEO_LANGUAGE: "ru" }), ops })(rpc("initialize"));
   const text = ru.result.instructions;
-  assert.match(text, /^Paseo runs the user's coding agents \(Claude, Codex…\)/);
+  assert.match(text, /^Paseo runs the user's coding agents\. One call first: /);
+  assert.match(text, /A chat is one agent conversation \(Claude, Codex…\) in a project/);
   assert.match(text, /Speak to the user in Russian/);
   assert.match(text, /по SEO/);
   assert.match(text, /Not commands, ask «Отправить\?» first: «можешь закинуть»/);
-  assert.match(text, /subagents are doing now → read_activity/);
+  assert.match(text, /what agents or subagents do now → read_activity/);
   assert.match(text, /where something was said → search_messages/);
-  assert.match(text, /a picture or screenshot from a chat → show_images/);
+  assert.match(text, /a picture → show_images/);
   assert.match(text, /call one only when the user's latest words tell you to act now/);
   assert.match(text, /"ok" after a draft you did not ask about/);
   for (const phrase of ["write/draft a prompt", "…and then we'll send it", "ask the agent to …", "let's tell it …", "you can/could send it"]) assert.ok(text.includes(phrase), phrase);
@@ -121,12 +122,20 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.doesNotMatch(plain.result.instructions, /закинуть/, "language hints only for their language");
   assert.doesNotMatch(plain.result.instructions, /переключи|форт/, "nor the hints about switching a model");
   assert.match(plain.result.instructions, /no read-back needed/);
-  const marker = "→ search_messages.";
+  const marker = "where something was said → search_messages;";
   const routingEnd = text.indexOf(marker) + marker.length;
   assert.ok(routingEnd > marker.length && routingEnd <= 512, `the routing sits in the first 512 characters (ends at ${routingEnd})`);
   const slash = "slash commands (/compact) → run_slash_command, list_slash_commands.";
   const slashEnd = text.indexOf(slash) + slash.length;
   assert.ok(slashEnd > slash.length && slashEnd <= 512, `slash command routing sits in the first 512 characters too (ends at ${slashEnd})`);
+  // Reading on: by itself when the question needs the cut part, never for a gist or a count.
+  const readOn = "If an answer is cut (truncated, next_offset) and the question needs the rest, read on unasked: read_message by id, or the same call with next_offset. Not for a gist or count.";
+  const readOnEnd = text.indexOf(readOn) + readOn.length;
+  assert.ok(readOnEnd > readOn.length && readOnEnd <= 512, `when to read on sits in the first 512 characters too (ends at ${readOnEnd})`);
+  assert.match(text, /the end of a long output \(an error, a test summary, a conclusion\) with read_message mode tail; a text of many pages: say how long it is and offer to read on\./);
+  assert.doesNotMatch(text, /One call per request/, "reading on is no longer against the rules");
+  // A model kept an agent's thinking to itself as if it were its own hidden reasoning.
+  assert.match(text, /An agent's thinking \(read_chat view thinking\) is not hidden and not your own reasoning: it is the agent's working notes, which Paseo shows the user in the chat\. When asked how it reasoned or why it decided, read them and retell them\./);
   assert.match(text, /"archive it", "compact it", "pin it", "switch it to Sonnet", "set its effort to max"\), or are "yes"/);
   assert.match(text, /Switching a chat's model or effort, or opening a chat in a workspace, is a command too: «переключи на …»/);
   assert.match(text, /«а можно переключить\?», «может, поставить max\?» are questions: ask first\./);
@@ -149,7 +158,7 @@ test("initialize negotiates the protocol version", async () => {
   assert.equal((await handle(rpc("initialize", { protocolVersion: "1999-01-01" }))).result.protocolVersion, "2025-06-18");
 });
 
-test("tools/list exposes twenty-four tools, output schemas and honest annotations", async () => {
+test("tools/list exposes twenty-five tools, output schemas and honest annotations", async () => {
   const { result } = await createMcpHandler({ config: readConfig({}), ops: fakeOps().ops })(rpc("tools/list"));
   assert.deepEqual(
     result.tools.map((t) => t.name),
@@ -158,6 +167,7 @@ test("tools/list exposes twenty-four tools, output schemas and honest annotation
       "list_chats",
       "list_pinned_chats",
       "read_chat",
+      "read_message",
       "read_activity",
       "show_images",
       "search_messages",
@@ -185,6 +195,11 @@ test("tools/list exposes twenty-four tools, output schemas and honest annotation
   }
   const byName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
   assert.equal(byName.read_chat.annotations.readOnlyHint, true);
+  assert.equal(byName.read_message.annotations.readOnlyHint, true);
+  assert.deepEqual(byName.read_message.inputSchema.required, ["chat"], "everything else has a default");
+  assert.deepEqual(byName.read_message.inputSchema.properties.mode.enum, ["head", "tail", "full"]);
+  assert.deepEqual(byName.read_message.inputSchema.properties.role.enum, ["user", "agent"]);
+  assert.equal(byName.read_message.inputSchema.properties.size.maximum, 6000, "the page one answer carries: read_chat's longest");
   assert.equal(byName.list_pinned_chats.annotations.readOnlyHint, true);
   assert.equal(byName.list_pinned_chats.inputSchema.required, undefined, "list_pinned_chats without arguments lists every pin");
   assert.equal(byName.read_activity.annotations.readOnlyHint, true);
@@ -243,7 +258,18 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.list_chats.description, /^Use this only to find chats/);
   assert.match(byName.list_chats.description, /If you already have the chat, skip this/);
   assert.match(byName.overview.description, /do not list chats afterwards/);
-  assert.match(byName.read_chat.description, /never turn by turn/);
+  assert.match(byName.read_chat.description, /never one turn per call, and next_turn reads further back/);
+  assert.match(byName.read_chat.description, /Every turn says whether it has thinking and tool calls/);
+  assert.match(byName.read_chat.description, /its working notes, which Paseo shows the user in the chat \(not hidden, and not your own reasoning\): when asked how it reasoned or why it decided, read and retell them, since its reply gives only the conclusion; a turn without any names the turns that have them with what the user asked there: read the one the question is about/);
+  assert.doesNotMatch(byName.read_chat.description, /share none/, "Claude Code here records thinking: the hint made the model give up");
+  assert.match(byName.read_message.description, /Call it yourself, unasked, when an answer you got is cut and the question needs the cut part/);
+  assert.match(byName.read_message.description, /next_offset null is the end\. For the end of a long text \(an error, a test summary, a conclusion\), mode tail first\. Not for a gist or a count/);
+  assert.match(byName.read_activity.description, /when the user asks what they found or concluded, read_message with its result_id/);
+  assert.match(byName.search_messages.description, /For how many, total_matches is the answer: no paging\./);
+  // Numbers a model asks for get through ChatGPT's own check; the Site uses what it can.
+  assert.equal(byName.read_chat.inputSchema.properties.max_chars.maximum, 20000);
+  assert.equal(byName.read_activity.inputSchema.properties.max_chars.maximum, 20000);
+  assert.equal(byName.search_messages.inputSchema.properties.limit.maximum, 100);
   assert.match(byName.read_chat.description, /use read_activity/);
   assert.match(byName.read_activity.description, /Leave chat empty to cover every chat/);
   assert.match(byName.search_messages.description, /pass chat to search a single chat/);
@@ -252,7 +278,23 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.show_images.description, /first and only tool of the turn/);
   assert.match(byName.show_images.description, /no read_chat or list_chats first/);
   assert.match(byName.show_images.description, /Never describe an image you cannot see/);
-  for (const tool of ["read_chat", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "set_chat_model", "list_slash_commands", "run_slash_command"]) {
+  assert.match(byName.read_chat.description, /the user's own message is cut at 300 characters/);
+  assert.match(byName.read_chat.description, /read it with read_message/);
+  assert.match(byName.read_chat.inputSchema.properties.max_chars.description, /at most 6000 is used\. A longer reply, and the user's message past 300 characters \(200 for several turns\), are read whole with read_message\./);
+  assert.match(byName.read_message.description, /^Use this when the user wants the exact text of one message/);
+  assert.match(byName.read_message.description, /never cut without saying so: the answer has truncated, remaining_chars and next_offset/);
+  assert.match(byName.read_message.description, /never give it as the whole message/);
+  assert.match(byName.search_messages.description, /read_message with the match's message_id/);
+  assert.match(byName.read_chat.description, /When the question needs the cut part, read it with read_message: a message by agent_message_id or user_message_id/);
+  assert.match(byName.read_message.description, /the part read_chat cut off \("read the rest", "what are points 6 and 7\?"\)/);
+  assert.match(byName.read_message.description, /Pass the id you have/);
+  assert.match(byName.read_message.description, /a turn's whole thinking and a tool call's whole output \(read_chat views thinking and commands\) and a subagent's whole final message \(read_activity's result_id\)/);
+  assert.match(byName.read_chat.description, /a tool call by its id \(view commands\), a turn's thinking by thinking_id\./);
+  assert.match(byName.read_activity.description, /read_message with its result_id reads its whole final message; not for whether they are done/);
+  assert.match(byName.send_message.description, /say so and never send it again \(a reply cut to 1500 characters, reply_truncated, is read whole with read_message turn 1 when the user wants all of it\)/);
+  assert.doesNotMatch(byName.send_message.description, /say so and stop/, "stop read as: no more calls, not even to read the rest of the reply");
+  assert.match(byName.search_messages.description, /newest first; pass chat to search a single chat \(next_offset shows its older matches\)/);
+  for (const tool of ["read_chat", "read_message", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "set_chat_model", "list_slash_commands", "run_slash_command"]) {
     const chat = byName[tool].inputSchema.properties.chat.description;
     assert.match(chat, /Ids are for calls only/, tool);
     assert.match(chat, /Keep the chat being discussed/, tool);
@@ -400,6 +442,40 @@ test("read_chat, read_activity, list_chats, list_pinned_chats and search_message
   assert.deepEqual(calls.at(-1).args, { project: "proxy", query: "fleet" });
   await handle(call("search_messages", { query: "dataviz", project: "proxy", scan: 30 }));
   assert.deepEqual(calls.at(-1).args, { query: "dataviz", project: "proxy", chat: undefined, includeArchived: false, scan: 30, limit: 10 });
+});
+
+test("read_message passes its arguments through, and a bad one is a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured(), ops });
+  const args = (given) => ({ chat: "fleet", role: undefined, turn: undefined, message: undefined, id: undefined, mode: "full", size: undefined, offset: undefined, ...given });
+  await handle(call("read_message", { chat: "#a22524f" }));
+  assert.deepEqual(calls.at(-1), { name: "readMessage", url: SECRET, args: args({ chat: "#a22524f" }) }, "the mode defaults to full");
+  await handle(call("read_message", { chat: "fleet", role: "user", mode: "tail", size: 800 }));
+  assert.deepEqual(calls.at(-1).args, args({ role: "user", mode: "tail", size: 800 }));
+  await handle(call("read_message", { chat: "fleet", message_id: "agent-1117", offset: 12000, size: 6000 }));
+  assert.deepEqual(calls.at(-1).args, args({ id: "agent-1117", offset: 12000, size: 6000 }));
+  await handle(call("read_message", { chat: "fleet", role: "assistant", turn: 3, message: 2 }));
+  assert.deepEqual(calls.at(-1).args, args({ role: "agent", turn: 3, message: 2 }), "search_messages calls the agent assistant");
+  await handle(call("read_message", { chat: "fleet", mode: "head", offset: 0 }));
+  assert.deepEqual(calls.at(-1).args, args({ mode: "head", offset: 0 }), "an offset of 0 is harmless with head");
+  const before = calls.length;
+  for (const bad of [
+    {},
+    { chat: "fleet", role: "robot" },
+    { chat: "fleet", mode: "middle" },
+    { chat: "fleet", size: 0 },
+    { chat: "fleet", size: 1.5 },
+    { chat: "fleet", turn: 0 },
+    { chat: "fleet", message: "2" },
+    { chat: "fleet", offset: -1 },
+    { chat: "fleet", mode: "head", offset: 10 },
+    { chat: "fleet", mode: "tail", offset: 10 },
+    { chat: "fleet", message_id: "agent-x" },
+    { chat: "fleet", message_id: "message-12" },
+  ]) {
+    assert.equal((await handle(call("read_message", bad))).error.code, -32602, JSON.stringify(bad));
+  }
+  assert.equal(calls.length, before, "bad arguments run nothing");
 });
 
 test("start_chat passes the user's choices and the site settings apart", async () => {
@@ -655,6 +731,140 @@ test("the shapes the operations produce match the declared output schemas", () =
       },
     ],
     ["read_chat", { chat: sampleChat, total_turns: 4, turns: [{ turn: 1, position: 4, started_at: null, total_tool_calls: 2, tool_calls: [{ kind: "shell", name: "Bash", status: "completed", text: "$ ls" }] }] }],
+    [
+      "read_chat",
+      {
+        chat: sampleChat,
+        total_turns: 4,
+        turns: [
+          {
+            turn: 1,
+            position: 4,
+            started_at: null,
+            total_tool_calls: 2,
+            tool_calls: [
+              { kind: "shell", name: "Bash", status: "completed", text: "$ npm test …", id: "call-4900", chars: 28718, truncated: true },
+              { kind: "unknown", name: "mcp__proxy-mcp-prod__ssh_exec", status: "completed", text: "mcp__proxy-mcp-prod__ssh_exec", id: "call-4911", chars: 54300, truncated: true },
+            ],
+          },
+        ],
+      },
+    ],
+    ["read_chat", { chat: sampleChat, total_turns: 4, turns: [{ turn: 2, position: 3, started_at: null, thinking: "…", omitted_thoughts: 30, thinking_id: "thinking-4637", thinking_chars: 37086, thinking_truncated: true }] }],
+    ["read_chat", { chat: sampleChat, total_turns: 4, turns: [{ turn: 1, position: 4, started_at: null, thinking: "last idea", omitted_thoughts: 0, thinking_id: "thinking-90", thinking_chars: null, thinking_truncated: true }] }],
+    [
+      "read_message",
+      { chat: sampleChat, role: "subagent", message_id: "subagent-toolu_01TaARTVXCQjvZeqWfVXKADD", started_at: null, mode: "full", total_chars: 52329, offset: 0, returned_chars: 6000, remaining_chars: 46329, truncated: true, next_offset: 6000, previous_offset: null, text: "…" },
+    ],
+    [
+      "read_message",
+      { chat: sampleChat, total_turns: 8, turn: 3, position: 6, role: "call", message_id: "call-4900", started_at: null, mode: "full", total_chars: 900, offset: 0, returned_chars: 900, remaining_chars: 0, truncated: false, next_offset: null, previous_offset: null, text: "$ ls" },
+    ],
+    ["send_message", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "replied", delivered: true, reply: "Кадр …", reply_chars: 8494, reply_truncated: true }],
+    ["run_slash_command", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", provider: "claude", command: "/review", outcome: "replied", delivered: true, reply: "…", reply_chars: 9000, reply_truncated: true }],
+    [
+      "read_approval",
+      {
+        chat: sampleChat,
+        requests: [
+          { id: "permission-1", n: 1, kind: "plan", what: "plan: Reminders", text: "# Plan: Reminders\n…", text_chars: 4300, text_truncated: false, answer_with: "answer_approval" },
+          { id: "permission-2", n: 2, kind: "tool", what: "run: python3 - <<EOF …", text: "python3 - <<EOF", text_chars: 9000, text_truncated: true, answer_with: "answer_approval" },
+        ],
+      },
+    ],
+    [
+      "read_activity",
+      {
+        summary: "not working",
+        chats: [
+          {
+            chat: sampleChat,
+            working: false,
+            turn_started_at: null,
+            turn_elapsed: null,
+            current_step: null,
+            subagents_running: 0,
+            subagents_done: 1,
+            subagents: [{ id: "toolu_01", title: "general-purpose", task: "Research", status: "completed", started_at: null, updated_at: null, elapsed: "4 min", current_step: null, result: "Найдено …", result_chars: 52329, result_truncated: true, result_id: "subagent-toolu_01", tokens: null, model: null, effort: null }],
+          },
+        ],
+      },
+    ],
+    ["search_messages", { query: "голос", searched_chats: 1, matched_chats: 1, total_matches: 250, offset: 8, next_offset: 16, matches: [] }],
+    ["search_messages", { query: "голос", searched_chats: 1, matched_chats: 1, total_matches: 250, offset: 248, next_offset: null, matches: [] }],
+    [
+      "read_chat",
+      {
+        chat: sampleChat,
+        total_turns: 4,
+        turns: [
+          {
+            turn: 1,
+            position: 4,
+            started_at: null,
+            ended_at: null,
+            user_text: "Передаю все 12 ответов …",
+            user_chars: 10974,
+            user_text_truncated: true,
+            user_message_id: "user-166",
+            agent_text: "Done",
+            agent_chars: 4,
+            agent_text_truncated: false,
+            agent_message_id: "agent-1117",
+            omitted_messages: 0,
+            errors: [],
+          },
+          { turn: 2, position: 3, started_at: null, ended_at: null, user_text: "go", user_chars: 2, user_text_truncated: false, user_message_id: "user-90", agent_text: "", agent_chars: 0, agent_text_truncated: false, agent_message_id: null, omitted_messages: 0, errors: [] },
+        ],
+      },
+    ],
+    [
+      "read_message",
+      {
+        chat: sampleChat,
+        total_turns: 6,
+        turn: 1,
+        position: 6,
+        role: "user",
+        message_id: "user-166",
+        started_at: "2026-11-01T10:26:42.567Z",
+        mode: "head",
+        total_chars: 10974,
+        offset: 0,
+        returned_chars: 1500,
+        remaining_chars: 9474,
+        truncated: true,
+        next_offset: 1500,
+        previous_offset: null,
+        text: "Передаю все 12 ответов ДОСЛОВНО",
+      },
+    ],
+    [
+      "read_message",
+      {
+        chat: sampleChat,
+        note: '"proxy" matches 2 chats; this is the only active one.',
+        total_turns: 6,
+        turn: 2,
+        position: 5,
+        role: "agent",
+        message_id: "agent-1117",
+        message: 2,
+        agent_messages: 3,
+        started_at: null,
+        mode: "tail",
+        total_chars: 4021,
+        offset: 2521,
+        returned_chars: 1500,
+        remaining_chars: 0,
+        truncated: true,
+        next_offset: null,
+        previous_offset: 1021,
+        text: "… and that is all. [image 1]",
+        images: [{ n: 1, name: "image 1", viewable: true }],
+      },
+    ],
+    ["read_message", { chat: sampleChat, total_turns: 6, missing: "The chat has 6 turn(s); turn 9 does not exist." }],
     ["read_chat", { chat: sampleChat, note: '"proxy" matches 2 chats; this is the only active one.', total_turns: 1, turns: [] }],
     [
       "read_chat",
@@ -705,7 +915,10 @@ test("the shapes the operations produce match the declared output schemas", () =
         searched_chats: 20,
         matched_chats: 1,
         total_matches: 1,
-        matches: [{ chat: { id: sampleChat.id, short_id: "a22524f", title: "Fleet map", project: "proxy", updated_at: sampleChat.updated_at, archived: false }, turn: 2, role: "user", at: null, snippet: "x" }],
+        matches: [
+          { chat: { id: sampleChat.id, short_id: "a22524f", title: "Fleet map", project: "proxy", updated_at: sampleChat.updated_at, archived: false }, turn: 2, role: "user", at: null, snippet: "x", message_id: "user-166" },
+          { chat: { id: sampleChat.id, short_id: "a22524f", title: "Fleet map", project: "proxy", updated_at: sampleChat.updated_at, archived: false }, turn: 2, role: "assistant", at: null, snippet: "x" },
+        ],
       },
     ],
     ["start_chat", { chat_id: sampleChat.id, short_id: "a22524f", project: "proxy", outcome: "replied", reply: "pong" }],

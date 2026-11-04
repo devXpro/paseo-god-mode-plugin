@@ -6,7 +6,7 @@
 // each question's header, options by their label, several joined with ", ". Paseo maps those to what
 // each agent takes: Claude's answers by question text, Codex's by header. Pure, so the eval stub runs
 // it too.
-import { chatData, chatLine, describePermission, normalize, truncate } from "./text.mjs";
+import { charCount, chatData, chatLine, describePermission, MESSAGE_PAGE, messageWindow, normalize, truncate } from "./text.mjs";
 
 // Claude marks the option it recommends in its label: "Continue (Recommended)".
 const RECOMMENDED = /\s*\(recommended\)\s*/i;
@@ -151,15 +151,29 @@ export function fillAnswers(questions, given) {
 
 // ---- read_approval and answer_questions ------------------------------------------------------------
 
+// The whole of what a request asks to approve, where its line says less: a plan, a command. Null for
+// the rest.
+function requestFull(permission) {
+  if (permission.kind === "plan" && typeof permission.input?.plan === "string") return permission.input.plan;
+  if (permission.detail?.type === "shell" && typeof permission.detail.command === "string") return permission.detail.command;
+  return null;
+}
+
 // What read_approval says of one pending request: its kind, and the tool that answers it.
 export function requestData(permission, n) {
   const questions = permission.kind === "question" ? parseQuestions(permission.input) : null;
   const why = permission.kind === "question" ? cannotFill(permission, questions) : null;
+  const what = describePermission(permission, 300);
+  // Only where its line does not already say all of it.
+  const full = requestFull(permission);
+  const page = full === null || what.includes(full.trim()) ? null : messageWindow(full, { mode: "head", size: MESSAGE_PAGE });
   return {
     id: permission.id,
     n,
     kind: permission.kind,
-    what: describePermission(permission, 300),
+    what,
+    // A page of it, as much as one answer carries; a longer one says so.
+    ...(page ? { text: page.text, text_chars: charCount(full), text_truncated: page.end < page.total } : {}),
     answer_with: permission.kind !== "question" ? "answer_approval" : why ? "paseo" : "answer_questions",
     ...(why ? { why } : {}),
     ...(questions ? { questions: questions.map(questionData) } : {}),
@@ -170,7 +184,14 @@ export function requestData(permission, n) {
 function requestLines(permission, n) {
   const data = requestData(permission, n);
   const head = `Request ${n}: ${data.what}`;
-  if (data.answer_with === "answer_approval") return [`${head} (allow or deny with answer_approval)`];
+  if (data.answer_with === "answer_approval") {
+    if (data.text === undefined) return [`${head} (allow or deny with answer_approval)`];
+    const name = data.kind === "plan" ? "The plan" : "The command";
+    const cut = data.text_truncated
+      ? ` (the first ${charCount(data.text)} of its ${data.text_chars} characters; read_chat view commands gives its call's id, and read_message reads it whole)`
+      : "";
+    return [`${head} (allow or deny with answer_approval). ${name}${cut}:`, data.text];
+  }
   if (data.answer_with === "paseo") return [`${head}. God Mode cannot answer it: ${data.why}; the user answers it in Paseo.`];
   return [`${head}. Questions:`, ...parseQuestions(permission.input).flatMap(questionLines)];
 }

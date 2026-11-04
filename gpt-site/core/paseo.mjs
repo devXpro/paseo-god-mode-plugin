@@ -13,7 +13,9 @@ import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   activityData,
   activityText,
+  callText,
   candidatesText,
+  charCount,
   chatData,
   chatLine,
   chatQuestion,
@@ -31,19 +33,30 @@ import {
   imagesText,
   imageTarget,
   isStep,
+  joined,
   latestFirstWithin,
+  MESSAGE_MODES,
+  MESSAGE_PAGE,
+  MESSAGE_PIECE,
+  messageData,
+  messageRef,
+  messageText,
+  messageWindow,
   normalize,
+  parseMessageRef,
   pinnedResult,
   pinResult,
   pinRowFor,
   releaseData,
   repliedOutcome,
+  replyPart,
   resolve,
   rowQuestion,
   rowsQuestion,
   settleChat,
   settleRow,
   snippet,
+  subagentRef,
   toIso,
   toolCallData,
   truncate,
@@ -496,7 +509,7 @@ async function loadTurns(client, agentId, from, count) {
     });
   }
   if (wanted.length === 0) {
-    return { total, turns: [], missing: `The chat has ${total} turn(s); turn ${from} does not exist.` };
+    return { total, prompts, turns: [], missing: `The chat has ${total} turn(s); turn ${from} does not exist.` };
   }
   const turns = await Promise.all(
     wanted.map(async (w) => {
@@ -507,29 +520,54 @@ async function loadTurns(client, agentId, from, count) {
           : { direction: "before", cursor: { epoch: index.epoch, seq: w.end }, limit: TURN_ENTRIES, projection: "projected" },
       );
       const entries = page.entries.filter((e) => e.seqStart >= w.start && e.seqStart < w.end);
-      return { ...w, items: entries.map((e) => e.item), endedAt: entries.at(-1)?.timestamp ?? null };
+      // A turn longer than the page has lost its start. The user's message is then read on its own:
+      // without it the turn would show Paseo's 120-character preview in its place.
+      if (!entries.some((e) => e.item.type === "user_message")) {
+        const first = await userMessageAt(client, agentId, index.epoch, w.start);
+        if (first) entries.unshift(first);
+      }
+      // Whether the page reached back to the turn's start: a longer turn shows only its end.
+      const complete = !page.hasOlder || (page.entries[0]?.seqStart ?? Infinity) <= w.start;
+      return { ...w, items: entries.map((e) => e.item), entries, complete, endedAt: entries.at(-1)?.timestamp ?? null };
     }),
   );
-  return { total, turns };
+  return { total, prompts, turns };
+}
+
+// The user's message that starts a turn, found by the position the prompt index gives, so it is read
+// whole however long the turn is. Null when the daemon does not return it.
+async function userMessageAt(client, agentId, epoch, seq) {
+  const page = await client.fetchAgentTimeline(agentId, { direction: "after", cursor: { epoch, seq: Math.max(0, seq - 1) }, limit: 1, projection: "projected" });
+  return page.entries.find((e) => e.item.type === "user_message" && e.seqStart <= seq && seq <= e.seqEnd) ?? null;
 }
 
 // A turn's parts. The agent's images become "[image N]", numbered through the turn, and come back
 // separately with their sources.
 function turnText(turn) {
   const items = withoutRepeatAfterCompaction(turn.items);
+  const startOf = new Map((turn.entries ?? []).map((e) => [e.item, e.seqStart]));
   const agent = [];
   const images = [];
+  let final = "";
+  let finalSeq = null;
   for (const item of items) {
     // A done compaction (a /compact, or Claude's own when the context fills up) reads as a line.
     if (item.type === "compaction" && item.status === "completed") agent.push(compactionNote(item));
     if (item.type !== "assistant_message") continue;
     const shown = withImagePlaceholders(item.text, images.length + 1);
     agent.push(shown.text);
+    if (shown.text.trim()) {
+      final = shown.text;
+      finalSeq = startOf.get(item) ?? null;
+    }
     images.push(...shown.images);
   }
   return {
     user: items.find((i) => i.type === "user_message")?.text ?? turn.preview ?? "",
     agent,
+    // The agent's last message of the turn, whole, and where it starts in the timeline (its id).
+    final,
+    finalSeq,
     images,
     errors: items.filter((i) => i.type === "error").map((i) => i.message),
     calls: items.filter((i) => i.type === "tool_call"),
@@ -545,12 +583,41 @@ function chatHeader(target) {
 
 const OMITTED = /^\((\d+) earlier message\(s\) omitted\)\n\n/;
 
+// What read_chat cut from a turn, in words, so a cut text is never taken for the whole message. The
+// way to the rest is read_message, with the id of the message that was cut.
+function cutParts(t) {
+  return [
+    t.user_text_truncated && `the user's message (${t.user_chars} characters, message_id ${t.user_message_id})`,
+    t.agent_text_truncated && `the agent's last message (${t.agent_chars} characters, message_id ${t.agent_message_id})`,
+    t.omitted_messages > 0 && `${t.omitted_messages} earlier agent message(s)`,
+  ].filter(Boolean);
+}
+
+// What a turn holds besides its messages: how many tool calls and how much thinking, so the view
+// that shows them is asked for the right turn. A turn longer than a page has a thinking of unknown length.
+function turnHolds(t, { thinking, calls }) {
+  const whole = joined(thinking);
+  return {
+    total_tool_calls: calls.length,
+    ...(whole ? { thinking_id: messageRef("thinking", t.start), thinking_chars: t.complete === false ? null : charCount(whole) } : {}),
+  };
+}
+
+function holdsLine(t) {
+  const parts = [
+    t.thinking_id && `the agent's thinking, shown to the user in Paseo (${t.thinking_chars === null ? "a long one" : `${t.thinking_chars} characters`}; read_chat view thinking turn ${t.turn})`,
+    t.total_tool_calls > 0 && `${t.total_tool_calls} tool call(s) (view commands)`,
+  ].filter(Boolean);
+  return parts.length ? `This turn also has ${parts.join(" and ")}.` : null;
+}
+
 function renderTurnsText(target, loaded, max) {
   const perTurn = Math.floor(max / loaded.turns.length);
   const userMax = loaded.turns.length === 1 ? 300 : 200;
   const shaped = loaded.turns.map((t) => {
-    const { user, agent, images, errors } = turnText(t);
+    const { user, agent, final, finalSeq, images, errors, thinking, calls } = turnText(t);
     const reply = latestFirstWithin(agent, perTurn);
+    const shownReply = reply.replace(OMITTED, "");
     return {
       reply,
       data: {
@@ -559,10 +626,18 @@ function renderTurnsText(target, loaded, max) {
         started_at: toIso(t.startedAt),
         ended_at: toIso(t.endedAt),
         user_text: truncate(user, userMax),
-        agent_text: reply.replace(OMITTED, ""),
+        // truncate() judges the trimmed text; the count is of the message as it was written.
+        user_chars: charCount(user),
+        user_text_truncated: user.trim().length > userMax,
+        user_message_id: messageRef("user", t.start),
+        agent_text: shownReply,
+        agent_chars: charCount(final),
+        agent_text_truncated: final.trim() !== "" && !shownReply.includes(final.trim()),
+        agent_message_id: finalSeq === null ? null : messageRef("agent", finalSeq),
         omitted_messages: Number(reply.match(OMITTED)?.[1] ?? 0),
         errors,
         ...(images.length ? { images: images.map((i) => imageRef(i, target.cwd)) } : {}),
+        ...turnHolds(t, { thinking, calls }),
       },
     };
   });
@@ -578,7 +653,9 @@ function renderTurnsText(target, loaded, max) {
       `User asked: ${t.user_text}`,
       shaped[0].reply ? `Agent replied: ${shaped[0].reply}` : "Agent has not replied in this turn yet.",
       ...t.errors.map((e) => `Error: ${e}`),
+      ...(cutParts(t).length ? [`Cut: ${cutParts(t).join(", ")}. read_message gives a whole message, or its start or end.`] : []),
       ...(t.images ? [imageHint(t.turn, t.images.length)] : []),
+      ...(holdsLine(t) ? [holdsLine(t)] : []),
     ].join("\n");
   } else {
     text = [
@@ -589,35 +666,54 @@ function renderTurnsText(target, loaded, max) {
         `  User: ${t.user_text}`,
         `  Agent: ${t.agent_text || "(no reply yet)"}${t.omitted_messages ? ` (${t.omitted_messages} earlier message(s) omitted)` : ""}`,
         ...t.errors.map((e) => `  Error: ${e}`),
+        ...(cutParts(t).length ? [`  Cut: ${cutParts(t).join(", ")}. read_message turn ${t.turn} gives a whole message, or its start or end.`] : []),
         ...(t.images ? [`  ${imageHint(t.turn, t.images.length)}`] : []),
+        ...(holdsLine(t) ? [`  ${holdsLine(t)}`] : []),
       ]),
     ].join("\n");
   }
   return { text, data: { chat: chatData(target), total_turns: loaded.total, turns } };
 }
 
-function renderTurnsCommands(target, loaded, max) {
+// The latest calls of each turn; `offset` skips that many of the latest, so earlier ones are read on.
+function renderTurnsCommands(target, loaded, max, { offset = 0 } = {}) {
   const shownPerTurn = loaded.turns.length === 1 ? COMMANDS_SHOWN : Math.max(3, Math.floor(12 / loaded.turns.length));
   const perTurn = Math.floor(max / loaded.turns.length);
   const turns = loaded.turns.map((t) => {
+    const startOf = new Map((t.entries ?? []).map((e) => [e.item, e.seqStart]));
     const calls = turnText(t).calls;
-    const shown = calls.slice(-shownPerTurn);
+    const end = Math.max(0, calls.length - offset);
+    const shown = calls.slice(Math.max(0, end - shownPerTurn), end);
+    const earlier = end - shown.length;
     const perCall = Math.max(120, Math.floor(perTurn / Math.max(1, shown.length)));
     return {
       turn: t.turn,
       position: t.position,
       started_at: toIso(t.startedAt),
       total_tool_calls: calls.length,
-      tool_calls: shown.map((c) => toolCallData(c, perCall)),
+      tool_calls: shown.map((c) => toolCallData(c, perCall, startOf.get(c))),
+      ...(offset > 0 || earlier > 0 ? { offset, next_offset: earlier > 0 ? offset + shown.length : null } : {}),
     };
   });
   const lines = [chatHeader(target)];
   for (const t of turns) {
-    const scope = t.total_tool_calls > t.tool_calls.length ? `the last ${t.tool_calls.length} of ${t.total_tool_calls} tool calls` : `${t.total_tool_calls} tool call(s)`;
+    const first = t.total_tool_calls - (t.offset ?? 0) - t.tool_calls.length + 1;
+    const scope =
+      t.tool_calls.length === 0
+        ? `${t.total_tool_calls} tool call(s), none at offset ${t.offset}`
+        : (t.offset ?? 0) > 0
+          ? `tool calls ${first}-${first + t.tool_calls.length - 1} of ${t.total_tool_calls}`
+          : t.total_tool_calls > t.tool_calls.length
+            ? `the last ${t.tool_calls.length} of ${t.total_tool_calls} tool calls`
+            : `${t.total_tool_calls} tool call(s)`;
+    const onward = t.next_offset ? `\n${first - 1} earlier call(s): read_chat with view commands, turn ${t.turn} and offset ${t.next_offset} shows them.` : "";
+    // Before the calls, so it stays when their text is cut to fit.
+    const cut = t.tool_calls.filter((c) => c.truncated).map((c) => c.id);
+    const cutLine = cut.length ? `\nShown in part, read_message with the id reads one whole: ${cut.join(", ")}.` : "";
     lines.push(
       t.total_tool_calls === 0
         ? `Turn ${t.turn} of ${loaded.total}, counted from the latest: no commands or tool calls.`
-        : `Turn ${t.turn} of ${loaded.total}, counted from the latest, ${scope}:\n${truncate(t.tool_calls.map((c) => c.text).join("\n"), perTurn)}`,
+        : `Turn ${t.turn} of ${loaded.total}, counted from the latest, ${scope}:${cutLine}${onward}${t.tool_calls.length ? `\n${truncate(t.tool_calls.map((c) => c.text).join("\n"), perTurn)}` : ""}`,
     );
   }
   return { text: lines.join("\n"), data: { chat: chatData(target), total_turns: loaded.total, turns } };
@@ -625,43 +721,95 @@ function renderTurnsCommands(target, loaded, max) {
 
 // The agent's reasoning in each turn, latest kept first when it does not fit. Claude often records
 // no thinking text, so an empty turn says so instead of looking like a failed read.
-function renderTurnsThinking(target, loaded, max) {
+function renderTurnsThinking(target, loaded, max, { elsewhere = null } = {}) {
   const perTurn = Math.floor(max / loaded.turns.length);
   const turns = loaded.turns.map((t) => {
     const thoughts = turnText(t).thinking;
     const kept = latestFirstWithin(thoughts, perTurn);
+    const shown = kept.replace(OMITTED, "");
+    const whole = joined(thoughts);
     return {
       turn: t.turn,
       position: t.position,
       started_at: toIso(t.startedAt),
-      thinking: kept.replace(OMITTED, ""),
+      thinking: shown,
       omitted_thoughts: Number(kept.match(OMITTED)?.[1] ?? 0),
+      // A turn longer than one page shows only its end, so its length is not known here.
+      ...(whole ? { thinking_id: messageRef("thinking", t.start), thinking_chars: t.complete ? charCount(whole) : null, thinking_truncated: shown !== whole || !t.complete } : {}),
     };
   });
   const lines = [chatHeader(target)];
   for (const t of turns) {
     const where = `Turn ${t.turn} of ${loaded.total}, counted from the latest`;
+    const size = t.thinking_chars === null ? "more than shown" : `${t.thinking_chars} characters`;
+    const cut = t.thinking_truncated ? `\nCut: the turn's thinking has ${size} (message_id ${t.thinking_id}); read_message reads it whole.` : "";
     lines.push(
       t.thinking
-        ? `${where}, the agent's thinking${t.omitted_thoughts ? ` (${t.omitted_thoughts} earlier part(s) omitted)` : ""}:\n${t.thinking}`
-        : `${where}: no thinking recorded; the model shared none in this turn.`,
+        ? `${where}, the agent's thinking, the notes Paseo shows the user in the chat${t.omitted_thoughts ? ` (${t.omitted_thoughts} earlier part(s) omitted)` : ""}:${cut}\n${t.thinking}`
+        : `${where}: no thinking in this turn.`,
     );
   }
-  return { text: lines.join("\n"), data: { chat: chatData(target), total_turns: loaded.total, turns } };
+  if (elsewhere) {
+    const found = elsewhere.turns.map((t) => `turn ${t.turn}${t.prompt ? `, asked "${truncate(t.prompt, 80)}"` : ""} (${t.thinking_chars} characters)`).join("; ");
+    const beyond = elsewhere.all ? "" : `; turns before the latest ${elsewhere.looked} were not looked at: view thinking with turn ${elsewhere.looked + 1} and turns 10 looks further back`;
+    lines.push(
+      elsewhere.turns.length
+        ? `Turns with thinking: ${found}${beyond}. Read the one the question is about: read_chat view thinking with its turn shows its latest part, where the conclusion is; read_message with its thinking_id reads all of it, from the start.`
+        : `No other turn has thinking either${elsewhere.all ? "" : ` among the latest ${elsewhere.looked}`}${beyond}.`,
+    );
+  }
+  return { text: lines.join("\n"), data: { chat: chatData(target), total_turns: loaded.total, turns, ...(elsewhere ? { thinking_elsewhere: elsewhere } : {}) } };
+}
+
+// Which turns of a chat hold thinking besides those read, from the oldest turn down: from the chat's
+// latest TURN_ENTRIES entries, so a long chat's older turns are not looked at (`all` false, `looked`
+// how many of the latest turns were).
+async function turnsWithThinking(client, agentId, loaded) {
+  const page = await client.fetchAgentTimeline(agentId, { direction: "tail", limit: TURN_ENTRIES, projection: "projected" });
+  const prompts = loaded.prompts ?? [];
+  const total = prompts.length;
+  const read = new Set(loaded.turns.map((t) => t.turn));
+  const parts = new Map();
+  for (const e of page.entries) {
+    if (e.item.type !== "reasoning") continue;
+    const i = prompts.findLastIndex((p) => p.seq <= e.seqStart);
+    if (i < 0 || read.has(total - i)) continue;
+    parts.set(i, [...(parts.get(i) ?? []), withoutImages(e.item.text)]);
+  }
+  const turns = [...parts.entries()]
+    // What the user asked in that turn (Paseo's preview of the prompt), to tell which turn the question is about.
+    .map(([i, texts]) => ({ turn: total - i, prompt: prompts[i].preview ?? "", thinking_chars: charCount(joined(texts)), thinking_id: messageRef("thinking", prompts[i].seq) }))
+    .filter((t) => t.thinking_chars > 0)
+    .sort((a, b) => a.turn - b.turn)
+    .slice(0, 5);
+  const all = !page.hasOlder;
+  const first = page.entries[0]?.seqStart ?? Infinity;
+  return { turns, looked: all ? total : prompts.filter((p) => p.seq >= first).length, all };
 }
 
 const RENDERERS = { text: renderTurnsText, commands: renderTurnsCommands, thinking: renderTurnsThinking };
 
-// Searches one chat's messages; returns matches with turn numbers and snippets.
-async function searchChat(client, chat, query, perChat) {
+// Paseo gives a chat's places a page of 200 at a time, oldest first; this many pages are read, so the
+// newest are found and the count is true.
+const SEARCH_PAGES = 10;
+
+// Searches one chat's messages; returns matches with turn numbers and snippets, newest first (what
+// was said last is what is looked for most), `offset` of them skipped.
+async function searchChat(client, chat, query, perChat, offset = 0) {
   const found = await client.searchAgentTimeline({ agentId: chat.id, query });
-  const locations = found.locations ?? [];
+  const locations = [...(found.locations ?? [])];
+  let cursor = found.nextCursor;
+  for (let pages = 1; cursor && pages < SEARCH_PAGES; pages += 1) {
+    const next = await client.searchAgentTimeline({ agentId: chat.id, query, cursor });
+    locations.push(...(next.locations ?? []));
+    cursor = next.nextCursor;
+  }
   if (locations.length === 0) return { chat, total: 0, matches: [] };
   const index = await client.listAgentTimelinePrompts(chat.id);
   const prompts = index.prompts ?? [];
   const turnOf = (seq) => prompts.length - prompts.filter((p) => p.seq <= seq).length + 1;
   const matches = await Promise.all(
-    locations.slice(0, perChat).map(async (location) => {
+    locations.reverse().slice(offset, offset + perChat).map(async (location) => {
       const page = await client.fetchAgentTimeline(chat.id, {
         direction: "after",
         cursor: { epoch: found.epoch, seq: Math.max(0, location.seq - 1) },
@@ -669,15 +817,19 @@ async function searchChat(client, chat, query, perChat) {
         projection: "projected",
       });
       const entry = page.entries[0];
+      // Paseo places a match at the end of its message. The id read_message takes names a user's
+      // message by that place, its turn's prompt, and an agent's by where the message starts.
+      const holds = entry && entry.seqStart <= location.seq && location.seq <= entry.seqEnd;
       return {
         turn: turnOf(location.seq),
         role: location.role,
         at: toIso(entry?.timestamp),
         snippet: snippet(withoutImages(entry?.item?.text), query),
+        ...(holds ? { message_id: location.role === "user" ? messageRef("user", location.seq) : messageRef("agent", entry.seqStart) } : {}),
       };
     }),
   );
-  return { chat, total: locations.length, matches };
+  return { chat, total: locations.length, more: Boolean(cursor), matches };
 }
 
 function matchLine(chat, m) {
@@ -695,7 +847,7 @@ export async function readChat(pairingUrl, args = {}) {
 }
 
 // read_chat over an open connection (tests drive it with a fake client).
-export async function readChatOn(client, { chat, view = "text", turn = 1, turns = 1, maxChars } = {}) {
+export async function readChatOn(client, { chat, view = "text", turn = 1, turns = 1, maxChars, offset = 0 } = {}) {
   const count = clamp(Math.trunc(turns) || 1, 1, MAX_TURNS);
   const from = Math.max(1, Math.trunc(turn) || 1);
   const max = clamp(maxChars ?? (count === 1 ? 1500 : Math.min(6000, 800 * count)), 200, 6000);
@@ -706,7 +858,168 @@ export async function readChatOn(client, { chat, view = "text", turn = 1, turns 
   if (loaded.missing) {
     return withNote({ text: `${chatLine(target)}\n${loaded.missing}`, data: { chat: chatData(target), total_turns: loaded.total, turns: [] } }, picked.note);
   }
-  return withNote((RENDERERS[view] ?? renderTurnsText)(target, loaded, max), picked.note);
+  const renderer = RENDERERS[view] ?? renderTurnsText;
+  const blank = renderer === renderTurnsThinking && loaded.turns.some((t) => !joined(turnText(t).thinking));
+  const elsewhere = blank ? await turnsWithThinking(client, target.id, loaded) : null;
+  const result = renderer(target, loaded, max, { offset: Math.max(0, Math.trunc(offset) || 0), elsewhere });
+  // The turn that comes before the ones read, for reading a long chat further back.
+  const next = from + count <= loaded.total ? from + count : null;
+  result.data.next_turn = next;
+  if (count > 1 && next) result.text += `\n${loaded.total - next + 1} earlier turn(s): read_chat with turn ${next} reads on.`;
+  return withNote(result, picked.note);
+}
+
+// ---- read_message -------------------------------------------------------------------------------
+
+// Pages of TURN_ENTRIES read back from a turn's end while one of its messages is sought.
+const TURN_PAGES = 8;
+
+// The entries of one turn, oldest first. They are read back from the turn's end, a page at a time,
+// until `enough` says the message sought is among them, the turn's first entry is reached or
+// TURN_PAGES pages are read; `complete` says the turn's start was reached.
+async function turnEntries(client, agentId, epoch, w, enough) {
+  let entries = [];
+  let before = w.end === Infinity ? null : { epoch, seq: w.end };
+  for (let pages = 0; pages < TURN_PAGES; pages += 1) {
+    const page = await client.fetchAgentTimeline(
+      agentId,
+      before ? { direction: "before", cursor: before, limit: TURN_ENTRIES, projection: "projected" } : { direction: "tail", limit: TURN_ENTRIES, projection: "projected" },
+    );
+    entries = [...page.entries.filter((e) => e.seqStart >= w.start && e.seqStart < w.end), ...entries];
+    const complete = page.entries.length === 0 || page.entries[0].seqStart <= w.start || !page.hasOlder;
+    if (complete || enough(entries)) return { entries, complete };
+    before = { epoch, seq: page.entries[0].seqStart };
+  }
+  return { entries, complete: false };
+}
+
+// The agent's messages in a turn's entries, oldest first: each with where it starts in the timeline
+// (its id), when, its text with images as "[image N]" numbered through the turn as read_chat numbers
+// them, and those images. An empty message (a cancelled turn leaves one) is left out.
+function agentMessages(entries) {
+  const entryOf = new Map(entries.map((e) => [e.item, e]));
+  const messages = [];
+  let numbered = 0;
+  for (const item of withoutRepeatAfterCompaction(entries.map((e) => e.item))) {
+    if (item.type !== "assistant_message") continue;
+    const shown = withImagePlaceholders(item.text, numbered + 1);
+    numbered += shown.images.length;
+    if (!shown.text.trim()) continue;
+    const entry = entryOf.get(item);
+    messages.push({ seq: entry.seqStart, at: entry.timestamp, text: shown.text, images: shown.images });
+  }
+  return messages;
+}
+
+// Finds one message: the user's or an agent's message of a turn counted from the latest (`message`
+// counts an agent's messages from its last), or the one a message id names, which holds still when
+// the chat moves on. Returns it whole, with where it sits, or `missing` saying why there is none.
+async function findMessage(client, agentId, { role, turn, message, ref }) {
+  if (ref?.role === "subagent") return subagentMessage(client, agentId, ref.id);
+  const index = await client.listAgentTimelinePrompts(agentId);
+  const prompts = index.prompts ?? [];
+  const total = prompts.length;
+  // The turn of an id is the last one that starts at or before the message.
+  const i = ref ? prompts.findLastIndex((p) => p.seq <= ref.seq) : total - turn;
+  if (i < 0 || i >= total) {
+    return { total, missing: ref ? `The chat has no message ${messageRef(ref.role, ref.seq)}.` : `The chat has ${total} turn(s); turn ${turn} does not exist.` };
+  }
+  const w = { start: prompts[i].seq, end: prompts[i + 1]?.seq ?? Infinity };
+  const base = { total, turn: total - i, position: i + 1 };
+  const nothing = () => ({ total, missing: `The chat has no message ${messageRef(ref.role, ref.seq)}.` });
+  if (ref?.role === "thinking") {
+    // A turn's thinking goes by the turn's start, all of its parts joined as read_chat joins them, so
+    // the turn is read back to its start.
+    if (ref.seq !== w.start) return nothing();
+    const { entries, complete } = await turnEntries(client, agentId, index.epoch, w, () => false);
+    if (!complete) return { total, missing: `Turn ${base.turn} is longer than can be read, so its whole thinking cannot be given.` };
+    const thoughts = withoutRepeatAfterCompaction(entries.map((e) => e.item)).filter((item) => item.type === "reasoning");
+    const first = entries.find((e) => e.item.type === "reasoning");
+    return { ...base, role: "thinking", id: messageRef("thinking", w.start), at: first?.timestamp ?? null, text: joined(thoughts.map((item) => withoutImages(item.text))) };
+  }
+  if (ref?.role === "call") {
+    const { entries } = await turnEntries(client, agentId, index.epoch, w, (loaded) => loaded.length > 0 && loaded[0].seqStart <= ref.seq);
+    const entry = entries.find((e) => e.seqStart === ref.seq && e.item.type === "tool_call");
+    if (!entry) return nothing();
+    return { ...base, role: "call", id: messageRef("call", ref.seq), at: entry.timestamp, text: callText(entry.item), name: entry.item.name };
+  }
+  if ((ref ? ref.role : role) === "user") {
+    if (ref && ref.seq !== w.start) return { total, missing: `The chat has no message ${messageRef(ref.role, ref.seq)}.` };
+    const entry = await userMessageAt(client, agentId, index.epoch, w.start);
+    if (!entry) return { total, missing: `The user's message of turn ${base.turn} could not be read.` };
+    return { ...base, role: "user", id: messageRef("user", w.start), at: entry.timestamp, text: entry.item.text ?? "" };
+  }
+  const { entries, complete } = await turnEntries(
+    client,
+    agentId,
+    index.epoch,
+    w,
+    ref ? (loaded) => loaded.length > 0 && loaded[0].seqStart <= ref.seq : (loaded) => agentMessages(loaded).length >= message,
+  );
+  const messages = agentMessages(entries);
+  const at = ref ? messages.findIndex((m) => m.seq === ref.seq) : messages.length - message;
+  if (at < 0 || at >= messages.length) {
+    if (ref) return { total, missing: `The chat has no message ${messageRef(ref.role, ref.seq)}.` };
+    // A turn too long to read back to its start may hold the message further back; say so.
+    if (!complete) return { total, missing: `Message ${message} counted from the last is not among the last ${entries.length} entries of turn ${base.turn}, which is longer than can be read.` };
+    const none = messages.length === 0 ? `The agent has not written a message in turn ${base.turn} yet.` : `Turn ${base.turn} has ${messages.length} agent message(s), so there is no message ${message} counted from the last.`;
+    return { total, missing: none };
+  }
+  const found = messages[at];
+  return { ...base, role: "agent", id: messageRef("agent", found.seq), at: found.at, text: found.text, images: found.images, number: messages.length - at, ...(complete ? { count: messages.length } : {}) };
+}
+
+// Pages of a subagent's own timeline read back while its last message is sought.
+const SUBAGENT_PAGE = 50;
+const SUBAGENT_PAGES = 4;
+
+// A subagent's last message, from its own timeline: read back a page at a time until a message with
+// words in it turns up. It belongs to the subagent, so it has no turn of the chat.
+async function subagentMessage(client, agentId, id) {
+  const missing = { missing: `The chat has no subagent ${subagentRef(id)}.` };
+  const subagent = (await listSubagents(client, agentId)).find((s) => s.id === id);
+  if (!subagent) return missing;
+  const title = subagent.title || "subagent";
+  let before = null;
+  for (let pages = 0; pages < SUBAGENT_PAGES; pages += 1) {
+    const page = await client.fetchProviderSubagentTimeline(agentId, id, before ? { direction: "before", cursor: before, limit: SUBAGENT_PAGE } : { direction: "tail", limit: SUBAGENT_PAGE });
+    const rows = page.rows ?? [];
+    const last = rows.findLast((r) => r.item.type === "assistant_message" && String(r.item.text ?? "").trim());
+    if (last) return { role: "subagent", id: subagentRef(id), title, at: last.timestamp, text: withoutImages(last.item.text) };
+    if (rows.length === 0 || !page.hasOlder) break;
+    before = { epoch: page.epoch, seq: rows[0].seqStart ?? rows[0].seq };
+  }
+  return { missing: `Subagent "${title}" has no message with words in it${before ? " among its latest entries" : ""}.` };
+}
+
+export async function readMessage(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => readMessageOn(client, args));
+}
+
+// read_message over an open connection (tests drive it with a fake client). One message of a chat,
+// whole or its start or end: head and tail take `size` characters from that end; full takes `size`
+// from `offset`, at most MESSAGE_PAGE, and says what is left. Nothing is cut without saying how much
+// is left.
+export async function readMessageOn(client, { chat, role = "agent", turn = 1, message = 1, id, mode = "full", size, offset = 0 } = {}) {
+  const ref = id === undefined ? null : parseMessageRef(id);
+  if (id !== undefined && !ref) return { invalid: 'message_id is one that read_message returned, such as "agent-1117".' };
+  const how = MESSAGE_MODES.includes(mode) ? mode : "full";
+  const width = clamp(Math.trunc(size) || (how === "full" ? MESSAGE_PAGE : MESSAGE_PIECE), 1, MESSAGE_PAGE);
+  const picked = await pickChat(client, chat, undefined, { read: true });
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const found = await findMessage(client, target.id, {
+    role: role === "user" ? "user" : "agent",
+    turn: Math.max(1, Math.trunc(turn) || 1),
+    message: Math.max(1, Math.trunc(message) || 1),
+    ref,
+  });
+  if (found.missing) {
+    return withNote({ text: `${chatLine(target)}\n${found.missing}`, data: { chat: chatData(target), total_turns: found.total, missing: found.missing } }, picked.note);
+  }
+  const window = messageWindow(found.text, { mode: how, size: width, offset });
+  const text = messageText({ chatLine: chatLine(target), found, mode: how, window, size: width, asked: offset });
+  return withNote({ text, data: messageData({ chat: chatData(target), found, mode: how, size: width, window, cwd: target.cwd }) }, picked.note);
 }
 
 // The images in `count` turns of a chat starting at turn `from`, newest first: each with its turn,
@@ -846,7 +1159,8 @@ async function activityOf(client, chat, { known, limit = SUBAGENTS_SHOWN } = {})
           const items = page.rows.map((r) => r.item).reverse();
           const step = items.find(isStep);
           const result = items.find((i) => i.type === "assistant_message")?.text;
-          return [s.id, { ...s, step: describeStep(step), result: result ? truncate(withoutImages(result), 300) : null }];
+          // Whole: activityData cuts it to fit and says how long it is.
+          return [s.id, { ...s, step: describeStep(step), result: result ? withoutImages(result) : null }];
         } catch {
           return [s.id, s];
         }
@@ -905,8 +1219,10 @@ export async function searchMessages(pairingUrl, args = {}) {
 }
 
 // search_messages over an open connection (tests drive it with a fake client).
-export async function searchMessagesOn(client, { query, project, chat, includeArchived = false, scan, limit = 10 } = {}) {
+export async function searchMessagesOn(client, { query, project, chat, includeArchived = false, scan, limit = 10, offset = 0 } = {}) {
   const wanted = clamp(Math.trunc(limit) || 10, 1, 30);
+  // Older matches of one chat are read on by offset; across chats each shows its newest two.
+  const skip = chat ? Math.max(0, Math.trunc(offset) || 0) : 0;
   let candidates;
   let note;
   if (chat) {
@@ -927,7 +1243,7 @@ export async function searchMessagesOn(client, { query, project, chat, includeAr
   }
   const perChat = chat ? Math.min(wanted, 8) : 2;
   const results = await mapLimit(candidates, SEARCH_CONCURRENCY, (c) =>
-    searchChat(client, c, query, perChat).catch(() => ({ chat: c, total: 0, matches: [] })),
+    searchChat(client, c, query, perChat, skip).catch(() => ({ chat: c, total: 0, matches: [] })),
   );
   const hits = results.filter((r) => r.total > 0);
   const matches = hits.flatMap((r) => r.matches.map((m) => ({ chat: r.chat, ...m }))).slice(0, wanted);
@@ -941,15 +1257,26 @@ export async function searchMessagesOn(client, { query, project, chat, includeAr
       ...m,
     })),
   };
+  const totalMatches = hits.reduce((n, r) => n + r.total, 0);
+  // More places than the pages read: the count is the least there are.
+  const atLeast = hits.some((r) => r.more) ? "more than " : "";
+  if (chat) {
+    const rest = totalMatches - skip - matches.length;
+    Object.assign(data, { offset: skip, next_offset: rest > 0 ? skip + matches.length : null });
+  }
   if (matches.length === 0) {
+    if (totalMatches > 0) {
+      data.total_matches = totalMatches;
+      return withNote({ text: `"${query}" has ${atLeast}${totalMatches} match(es) in this chat, none at offset ${skip}.`, data }, note);
+    }
     return withNote({ text: `No messages matching "${query}" in the ${candidates.length} most recent chat(s) searched.`, data }, note);
   }
-  const totalMatches = hits.reduce((n, r) => n + r.total, 0);
   data.total_matches = totalMatches;
-  const shown = matches.length < totalMatches ? `; ${matches.length} of ${totalMatches} matches shown` : "";
+  const shown = matches.length < totalMatches ? `; ${matches.length} of ${atLeast}${totalMatches} matches shown, newest first` : "";
+  const onward = data.next_offset ? `${totalMatches - data.next_offset} older match(es): search_messages with this chat and offset ${data.next_offset} shows them.` : null;
   return withNote(
     {
-      text: [`"${query}" found in ${hits.length} of ${candidates.length} chat(s) searched${shown}:`, ...matches.map((m) => matchLine(m.chat, m))].join("\n"),
+      text: [`"${query}" found in ${hits.length} of ${candidates.length} chat(s) searched${shown}:`, ...matches.map((m) => matchLine(m.chat, m)), onward].filter(Boolean).join("\n"),
       data,
     },
     note,
@@ -1461,9 +1788,9 @@ function commandAnswer(title, text, entry, result, sent) {
     case "replied": {
       if (!result.reply) return { text: `Ran ${text} in ${title}; it finished without output. ${once}`, data: { ...sent, outcome: "replied", reply: "" } };
       const { text: shown, images } = withImagePlaceholders(result.reply);
-      const reply = truncate(shown, 1500);
-      const extra = images.length ? `\nThe result has ${images.length} image(s); show_images puts them on the user's screen.` : "";
-      return { text: `Ran ${text} in ${title}. ${once} Result:\n${reply}${extra}`, data: { ...sent, outcome: "replied", reply, ...(images.length ? { images: images.length } : {}) } };
+      const part = replyPart(shown);
+      const extra = [part.note, images.length ? `The result has ${images.length} image(s); show_images puts them on the user's screen.` : null].filter(Boolean).map((line) => `\n${line}`).join("");
+      return { text: `Ran ${text} in ${title}. ${once} Result:\n${part.reply}${extra}`, data: { ...sent, outcome: "replied", ...part.data, ...(images.length ? { images: images.length } : {}) } };
     }
     case "waiting_for_approval":
       return { text: `Sent ${text} to ${title}; it arrived and is waiting for approval: ${result.approval}. ${once}`, data: { ...sent, outcome: "waiting_for_approval", approval: result.approval } };

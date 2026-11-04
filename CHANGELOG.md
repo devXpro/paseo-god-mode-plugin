@@ -7,6 +7,95 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-04
+
+### Added
+
+- `read_message`: the exact text of one message of a chat, the user's own or one of the agent's, in
+  three modes. `head` and `tail` give `size` characters (1500 by default) from the start or the end of
+  the message; `full`, the default, gives it from `offset` in pages of up to 6000 characters, the
+  longest answer `read_chat` has always given (ChatGPT cuts a tool's answer that goes over a budget it
+  does not publish), so a long message is read in pages. Nothing is cut quietly: every answer says the
+  length of the whole message, whether the text is all of it (`truncated`), how many characters follow
+  (`remaining_chars`) and where to read on (`next_offset`, and `previous_offset` for the part before),
+  and the text says it before the page itself. `message_id` names the message by its place in the chat,
+  so the pages of a long one still come from the same message when the chat has moved on in between;
+  `turn` (counted from the latest, as in `read_chat` and `search_messages`) and `message` (one of the
+  agent's messages in the turn, counted from the last) find one without it. Counts are in characters
+  (Unicode code points): an emoji is never split between pages. `node core/probe.mjs message` runs it
+  against your Paseo.
+- `read_chat` gives each turn's `user_message_id` and `agent_message_id` (the agent's last message, null
+  before it replies), and every `search_messages` match the `message_id` of the message it was found
+  in: the ids `read_message` takes.
+- `read_message` also reads, by their ids, a turn's whole thinking (`thinking_id` in view thinking),
+  a tool call whole (`id` per call in view commands: a shell command and its output, an MCP tool's
+  input and output, a plan, a subagent's task) and a subagent's whole final message (`result_id` in
+  `read_activity`, and on a subagent's call in view commands, for a subagent of any turn). Files an
+  agent read or wrote stay paths.
+- `read_chat` view commands pages a turn's earlier calls with `offset` and `next_offset`: it shows the
+  last 8, and a long turn's earlier calls (a subagent's call among them) could not be reached.
+- `search_messages` takes `offset` and gives `next_offset` to read one chat's older matches.
+
+### Changed
+
+- `read_chat` says what it cut. The user's own message has always been cut at 300 characters (200 when
+  several turns are read), whatever `max_chars` was, with nothing but a trailing "…" to show it, and the
+  agent's last message is cut to fit `max_chars`. The answers now carry `user_text_truncated` and
+  `agent_text_truncated`, the whole lengths (`user_chars`, `agent_chars`) and a `Cut:` line in the text
+  that names what was cut, with its message id, and points to `read_message`; a text that was not cut
+  reads as before. `max_chars` is described as the budget for the agent's text; it stays at 6000 at most.
+- `search_messages` sends ChatGPT to `read_message` with a match's `message_id` for the whole message.
+  It used to send it to `read_chat` with the match's turn, which shows the turn's last message cut to
+  fit, not necessarily the one that matched.
+- `search_messages` shows the newest matches first. It showed the oldest: in a 104-turn chat with 45
+  matches it gave turns 104 back to 68 and never the three latest. It also follows Paseo's pages of
+  200 places, so a chat with more matches is counted whole.
+- `read_chat` view thinking says when a turn's thinking is cut (`thinking_truncated`, `thinking_chars`
+  and a `Cut:` line with `thinking_id`). Turns on this Mac hold up to 123 841 characters of thinking;
+  the view shows up to 6000.
+- `read_chat` view commands marks each call it shows in part (`truncated`, `chars`, `id`) and names
+  them before the calls. An MCP tool's call showed only its name and a shell call the start of its
+  output; outputs on this Mac run to 54 223 characters. A subagent's call reads as its type and task
+  with the id of its final message, where it read "Agent".
+- `read_activity` says when a subagent's result is cut at 300 characters (`result_truncated`,
+  `result_chars`) and gives its `result_id`; results ran to 52 329 characters.
+- The reply of `start_chat`, `send_message`, `answer_questions` and `run_slash_command` says when it is
+  cut at 1500 characters (`reply_truncated`, `reply_chars`) and how to read the rest.
+- `read_approval` gives a plan waiting for approval whole (`text`, up to 6000 characters, with
+  `text_chars` and `text_truncated`), where it gave the plan's first heading; a command longer than its
+  300-character line comes whole too.
+- The server instructions say when to read on: by itself, only when an answer is cut and the question
+  needs the rest, never for a gist or a count, and how far: the end of a long output with `read_message`
+  mode tail, a text of many pages offered rather than read whole. They opened with "One call per
+  request" and did not mention reading on.
+- `read_chat` says in every view whether a turn has thinking (`thinking_id`, `thinking_chars`) and tool
+  calls (`total_tool_calls`), and view thinking of a turn without any names the turns that have it,
+  with what the user asked there (`thinking_elsewhere`). Asked how an agent reasoned, a model read the
+  latest turn, found none and said there was none; the description also said models often share none,
+  while Claude Code here records up to 123 841 characters of thinking in a turn. Thinking is now called
+  what it is, the agent's working notes that Paseo shows the user in the chat, not hidden and not the
+  reader's own reasoning: led to the right turn, a model still declined to retell "its hidden internal
+  reasoning".
+- `read_chat` gives `next_turn`, and for several turns a line, to read a long chat further back.
+- `max_chars` of `read_chat` and `read_activity` and `limit` of `search_messages` take larger numbers and
+  use what they can (6000, 30): models ask for 12 000 or 100, and ChatGPT refuses a number above the
+  schema's maximum before the call reaches the Site.
+- `send_message` no longer says "say so and stop" after a delivery: a cut reply is read on when the
+  user wants all of it.
+
+### Fixed
+
+- An agent's reply longer than 6000 characters could not be read past that point: `read_chat` cut it
+  with a trailing "…" and said nothing of the rest, ChatGPT refuses a larger `max_chars` before the call
+  reaches the Site, and `search_messages` gives a snippet. Seen on an 8494-character answer of seven
+  sections whose seventh never reached ChatGPT; `read_message` reads it whole in two pages.
+- `read_chat` of a turn with more than 400 entries (a long run of tool calls) lost the start of the
+  turn and showed Paseo's 120-character preview in place of the user's message. It now reads the
+  message itself.
+- A text cut to fit (`read_chat`'s reply and user message, `search_messages` snippets) could end or
+  start with half of an emoji, which reaches ChatGPT as a broken character. A cut now keeps every
+  character whole.
+
 ## [0.18.0] - 2026-11-02
 
 ### Added

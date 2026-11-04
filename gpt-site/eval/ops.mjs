@@ -317,6 +317,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
         ended_at: toIso(t.end),
         user_text: truncate(t.user, count === 1 ? 300 : 200),
         agent_text: latestFirstWithin(agent, perTurn).replace(/^\(\d+ earlier message\(s\) omitted\)\n\n/, ""),
+        ...(messageIds ? { user_message_id: text.messageRef("user", t.position * 100), agent_message_id: agentIdOf(t.position, agent.filter((m) => m.trim()).length) } : {}),
         omitted_messages: 0,
         errors: [],
         ...(images.length ? { images: images.map((i) => text.imageRef(i, c.cwd)) } : {}),
@@ -333,6 +334,54 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
           ]),
         ].join("\n"),
         data: { chat: chatData(c, now), total_turns: loaded.total, turns: out },
+      },
+      picked.note,
+    );
+  }
+
+  // Message ids in read_chat and search_messages answers, for versions that have read_message: a
+  // turn's position times 100, plus the agent message's number from the turn's start (0 for the
+  // user's); null when the turn has no agent message.
+  const messageIds = typeof text.messageWindow === "function";
+  const agentIdOf = (position, n) => (n > 0 ? text.messageRef("agent", position * 100 + n) : null);
+
+  // read_message over the fake world, by turn, role and agent message number, windowed by the
+  // version under test's own helpers. A message id is the turn's position times 100, plus the agent
+  // message's number from the turn's start; the world holds no more than that. Versions without the
+  // tool lack messageWindow, and the op is left out.
+  async function readMessage(_url, { chat, role = "agent", turn = 1, message = 1, id, mode = "full", size, offset = 0 } = {}) {
+    log("readMessage", { chat, role, turn, message, id, mode, size, offset });
+    const picked = pickChat(chat, { read: true });
+    if (picked.ask) return picked.ask;
+    const c = picked.chat;
+    const ref = id ? text.parseMessageRef(id) : null;
+    const loaded = turnsOf(c, ref ? c.turns.length - Math.floor(ref.seq / 100) + 1 : Math.max(1, Math.trunc(turn) || 1), 1);
+    const t = loaded.turns[0];
+    const kind = ref ? ref.role : role === "user" ? "user" : "agent";
+    const messages = t ? shapeAgent(t).agent.filter((m) => m.trim()) : [];
+    const number = ref ? messages.length - ((ref.seq % 100) - 1) : Math.max(1, Math.trunc(message) || 1);
+    const whole = kind === "user" ? t?.user : messages[messages.length - number];
+    if (whole === undefined) {
+      const missing = t ? `Turn ${t.turn} has no such message.` : `The chat has ${loaded.total} turn(s); turn ${turn} does not exist.`;
+      return withNote({ text: `${chatLine(c, now)}\n${missing}`, data: { chat: chatData(c, now), total_turns: loaded.total, missing } }, picked.note);
+    }
+    const how = ["head", "tail", "full"].includes(mode) ? mode : "full";
+    const width = Math.min(Math.max(1, Math.trunc(size) || (how === "full" ? text.MESSAGE_PAGE : text.MESSAGE_PIECE)), text.MESSAGE_PAGE);
+    const window = text.messageWindow(whole, { mode: how, size: width, offset });
+    const found = {
+      total: loaded.total,
+      turn: t.turn,
+      position: t.position,
+      role: kind,
+      id: text.messageRef(kind, t.position * 100 + (kind === "user" ? 0 : messages.length - number + 1)),
+      at: t.at,
+      text: whole,
+      ...(kind === "agent" ? { number, count: messages.length } : {}),
+    };
+    return withNote(
+      {
+        text: text.messageText({ chatLine: chatLine(c, now), found, mode: how, window, size: width, asked: offset }),
+        data: text.messageData({ chat: chatData(c, now), found, mode: how, size: width, window, cwd: c.cwd }),
       },
       picked.note,
     );
@@ -394,7 +443,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     };
   }
 
-  function searchIn(c, query, perChat) {
+  function searchIn(c, query, perChat, offset = 0) {
     const q = norm(query);
     const words = q.split(" ").filter((w) => w.length >= 4);
     const hit = (s) => {
@@ -404,14 +453,18 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     const matches = [];
     c.turns.forEach((t, i) => {
       const turnNo = c.turns.length - i;
-      if (hit(t.user)) matches.push({ turn: turnNo, role: "user", at: toIso(t.at), snippet: snippet(t.user, query) });
-      for (const m of t.agent) if (hit(m)) matches.push({ turn: turnNo, role: "assistant", at: toIso(t.end ?? t.at), snippet: snippet(m, query) });
+      const id = (role, n) => (messageIds ? { message_id: role === "user" ? text.messageRef("user", (i + 1) * 100) : agentIdOf(i + 1, n) } : {});
+      if (hit(t.user)) matches.push({ turn: turnNo, role: "user", at: toIso(t.at), snippet: snippet(t.user, query), ...id("user") });
+      t.agent.filter((m) => m.trim()).forEach((m, k) => {
+        if (hit(m)) matches.push({ turn: turnNo, role: "assistant", at: toIso(t.end ?? t.at), snippet: snippet(m, query), ...id("assistant", k + 1) });
+      });
     });
-    return matches.slice(0, perChat);
+    // Newest first since read_message; before, in the order the chat ran.
+    return (messageIds ? matches.reverse() : matches).slice(offset, offset + perChat);
   }
 
-  async function searchMessages(_url, { query, project, chat, includeArchived = false, scan, limit = 10 } = {}) {
-    log("searchMessages", { query, project, chat, includeArchived, scan, limit });
+  async function searchMessages(_url, { query, project, chat, includeArchived = false, scan, limit = 10, offset = 0 } = {}) {
+    log("searchMessages", { query, project, chat, includeArchived, scan, limit, ...(offset ? { offset } : {}) });
     let candidates;
     if (chat) {
       const picked = pickChat(chat, { read: settles });
@@ -425,7 +478,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
         candidates = candidates.filter((c) => c.project === picked.project.name);
       }
     }
-    const hits = candidates.map((c) => ({ chat: c, matches: searchIn(c, query, chat ? 8 : 2) })).filter((h) => h.matches.length);
+    const hits = candidates.map((c) => ({ chat: c, matches: searchIn(c, query, chat ? 8 : 2, chat ? offset : 0) })).filter((h) => h.matches.length);
     const matches = hits.flatMap((h) => h.matches.map((m) => ({ chat: h.chat, ...m }))).slice(0, limit);
     const data = {
       query,
@@ -776,6 +829,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       overview,
       listChats,
       readChat,
+      ...(typeof text.messageWindow === "function" ? { readMessage } : {}),
       readActivity,
       showImages,
       searchMessages,

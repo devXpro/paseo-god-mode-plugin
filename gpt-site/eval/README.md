@@ -36,6 +36,24 @@ One run of the whole set is about 117 short Codex sessions, ~14k input tokens ea
 cached), roughly 12% of a Plus 5-hour window with `gpt-6.1-sol` at low effort; run it with
 `--parallel 1` or 2, since that model answers 429 to bursts.
 
+## Long texts
+
+`long/` checks what the main set cannot: whether a model reads a cut answer on by itself when the
+question needs the rest (a reply's last points, every subagent's findings, every match, how an agent
+reasoned, which tests failed, the error at the end of a log) and leaves it when it does not (a gist,
+a count). Its stub serves the checkout's real operations (`core/paseo.mjs`) over a fake Paseo in
+`long/world.mjs` whose long texts hide facts in their tails; a case passes when the reply holds them.
+
+```sh
+node eval/long/run.mjs --check          # --check: refuse numbers above a schema maximum, as ChatGPT does
+```
+
+Eight cases, about 0.5% of a Plus 5-hour window each with `gpt-6.1-sol` at low effort. The model is
+not deterministic: run a case more than once before trusting a change. Measured on 2026-11-04: the
+thinking case failed every run until the instructions said an agent's thinking is not hidden and
+not the model's own reasoning (it declined to retell "hidden internal reasoning"), then passed five
+runs of five; the other seven passed in every run.
+
 ## Isolation
 
 Every run passes `--ignore-user-config`, `--disable apps`, `--disable plugins`, `--disable

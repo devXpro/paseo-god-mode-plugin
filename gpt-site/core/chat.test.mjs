@@ -53,15 +53,16 @@ const TURNS = [
   { type: "assistant_message", text: "Any time." },
 ];
 
-test("view thinking reads the agent's reasoning per turn, and says so when the model shared none", async () => {
+test("view thinking reads the agent's reasoning per turn, and a turn without any points to the turns that have it", async () => {
   const one = await readChatOn(fakeClient({ items: TURNS }), { chat: "relay", view: "thinking", turn: 2 });
   assert.equal(one.data.turns[0].thinking, "The user asks about the relay. I should ping it.\n\nIt answered 200, so it is up.");
   assert.equal(one.data.turns[0].omitted_thoughts, 0);
-  assert.match(one.text, /Turn 2 of 2, counted from the latest, the agent's thinking:\nThe user asks about the relay/);
+  assert.match(one.text, /Turn 2 of 2, counted from the latest, the agent's thinking, the notes Paseo shows the user in the chat:\nThe user asks about the relay/);
   assert.doesNotMatch(one.text, /The relay is up\./, "no reply text in the thinking view");
   const none = await readChatOn(fakeClient({ items: TURNS }), { chat: "relay", view: "thinking" });
   assert.equal(none.data.turns[0].thinking, "");
-  assert.match(none.text, /Turn 1 of 2, counted from the latest: no thinking recorded; the model shared none in this turn\./);
+  assert.match(none.text, /Turn 1 of 2, counted from the latest: no thinking in this turn\.\nTurns with thinking: turn 2, asked "is the relay up\?" \(79 characters\)\. Read the one the question is about: read_chat view thinking with its turn shows its latest part, where the conclusion is; read_message with its thinking_id reads all of it, from the start\.$/);
+  assert.deepEqual(none.data.thinking_elsewhere, { turns: [{ turn: 2, prompt: "is the relay up?", thinking_chars: 79, thinking_id: "thinking-1" }], looked: 2, all: true });
   const cut = await readChatOn(fakeClient({ items: TURNS }), { chat: "relay", view: "thinking", turn: 2, maxChars: 200 });
   assert.ok(cut.data.turns[0].thinking.length <= 200);
 });

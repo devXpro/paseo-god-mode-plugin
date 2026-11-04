@@ -5,7 +5,7 @@
 import { PaseoOffline } from "./paseo.mjs";
 import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
-import { truncate } from "./text.mjs";
+import { MESSAGE_KINDS, MESSAGE_MODES, MESSAGE_PAGE, MESSAGE_PIECE, MESSAGE_ROLES, parseMessageRef, REPLY_SHOWN, truncate } from "./text.mjs";
 import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
@@ -54,8 +54,9 @@ const COMMAND_HINTS = {
 // characters and do not repeat the tool descriptions.
 export function buildInstructions(config) {
   const lines = [
-    "Paseo runs the user's coding agents (Claude, Codex…) on their computer. A chat is one agent conversation in a project; subagents are helpers its agent started.",
-    "One call per request: news or what needs the user → overview; what an agent or its subagents are doing now → read_activity; what a chat said or ran → read_chat; a picture or screenshot from a chat → show_images; where something was said → search_messages. Paseo plugins → plugin_read; slash commands (/compact) → run_slash_command, list_slash_commands.",
+    "Paseo runs the user's coding agents. One call first: news, what needs the user → overview; what agents or subagents do now → read_activity; what a chat said or ran → read_chat; a picture → show_images; where something was said → search_messages; plugins → plugin_read; slash commands (/compact) → run_slash_command, list_slash_commands.",
+    "If an answer is cut (truncated, next_offset) and the question needs the rest, read on unasked: read_message by id, or the same call with next_offset. Not for a gist or count.",
+    "A chat is one agent conversation (Claude, Codex…) in a project on the user's computer; subagents are helpers its agent started. An agent's thinking (read_chat view thinking) is not hidden and not your own reasoning: it is the agent's working notes, which Paseo shows the user in the chat. When asked how it reasoned or why it decided, read them and retell them. Read only what the question needs: the end of a long output (an error, a test summary, a conclusion) with read_message mode tail; a text of many pages: say how long it is and offer to read on.",
     'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it", "pin it", "switch it to Sonnet", "set its effort to max"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
     "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Pass a chat\'s id when an earlier result gave it: titles repeat. Otherwise pass the name the user said, with no list_chats first; the tool acts only on one clear match. needs_clarification means nothing was done: ask the user which one, unless their words pick one ("the latest" is the one updated most recently) or this conversation already read or used exactly one of them; then call again with its id.',
@@ -182,24 +183,53 @@ const TURN_OUT = {
     position: { type: "integer", description: "Counted from the start of the chat: 1 = first." },
     started_at: time,
     ended_at: time,
-    user_text: { type: "string" },
+    user_text: { type: "string", description: "The user's message, cut at 300 characters (200 when several turns are read): see user_text_truncated." },
+    user_chars: { type: "integer", description: "How many characters the user's whole message has." },
+    user_text_truncated: { type: "boolean", description: "true: user_text is only the start of the message; read_message reads all of it, or its start or end." },
+    user_message_id: { type: "string", description: "The user's message, for read_message." },
     agent_text: { type: "string", description: "Final message first; earlier ones dropped to fit. Images read as [image N]." },
-    omitted_messages: { type: "integer" },
+    agent_chars: { type: "integer", description: "How many characters the agent's last message of the turn has." },
+    agent_text_truncated: { type: "boolean", description: "true: the agent's last message is cut to fit max_chars; read_message reads all of it, or its start or end." },
+    agent_message_id: { type: ["string", "null"], description: "The agent's last message of the turn, for read_message; null: it has not replied yet." },
+    omitted_messages: { type: "integer", description: "Earlier agent messages of the turn left out to fit; read_message reads them, counted from the last with message." },
     errors: { type: "array", items: { type: "string" } },
     images: { type: "array", items: IMAGE_REF, description: "The images in this turn; show_images with this turn shows them." },
-    total_tool_calls: { type: "integer" },
+    total_tool_calls: { type: "integer", description: "How many tool calls the turn has: view commands shows them." },
+    offset: { type: "integer", description: "view commands: how many of the turn's latest calls were skipped." },
+    next_offset: { type: ["integer", "null"], description: "view commands: the offset that shows the turn's earlier calls; null: none are left." },
     tool_calls: {
       type: "array",
-      items: { type: "object", properties: { kind: { type: "string" }, name: { type: "string" }, status: { type: "string" }, text: { type: "string" } } },
+      items: {
+        type: "object",
+        properties: {
+          kind: { type: "string" },
+          name: { type: "string" },
+          status: { type: "string" },
+          text: { type: "string" },
+          id: { type: "string", description: "read_message with this id reads the whole call: what it ran or was asked, and its output." },
+          chars: { type: "integer", description: "How many characters the whole call has." },
+          truncated: { type: "boolean", description: "true: text shows only part of the call (a cut output, or only its name)." },
+          result_id: { type: "string", description: "A subagent's call: read_message with this id reads the subagent's whole final message." },
+        },
+      },
     },
     thinking: { type: "string", description: "view thinking: the agent's reasoning in this turn, latest kept first; empty when the model shared none." },
     omitted_thoughts: { type: "integer" },
+    thinking_id: { type: "string", description: "The turn has thinking: view thinking shows it, read_message with this id reads all of it." },
+    thinking_chars: { type: ["integer", "null"], description: "How many characters the turn's whole thinking has; null: the turn is too long to tell here." },
+    thinking_truncated: { type: "boolean", description: "true: thinking is not all of it; read_message with thinking_id reads it whole." },
   },
 };
 
 const MATCH_OUT = {
   type: "object",
-  properties: { turn: { type: "integer" }, role: { type: "string" }, at: time, snippet: { type: "string" } },
+  properties: {
+    turn: { type: "integer" },
+    role: { type: "string" },
+    at: time,
+    snippet: { type: "string" },
+    message_id: { type: "string", description: "The matched message, for read_message, which reads it whole." },
+  },
 };
 
 const OUTCOME_OUT = {
@@ -211,6 +241,8 @@ const OUTCOME_OUT = {
     outcome: { type: "string", enum: ["replied", "waiting_for_approval", "error", "still_working", "not_waiting", "busy", "archived"] },
     delivered: { type: "boolean", description: "true: it reached the agent, never send it again. false: nothing was sent (busy, archived)." },
     reply: { type: "string" },
+    reply_chars: { type: "integer", description: "How many characters the whole reply has." },
+    reply_truncated: { type: "boolean", description: `true: reply is only its first ${REPLY_SHOWN} characters; read_message with this chat (turn 1) reads it whole.` },
     images: { type: "integer", description: "Images in the reply; show_images shows them." },
     approval: { type: "string" },
     error: { type: "string" },
@@ -251,6 +283,9 @@ const REQUEST_OUT = {
     n: { type: "integer", description: "Its number among the chat's requests, for answer_approval's request." },
     kind: { type: "string", enum: ["tool", "plan", "question", "mode", "other"] },
     what: { type: "string" },
+    text: { type: "string", description: "kind plan: the plan; a command to run: the command. Only where what does not say all of it." },
+    text_chars: { type: "integer", description: "How many characters the whole plan or command has." },
+    text_truncated: { type: "boolean", description: "true: text is only its start; read_chat view commands gives the pending call's id, and read_message reads it whole." },
     answer_with: {
       type: "string",
       enum: ["answer_questions", "answer_approval", "paseo"],
@@ -324,7 +359,10 @@ const SUBAGENT_OUT = {
     updated_at: time,
     elapsed: { type: "string", description: 'How long it has run, or ran, e.g. "4 min".' },
     current_step: { ...nullableString, description: "Its latest tool call or thought, while running. Only the first six are read in detail: null for the rest." },
-    result: { ...nullableString, description: "Its final message, once finished. Only the first six are read in detail: null for the rest." },
+    result: { ...nullableString, description: "Its final message, once finished, cut at 300 characters. Only the first six are read in detail: null for the rest." },
+    result_chars: { type: "integer", description: "How many characters its whole final message has." },
+    result_truncated: { type: "boolean", description: "true: result is only the start of its final message." },
+    result_id: { type: "string", description: "Once finished: read_message with this id reads its whole final message, read in detail or not." },
     tokens: nullableString,
     model: {
       ...nullableString,
@@ -358,6 +396,29 @@ const ACTIVITY_OUT = {
 };
 
 const NOTE = { type: "string", description: "Why this chat was read when the name matched several." };
+
+// read_message's answer: the piece of the message asked for, and where it sits in the message.
+const MESSAGE_FIELDS = {
+  total_turns: { type: "integer" },
+  turn: { type: "integer", description: "The message's turn, counted from the latest: 1 = latest." },
+  position: { type: "integer", description: "The same turn counted from the start of the chat: 1 = first." },
+  role: { type: "string", enum: MESSAGE_KINDS, description: "user or agent: a message; thinking: a turn's thinking; call: a tool call; subagent: a subagent's last message." },
+  message_id: { type: "string", description: "Names this message in later calls, and holds still when the chat moves on." },
+  message: { type: "integer", description: "role agent: which of the turn's agent messages this is, counted from the last: 1 = the last." },
+  agent_messages: { type: "integer", description: "role agent: how many messages the agent wrote in the turn, when all of them were read." },
+  started_at: time,
+  mode: { type: "string", enum: MESSAGE_MODES },
+  total_chars: { type: "integer", description: "The whole message's length in characters." },
+  offset: { type: "integer", description: "Where text starts in the message, in characters from its start (0)." },
+  returned_chars: { type: "integer", description: "The length of text." },
+  remaining_chars: { type: "integer", description: "Characters of the message after text that this answer left out." },
+  truncated: { type: "boolean", description: "true: text is not the whole message; characters came before it (offset above 0) or follow it (remaining_chars above 0)." },
+  next_offset: { type: ["integer", "null"], description: "Offset of the part that follows text; null: text reaches the end of the message." },
+  previous_offset: { type: ["integer", "null"], description: "Offset of the part of the same size just before text; null: text starts at the message's start." },
+  text: { type: "string", description: "The message's text from offset, exactly as written (an agent's images read as [image N])." },
+  images: { type: "array", items: IMAGE_REF, description: "The images in this message; show_images with its turn shows them." },
+  missing: { type: "string", description: "Why there is no such message; nothing else is set but the chat." },
+};
 
 const SHOWN_IMAGE = {
   type: "object",
@@ -557,7 +618,7 @@ export const TOOLS = [
   {
     name: "read_chat",
     description:
-      'Use this to tell the user what a chat said or did, in one call, with the id you already have or the name the user said. Default: the latest turn, the agent\'s final message first; turns=N reads the last N turns at once (turns=5 sums up a whole short chat), never turn by turn. view "commands": the commands and tool calls it ran, only when asked what it ran; view "thinking": the agent\'s reasoning, only when asked how it thought (models often share none). It also tells how full the chat\'s context window is. Images read as [image N]: to show one or say what is on it, use show_images. For what it is doing right now, or its subagents, use read_activity; to find where something was said, search_messages.',
+      'Use this to tell the user what a chat said or did, with the id you already have or the name the user said. Default: the latest turn, the agent\'s final message first; turns=N reads up to 10 turns at once (turns=5 sums up a whole short chat), never one turn per call, and next_turn reads further back. Every turn says whether it has thinking and tool calls. view "commands": the commands and tool calls it ran and what they printed (the turn\'s last 8; next_offset shows earlier ones), when asked what it ran; view "thinking": the agent\'s thinking, its working notes, which Paseo shows the user in the chat (not hidden, and not your own reasoning): when asked how it reasoned or why it decided, read and retell them, since its reply gives only the conclusion; a turn without any names the turns that have them with what the user asked there: read the one the question is about. It also tells how full the chat\'s context window is. Images read as [image N]: to show one or say what is on it, use show_images. For what it is doing right now, or its subagents, use read_activity; to find where something was said, search_messages. It is a digest: the user\'s own message is cut at 300 characters (200 when several turns are read) and a long reply is cut to fit, and the answer says so (user_text_truncated, agent_text_truncated, a Cut: line). When the question needs the cut part, read it with read_message: a message by agent_message_id or user_message_id, a tool call by its id (view commands), a turn\'s thinking by thinking_id.',
     inputSchema: {
       type: "object",
       properties: {
@@ -565,7 +626,13 @@ export const TOOLS = [
         view: { type: "string", enum: READ_VIEWS, description: "text (default): what was said. commands: what it ran. thinking: how it reasoned." },
         turn: { type: "integer", minimum: 1, description: "The newest turn to read, counted from the latest: 1 = latest." },
         turns: { type: "integer", minimum: 1, maximum: 10, description: "How many turns to read, going back from turn. Default 1." },
-        max_chars: { type: "integer", minimum: 200, maximum: 6000, description: "Budget for the whole answer. Default 1500 for one turn, 800 per turn for several." },
+        max_chars: {
+          type: "integer",
+          minimum: 200,
+          maximum: 20000,
+          description: "Budget for the agent's text in the whole answer: default 1500 for one turn, 800 per turn for several; at most 6000 is used. A longer reply, and the user's message past 300 characters (200 for several turns), are read whole with read_message.",
+        },
+        offset: { type: "integer", minimum: 0, description: "view commands only: how many of the turn's latest calls to skip, to see earlier ones. Take it from next_offset." },
       },
       required: ["chat"],
     },
@@ -574,18 +641,61 @@ export const TOOLS = [
       note: NOTE,
       total_turns: { type: "integer" },
       turns: { type: "array", items: TURN_OUT },
+      next_turn: { type: ["integer", "null"], description: "The turn before the ones read: read_chat with it as turn reads further back; null: none is left." },
+      thinking_elsewhere: {
+        type: "object",
+        description: "view thinking, when a turn read has none: which other turns have thinking.",
+        properties: {
+          turns: {
+            type: "array",
+            items: { type: "object", properties: { turn: { type: "integer" }, prompt: { type: "string", description: "What the user asked in that turn, cut short." }, thinking_chars: { type: "integer" }, thinking_id: { type: "string" } } },
+          },
+          looked: { type: "integer", description: "How many of the latest turns were looked at." },
+          all: { type: "boolean", description: "false: older turns were not looked at." },
+        },
+      },
     }),
+    annotations: readOnly,
+  },
+  {
+    name: "read_message",
+    description:
+      `Use this when the user wants the exact text of one message of a chat: all of it ("read my last message in full", "what exactly did the agent write?"), only how it starts ("how does it begin?"), only how it ends ("what is at the end of it?"), or the part read_chat cut off ("read the rest", "what are points 6 and 7?"). role user is the user's own message of a turn; role agent (default) is the agent's, its last message of the turn unless message says another. mode head or tail gives size characters from the start or the end (default ${MESSAGE_PIECE}); mode full (default) gives the message from offset in one answer of up to ${MESSAGE_PAGE} characters. A longer message is never cut without saying so: the answer has truncated, remaining_chars and next_offset. To read on, call again with its message_id and next_offset as offset, leaving role, turn and message out. While truncated is true the text is only a part: never give it as the whole message. read_chat is only a digest (it cuts the user's message at 300 characters and a long reply to fit) and gives each turn's user_message_id and agent_message_id; search_messages finds a message by its words and gives its message_id. The same paging reads, by their ids, a turn's whole thinking and a tool call's whole output (read_chat views thinking and commands) and a subagent's whole final message (read_activity's result_id). Pass the id you have; role, turn and message are for when you have none. Call it yourself, unasked, when an answer you got is cut and the question needs the cut part (the rest of a reply, a subagent's findings, a command's output, how the agent reasoned), and stop once you have what it needs; next_offset null is the end. For the end of a long text (an error, a test summary, a conclusion), mode tail first. Not for a gist or a count: the digest is enough.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat: CHAT,
+        role: { type: "string", enum: MESSAGE_ROLES, description: "user: the user's own message of that turn. agent (default): the agent's message; search_messages calls it assistant." },
+        turn: { type: "integer", minimum: 1, description: "Which turn, counted from the latest: 1 = latest (default). The turn of a search_messages match means the same." },
+        message: { type: "integer", minimum: 1, description: "role agent only: which of the turn's agent messages, counted from the last: 1 = the last (default), 2 = the one before it." },
+        mode: { type: "string", enum: MESSAGE_MODES, description: "head: the first size characters. tail: the last size characters. full (default): from offset, up to size characters." },
+        size: {
+          type: "integer",
+          minimum: 1,
+          maximum: MESSAGE_PAGE,
+          description: `How many characters. Default ${MESSAGE_PIECE} for head and tail; for full ${MESSAGE_PAGE}, the most one answer carries.`,
+        },
+        offset: { type: "integer", minimum: 0, description: "mode full only: the first character to read, counted from the start of the message (0). Take it from the previous answer's next_offset to read on." },
+        message_id: {
+          type: "string",
+          description:
+            "An id from an earlier answer: a message_id, agent_message_id or user_message_id, a match's message_id, a tool call's id or thinking_id from read_chat, a subagent's result_id from read_activity. It names the same text even when the chat has moved on since; leave role, turn and message out when you pass it.",
+        },
+      },
+      required: ["chat"],
+    },
+    outputSchema: object({ chat: CHAT_OUT, note: NOTE, ...MESSAGE_FIELDS }),
     annotations: readOnly,
   },
   {
     name: "read_activity",
     description:
-      'Use this when the user asks what an agent is doing right now, how far it got, what its subagents are doing, or which model and thinking effort they run on ("what is it doing?", "what are the subagents up to?", "which models are the subagents on?"). One call returns the chat\'s state, current step and how full its context window is, and each subagent\'s task, status, model, effort, current step and running time; finished subagents come with their result. Name the chat to get every one of its subagents. Leave chat empty to cover every chat where an agent or a subagent is working now (the first six subagents of each). A null model or effort is one Paseo has not reported: say so, do not assume the main agent\'s. Not for what was said earlier: use read_chat.',
+      'Use this when the user asks what an agent is doing right now, how far it got, what its subagents are doing, or which model and thinking effort they run on ("what is it doing?", "what are the subagents up to?", "which models are the subagents on?"). One call returns the chat\'s state, current step and how full its context window is, and each subagent\'s task, status, model, effort, current step and running time; finished subagents come with their result. Name the chat to get every one of its subagents. Leave chat empty to cover every chat where an agent or a subagent is working now (the first six subagents of each). A null model or effort is one Paseo has not reported: say so, do not assume the main agent\'s. A finished subagent\'s result is cut at 300 characters (result_truncated): when the user asks what they found or concluded, read_message with its result_id reads its whole final message; not for whether they are done. Not for what was said earlier: use read_chat.',
     inputSchema: {
       type: "object",
       properties: {
         chat: { ...CHAT, description: `${CHAT.description} Leave empty for every chat that is working now.` },
-        max_chars: { type: "integer", minimum: 200, maximum: 6000, description: "Budget for the whole answer. Default 1500." },
+        max_chars: { type: "integer", minimum: 200, maximum: 20000, description: "Budget for the whole answer: default 1500, at most 6000 is used. Whole results: read_message by result_id." },
       },
     },
     outputSchema: object({ summary: { type: "string" }, note: NOTE, chats: { type: "array", items: ACTIVITY_OUT } }),
@@ -622,7 +732,7 @@ export const TOOLS = [
   {
     name: "search_messages",
     description:
-      "Use this to find where something was said or done (\"find where we discussed X\"), across chats or inside one: one call searches the messages of the most recent chats in parallel and returns the chat, the turn and a snippet; pass chat to search a single chat, project to narrow it. Do not read chats one by one to look for something. To read a match, call read_chat with its chat id and turn.",
+      "Use this to find where something was said or done (\"find where we discussed X\"), across chats or inside one: one call searches the messages of the most recent chats in parallel and returns the chat, the turn and a snippet, newest first; pass chat to search a single chat (next_offset shows its older matches), project to narrow it. Do not read chats one by one to look for something. To read a match, call read_chat with its chat id and turn; for the whole text of the matched message, read_message with the match's message_id. For how many, total_matches is the answer: no paging.",
     inputSchema: {
       type: "object",
       properties: {
@@ -631,7 +741,8 @@ export const TOOLS = [
         chat: CHAT,
         include_archived: INCLUDE_ARCHIVED,
         scan: { type: "integer", minimum: 1, maximum: 50, description: "How many of the most recent chats to search. Default 20." },
-        limit: { type: "integer", minimum: 1, maximum: 30, description: "Most matches to return. Default 10." },
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "Most matches to return: default 10, at most 30 are used; two per chat across chats, at most 8 per call with chat (next_offset shows the rest)." },
+        offset: { type: "integer", minimum: 0, description: "With chat: how many of its newest matches to skip, to show older ones. Take it from next_offset." },
       },
       required: ["query"],
     },
@@ -641,6 +752,8 @@ export const TOOLS = [
       searched_chats: { type: "integer" },
       matched_chats: { type: "integer" },
       total_matches: { type: "integer" },
+      offset: { type: "integer", description: "With chat: how many newer matches were skipped." },
+      next_offset: { type: ["integer", "null"], description: "With chat: the offset that shows the older matches; null: none are left." },
       matches: {
         type: "array",
         items: {
@@ -699,7 +812,7 @@ export const TOOLS = [
   {
     name: "send_message",
     description:
-      "Use this to send one message to an existing chat when the user's latest words tell you to send now: \"send it\", \"send it now\", \"tell it now: …\", \"continue\", their answer to the agent's question, or \"yes\" to your own \"Send it?\". One instruction = one call: never split it into several messages, never send it again or a reworded copy. Not commands, so ask \"Send it?\" first: \"write/draft a prompt\" (also \"…and then we'll send it\"), \"ask the agent to …\", \"let's tell it …\", \"you can/could send it\", \"I think it should…\", \"maybe we send it?\", \"ok\" after a draft you did not ask about. Use the chat being discussed unless the user names another. The result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived — say so and stop; busy means NOT delivered: ask whether to add it to the current work or interrupt, then call again with if_busy; archived means NOT delivered: that chat was archived and an active one has its title (same_title), so ask which one the user means; an error is not confirmed, never say it was sent. If the agent is still working, offer to check later; do not poll.",
+      "Use this to send one message to an existing chat when the user's latest words tell you to send now: \"send it\", \"send it now\", \"tell it now: …\", \"continue\", their answer to the agent's question, or \"yes\" to your own \"Send it?\". One instruction = one call: never split it into several messages, never send it again or a reworded copy. Not commands, so ask \"Send it?\" first: \"write/draft a prompt\" (also \"…and then we'll send it\"), \"ask the agent to …\", \"let's tell it …\", \"you can/could send it\", \"I think it should…\", \"maybe we send it?\", \"ok\" after a draft you did not ask about. Use the chat being discussed unless the user names another. The result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived — say so and never send it again (a reply cut to 1500 characters, reply_truncated, is read whole with read_message turn 1 when the user wants all of it); busy means NOT delivered: ask whether to add it to the current work or interrupt, then call again with if_busy; archived means NOT delivered: that chat was archived and an active one has its title (same_title), so ask which one the user means; an error is not confirmed, never say it was sent. If the agent is still working, offer to check later; do not poll.",
     inputSchema: {
       type: "object",
       properties: {
@@ -799,6 +912,8 @@ export const TOOLS = [
       questions: { type: "array", items: QUESTION_OUT, description: "invalid_answers: the questions again, to ask the user." },
       reason: { type: "string" },
       reply: { type: "string" },
+      reply_chars: { type: "integer", description: "How many characters the whole reply has." },
+      reply_truncated: { type: "boolean", description: `true: reply is only its first ${REPLY_SHOWN} characters; read_message with this chat (turn 1) reads it whole.` },
       images: { type: "integer", description: "Images in the reply; show_images shows them." },
       approval: { type: "string" },
       error: { type: "string" },
@@ -949,6 +1064,8 @@ export const TOOLS = [
       },
       delivered: { type: "boolean", description: "true: it reached the agent, never run it again for this request. false: nothing was sent." },
       reply: { type: "string", description: "What the command produced in this chat." },
+      reply_chars: { type: "integer", description: "How many characters the whole reply has." },
+      reply_truncated: { type: "boolean", description: `true: reply is only its first ${REPLY_SHOWN} characters; read_message with this chat (turn 1) reads it whole.` },
       images: { type: "integer", description: "Images in the reply; show_images shows them." },
       context: SLASH_CONTEXT,
       reason: { type: "string" },
@@ -1094,6 +1211,23 @@ function requireStrings(args, names) {
 
 const isArgs = (value) => value === undefined || (value !== null && typeof value === "object" && !Array.isArray(value));
 
+// read_message's arguments, checked before anything runs. Returns the role and mode to use, or { invalid }.
+function messageArguments(args) {
+  const whole = (value, min) => Number.isInteger(value) && value >= min;
+  // search_messages names the agent "assistant".
+  const role = args.role === "assistant" ? "agent" : args.role;
+  const mode = args.mode ?? "full";
+  if (role !== undefined && !MESSAGE_ROLES.includes(role)) return { invalid: `role must be one of ${MESSAGE_ROLES.join(", ")}.` };
+  if (!MESSAGE_MODES.includes(mode)) return { invalid: `mode must be one of ${MESSAGE_MODES.join(", ")}.` };
+  for (const key of ["turn", "message", "size"]) {
+    if (args[key] !== undefined && !whole(args[key], 1)) return { invalid: `${key} must be a whole number from 1.` };
+  }
+  if (args.offset !== undefined && !whole(args.offset, 0)) return { invalid: "offset must be a whole number from 0." };
+  if (args.offset > 0 && mode !== "full") return { invalid: 'offset goes with mode "full": head starts at the start of the message and tail ends at its end.' };
+  if (args.message_id !== undefined && !parseMessageRef(args.message_id)) return { invalid: 'message_id is one that read_message returned, such as "agent-1117".' };
+  return { role, mode };
+}
+
 // Maps a tool call to its operation. Returns the operation's { text, data },
 // or { invalid } for bad arguments.
 async function dispatch(name, args, config, ops, log, caller) {
@@ -1115,7 +1249,13 @@ async function dispatch(name, args, config, ops, log, caller) {
     case "read_chat":
       if (need("chat")) return { invalid: need("chat") };
       if (args.view !== undefined && !READ_VIEWS.includes(args.view)) return { invalid: `view must be one of ${READ_VIEWS.join(", ")}.` };
-      return ops.readChat(url, { chat: args.chat, view: args.view ?? "text", turn: args.turn ?? 1, turns: args.turns ?? 1, maxChars: args.max_chars });
+      return ops.readChat(url, { chat: args.chat, view: args.view ?? "text", turn: args.turn ?? 1, turns: args.turns ?? 1, maxChars: args.max_chars, ...(args.offset === undefined ? {} : { offset: args.offset }) });
+    case "read_message": {
+      if (need("chat")) return { invalid: need("chat") };
+      const checked = messageArguments(args);
+      if (checked.invalid) return checked;
+      return ops.readMessage(url, { chat: args.chat, role: checked.role, turn: args.turn, message: args.message, id: args.message_id, mode: checked.mode, size: args.size, offset: args.offset });
+    }
     case "read_activity":
       return ops.readActivity(url, { chat: args.chat || undefined, maxChars: args.max_chars });
     case "show_images":
@@ -1133,6 +1273,7 @@ async function dispatch(name, args, config, ops, log, caller) {
           includeArchived: Boolean(args.include_archived),
           scan: args.scan,
           limit: args.limit ?? 10,
+          ...(args.offset === undefined ? {} : { offset: args.offset }),
         })
       );
     case "list_models":

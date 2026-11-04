@@ -14,14 +14,15 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `overview` | read | `hours` | What is going on: chats waiting for an approval, running chats with their running subagents, chats with a new reply, and the projects. |
 | `list_chats` | read | `project`, `status` (running, waiting, new, all), `query`, `include_archived`, `limit` | Find chats by title, project or state that are not in the conversation yet. |
 | `list_pinned_chats` | read | `project`, `query` | The chats in the Pinned section at the top of Paseo's sidebar, across every project, latest pin first; also the way to a chat the user picks by its pin. |
-| `read_chat` | read | `chat`*, `view` (text, commands, thinking), `turn`, `turns`, `max_chars` | What a chat said (the latest turn, or the last N at once), the commands it ran, or the agent's reasoning. |
-| `read_activity` | read | `chat`, `max_chars` | What an agent and its subagents are doing now, and how full its context window is; each subagent with its model and thinking effort, as Paseo observed them (null when it has not reported them). Naming a chat lists all of its subagents; without `chat`, every chat at work, the first six subagents of each. |
+| `read_chat` | read | `chat`*, `view` (text, commands, thinking), `turn`, `turns`, `max_chars`, `offset` (commands) | What a chat said (the latest turn, or the last N at once), the commands it ran, or the agent's reasoning. A digest: it says what it cut and points to `read_message`; view commands pages a turn's earlier calls by `offset`. |
+| `read_message` | read | `chat`*, `role` (user, agent), `turn`, `message`, `mode` (head, tail, full), `size`, `offset`, `message_id` | The exact text of one message: all of it, only its start (`head`) or only its end (`tail`), in pages when it is long. See [Reading one message](#conventions). |
+| `read_activity` | read | `chat`, `max_chars` | What an agent and its subagents are doing now, and how full its context window is; each subagent with its model and thinking effort, as Paseo observed them (null when it has not reported them). Naming a chat lists all of its subagents; without `chat`, every chat at work, the first six subagents of each. A finished subagent's result is cut at 300 characters; its `result_id` reads the whole final message with `read_message`. |
 | `show_images` | read | `chat`, `turn`, `image`, `count` | The pictures and screenshots in a chat, shown on the user's screen in a widget and, where ChatGPT allows, given to the model. |
-| `search_messages` | read | `query`*, `project`, `chat`, `include_archived`, `scan`, `limit` | Where something was said, across the most recent chats or in one. |
+| `search_messages` | read | `query`*, `project`, `chat`, `include_archived`, `scan`, `limit`, `offset` | Where something was said, across the most recent chats or in one, newest first (`offset` reads one chat's older matches); each match with the `message_id` that `read_message` reads it whole by. |
 | `list_models` | read | `provider` | The agent runtimes Paseo can start (Claude, Codex…), each with its models, their thinking levels and its permission modes, from Paseo's own catalog. |
 | `start_chat` | write | `prompt`*, `project`, `workspace`, `wait_seconds`, `provider`, `model`, `thinking`, `mode` | Start one new chat with the task as its first message, like New chat, in a project (with a workspace of its own) or as another tab of a workspace that exists, on the runtime and model asked for, checked against Paseo's catalog first. A project or a workspace is given. |
 | `send_message` | write | `chat`*, `text`*, `if_busy` (steer, interrupt), `if_archived` (restore), `wait_seconds` | Send one message to an existing chat. |
-| `read_approval` | read | `chat`* | Everything a chat waits on, in full: a request that asks questions comes with every question and its numbered options, the recommended one marked. |
+| `read_approval` | read | `chat`* | Everything a chat waits on, in full: a request that asks questions comes with every question and its numbered options, the recommended one marked. A plan, or a command longer than its line, comes whole (`text`), up to 6000 characters. |
 | `answer_approval` | write | `chat`*, `decision`* (allow, deny), `request` | Allow or deny what a chat is waiting for; a request that asks questions takes `answer_questions`. |
 | `answer_questions` | write | `chat`*, `request`*, `answers`* (`question`, `options`, `text`), `wait_seconds` | Send the user's answers to the questions a chat asks (Claude's AskUserQuestion, Codex's questions), the way Paseo's question form does. |
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
@@ -55,6 +56,50 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   active chats only: the archive is searched only when the user asks (`include_archived` of
   `list_chats` and `search_messages`), and an archived chat is then reached by its id. Projects are
   matched by name too, and a project that matches nothing lists all of them.
+- **Reading one message.** `read_chat` is a digest: it cuts the user's own message at 300 characters
+  (200 when several turns are read), fits the agent's reply to `max_chars` (6000 at most; ChatGPT
+  refuses a larger value before the call reaches the Site) and says what it cut:
+  `user_text_truncated`, `agent_text_truncated` and `omitted_messages`, with the whole lengths in
+  `user_chars` and `agent_chars`, and a `Cut:` line in the text that names the cut message by its id
+  and points to `read_message`. Each turn carries `user_message_id` and `agent_message_id` (the agent's
+  last message; null before it replies), and each `search_messages` match the `message_id` of the
+  message it was found in. `read_message` gives the exact text of one message, in three modes. `head`
+  and `tail` return `size` characters from the start or the end of it (1500 by default). `full`, the
+  default, returns the message from `offset` in pages of 6000 characters at most, the longest answer
+  `read_chat` has always given: ChatGPT cuts a tool's answer that goes over a budget it does not
+  publish, so a page stays within a size known to reach the model whole. Whatever is left is never
+  dropped quietly: `truncated` is true, `remaining_chars` counts what follows the text and `next_offset`
+  is where to read on, and `previous_offset` is where the part just before it begins; the text says the
+  same before the page itself, so a client that cuts the answer short still leaves the way on. A message
+  is the user's (`role: user`, the one that starts a turn) or one of the agent's (`role: agent`;
+  `message` counts the turn's agent messages from the last, so 1 is the final one). `turn` counts from the
+  latest, as in `read_chat` and in the matches of `search_messages`. Counts and offsets are in characters
+  (Unicode code points), so an emoji is never split between two pages. Every answer carries `message_id`
+  (`user-166`, `agent-1117`: where the message sits in the chat's timeline). To read on, pass it with
+  `offset` and leave `role`, `turn` and `message` out: the next page then comes from the same message
+  even when the chat has moved on, which "the turn counted from the latest" would not survive. The user's
+  message is found by its place in the timeline, so a turn of any length gives it whole; an agent's images
+  read as `[image N]`, numbered through the turn as in `read_chat`. A turn or a message that does not
+  exist comes back as `missing`, and an offset past the end as an empty `text` with the message's length,
+  never as a shorter text passed off as the whole.
+- **Long texts and lists.** Nothing long is cut without saying so, and every cut text has an id that
+  `read_message` reads whole, in the same pages of 6000 characters: a message (`agent_message_id`,
+  `user_message_id`, a search match's `message_id`), a turn's thinking (`thinking_id`, with
+  `thinking_chars` and `thinking_truncated`, in view thinking), a tool call (`id`, `chars`, `truncated`
+  per call in view commands: a shell command and its output, an MCP tool's input and output, a plan,
+  a subagent's task), and a subagent's final message (`result_id`, in `read_activity` and on a subagent's
+  call in view commands; it reads a subagent of any turn). Files an agent read or wrote stay paths. The
+  reply of `start_chat`, `send_message`, `answer_questions` and `run_slash_command` is cut at 1500
+  characters with `reply_chars` and `reply_truncated`; `read_message` (turn 1) reads it whole. Lists
+  page where a list hid content: `read_chat` gives `next_turn` to read a long chat further back; view commands shows a turn's last 8 calls and `offset`/`next_offset`
+  the earlier ones; `search_messages` shows the newest matches first, follows Paseo's pages of 200 to
+  count them all, and `offset`/`next_offset` reads one chat's older ones. Paseo itself keeps at most
+  64 KiB of a shell output or tool text, the start of it. Every turn in every view says whether it has
+  thinking (`thinking_id`, `thinking_chars`) and tool calls (`total_tool_calls`), and view thinking of a
+  turn without any names the turns that have it (`thinking_elsewhere`, from the chat's latest 400
+  entries). The model is told to read on by itself only when the question needs the cut part, and not
+  for a gist or a count; budgets and limits above what is used (`max_chars` 6000, `limit` 30) are
+  accepted and cut to it, since ChatGPT refuses a number above the schema's maximum before the call.
 - **Pinned chats.** Paseo pins a workspace, not a chat: each row of its Pinned section is a
   workspace with its chats, usually one, sometimes none (its chat was archived, or it holds only
   terminals) or several. `list_pinned_chats` returns every row with its active chats, latest pin

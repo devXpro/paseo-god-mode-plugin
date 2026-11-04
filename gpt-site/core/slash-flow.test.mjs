@@ -178,6 +178,13 @@ test("a low-risk command runs at once and its output comes back; an unclear or u
   assert.equal(context.data.risk, "low");
   assert.match(context.data.reply, /^## Context Usage/);
   assert.match(context.text, /^Ran \/context in Fleet map\. It ran once; never run it again for this request\. Result:\n## Context Usage/);
+  assert.deepEqual([context.data.reply_chars, context.data.reply_truncated], [45, false]);
+  // A long output is cut to 1500 and says so, with the way to all of it.
+  const long = `## Review\n\n${"Строка отчёта с находкой 😀. ".repeat(300)}`;
+  const review = await run(fakeDaemon({ onSend: claudeAnswers(long) }), { command: "/context" });
+  // The chat's text as Paseo gives it, without the trailing space.
+  assert.deepEqual([review.data.reply_truncated, review.data.reply_chars], [true, Array.from(long.trim()).length]);
+  assert.match(review.text, new RegExp(`\\nThe reply is cut to 1500 of its ${Array.from(long.trim()).length} characters: read_message \\(turn 1\\) reads it whole\\.$`));
   const unknown = await run(client, { command: "definitely-not-a-command" });
   assert.equal(unknown.data.needs_clarification.kind, "command");
   assert.match(unknown.text, /No command of Fleet map matches "definitely-not-a-command", so nothing was sent\. Its commands: code-review, context, compact, gm-ping\./);

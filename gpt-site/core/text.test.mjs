@@ -139,6 +139,28 @@ test("truncate prefers a sentence end, then a word boundary", () => {
   assert.equal(truncate("abcdefghijklmnopqrstuvwxyz", 10), "abcdefghij …");
 });
 
+// A lone half of a surrogate pair is not a character: JSON carries it as an escape and a client
+// shows a replacement mark, or refuses the text.
+const halfPair = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+test("truncate and snippet never cut an emoji in half", () => {
+  // No space or sentence end to cut at, so the cut falls where the budget ends, at every parity.
+  for (const max of [10, 11, 50, 51]) {
+    const cut = truncate("😀".repeat(40), max);
+    assert.doesNotMatch(cut, halfPair, `max ${max}`);
+    assert.ok(cut.length <= max + 2, `max ${max}`);
+  }
+  assert.equal(truncate("ab😀cd", 3), "ab …", "the emoji that does not fit is left out whole");
+  assert.equal(truncate("ab😀cd", 4), "ab😀 …");
+  // A snippet's window opens and closes inside runs of emoji on both sides of the match.
+  for (const radius of [5, 6, 7, 8]) {
+    const s = snippet(`${"🇵🇱".repeat(30)} Привет мир ${"👩‍💻".repeat(30)}`, "привет", radius);
+    assert.match(s, /Привет/);
+    assert.doesNotMatch(s, halfPair, `radius ${radius}`);
+  }
+  assert.doesNotMatch(snippet("😀".repeat(200), "absent", 51), halfPair, "the fallback cut too");
+});
+
 test("latestFirstWithin keeps the final message and marks the cut", () => {
   assert.equal(latestFirstWithin(["early", "middle", "final"], 100), "early\n\nmiddle\n\nfinal");
   assert.equal(latestFirstWithin(["x".repeat(80), "final"], 50), "(1 earlier message(s) omitted)\n\nfinal");
@@ -517,10 +539,20 @@ test("a step that is an image reads as one, not as a path", () => {
 });
 
 test("a write's reply counts its images instead of reading their paths", () => {
-  assert.deepEqual(repliedOutcome("pong"), { text: "Agent replied: pong", data: { outcome: "replied", delivered: true, reply: "pong" } });
+  assert.deepEqual(repliedOutcome("pong"), { text: "Agent replied: pong", data: { outcome: "replied", delivered: true, reply: "pong", reply_chars: 4, reply_truncated: false } });
   const shot = repliedOutcome(`Done: ![Image](${SHOT})`);
   assert.equal(shot.text, "Agent replied: Done: [image 1]\nThe reply has 1 image(s); show_images puts them on the user's screen.");
-  assert.deepEqual(shot.data, { outcome: "replied", delivered: true, reply: "Done: [image 1]", images: 1 });
+  assert.deepEqual(shot.data, { outcome: "replied", delivered: true, reply: "Done: [image 1]", reply_chars: 15, reply_truncated: false, images: 1 });
+});
+
+test("a write's long reply says it is cut, how long it is and how to read all of it", () => {
+  // Agents' replies run to 13 000 characters (measured on this Mac's chats); the answer carries 1500.
+  const long = `Кадр, держи развилки 😀. ${"Раздел с подробностями и примерами. ".repeat(400)}`;
+  const out = repliedOutcome(long);
+  assert.equal(out.data.reply_truncated, true);
+  assert.equal(out.data.reply_chars, Array.from(long).length);
+  assert.ok(out.data.reply.length <= 1502 && out.data.reply.endsWith(" …"));
+  assert.match(out.text, new RegExp(`^Agent replied: Кадр, держи развилки 😀\\. [^\\n]+ …\\nThe reply is cut to 1500 of its ${Array.from(long).length} characters: read_message \\(turn 1\\) reads it whole\\.$`));
 });
 
 // ---- Pinned chats ----------------------------------------------------------------------------------

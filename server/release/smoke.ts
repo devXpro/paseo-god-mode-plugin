@@ -80,6 +80,9 @@ export async function smokeTest({ codex, checkoutDir, log, retries = 4, metadata
         if (visible[`${prefix}.read_activity`]) await check("read_activity", {});
         const chat = (listing as { chats?: { id?: string }[] } | null)?.chats?.[0]?.id;
         if (chat) await check("read_chat", { chat, turns: 2 });
+        // Only where the live plugin has it. The start of the chat's latest user message, or word that the
+        // chat has no turn: a valid result either way.
+        if (chat && visible[`${prefix}.read_message`]) await check("read_message", { chat, role: "user", mode: "head", size: 200 });
         // Only where the live plugin has it. The chat's newest image, or word that it has none: a valid result either way.
         if (chat && visible[`${prefix}.show_images`]) await check("show_images", { chat });
         // Only where the live plugin has it (0.10.0 on). The chat's commands, or why Paseo could not list
