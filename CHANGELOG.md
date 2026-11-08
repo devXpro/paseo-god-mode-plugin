@@ -7,6 +7,23 @@ GitHub release vX.Y.Z.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-08
+
+### Added
+
+- `rename_chat`: renames a chat by its id or name, like Rename on a chat's tab. It changes the chat's own
+  name, in its tab and in the chat lists.
+- `rename_workspace`: renames a workspace, a row of Paseo's sidebar, by its `workspace_id` or name. The
+  label of a row in the Pinned section is the workspace's name, so this is the tool that changes it: the
+  pin stays in place and the chats stay, with their own names; the answer gives the pin and the chats
+  as read back after the change.
+- Both answer with the names Paseo itself shows: `old_name` read before the request, `new_name` read
+  back after it. Paseo can accept a name and drop it, so `done: true` and `new_name` come only from that
+  reading; otherwise the outcome is `error`, with why (`error`) and what Paseo shows instead
+  (`current_name`). A target that is not one clear match asks (`needs_clarification`) and changes
+  nothing, and a name already as asked is `unchanged`. `node core/probe.mjs rename` and
+  `rename-workspace` run them against your Paseo.
+
 ## [0.19.0] - 2026-11-04
 
 ### Added

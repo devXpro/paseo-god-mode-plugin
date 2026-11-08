@@ -19,6 +19,8 @@
 //   node core/probe.mjs stop <chat>
 //   node core/probe.mjs archive <chat>
 //   node core/probe.mjs pin|unpin <chat> | --workspace W
+//   node core/probe.mjs rename <chat> <new name…>
+//   node core/probe.mjs rename-workspace <workspace> <new name…>
 //   node core/probe.mjs plugins
 //   node core/probe.mjs plugin-read <plugin> [operation] [--args JSON]
 //   node core/probe.mjs plugin-act <plugin> <operation> [--args JSON] [--confirm TOKEN]
@@ -49,6 +51,8 @@ import {
   readApproval,
   readChat,
   readMessage,
+  renameChat,
+  renameWorkspace,
   runSlashCommand,
   searchMessages,
   setChatModel,
@@ -171,6 +175,8 @@ const operations = {
   archive: () => archiveChat(url, { chat: first }),
   pin: () => pinChat(url, { chat: first, workspaceId: values.workspace, action: "pin" }),
   unpin: () => pinChat(url, { chat: first, workspaceId: values.workspace, action: "unpin" }),
+  rename: () => renameChat(url, { chat: first, name: rest.join(" ").trim() }),
+  "rename-workspace": () => renameWorkspace(url, { workspace: first, name: rest.join(" ").trim() }),
   plugins: () => pluginRead(url, {}),
   "plugin-read": () => pluginRead(url, { plugin: first, operation: rest[0], args: values.args ? JSON.parse(values.args) : undefined }),
   "plugin-act": () =>

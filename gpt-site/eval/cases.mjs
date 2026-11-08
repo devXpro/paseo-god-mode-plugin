@@ -754,6 +754,18 @@ const questionCases = [
   { id: "q.ru.allow", group: "questions", lang: "ru", scenario: ASKS, context: ASK_READ, phrase: "да, разреши ему", expect: { first: [], acceptable: ["answer_approval", "read_approval"], delivered: 0, maxCalls: 1, final: "ask" } },
 ];
 
+// Renames (rename_chat, rename_workspace). The name on a sidebar row, the Pinned section included, is the
+// workspace's, so "the pin's name" goes to rename_workspace and "this chat" to rename_chat. A rename is
+// a write: only on a command, once; a question about renaming is none.
+const renameCases = [
+  { id: "rn.ru.chat", group: "rename", lang: "ru", context: REL_CTX, phrase: "переименуй этот чат в Заметки к релизу 0.7", expect: { first: ["rename_chat"], args: { chat: REL }, writes: 1, delivered: 1, maxCalls: 1 } },
+  { id: "rn.en.chat", group: "rename", lang: "en", context: REL_CTX, phrase: "rename this chat to Release notes 0.7", expect: { first: ["rename_chat"], args: { chat: REL }, writes: 1, delivered: 1, maxCalls: 1 } },
+  { id: "rn.ru.workspace", group: "rename", lang: "ru", phrase: "переименуй воркспейс Скрипты деплоя в Инструменты деплоя", expect: { first: ["rename_workspace"], writes: 1, delivered: 1, maxCalls: 2 } },
+  { id: "rn.ru.pin", group: "rename", lang: "ru", phrase: "переименуй закреп Скрипты деплоя в Инструменты деплоя", expect: { first: ["rename_workspace"], acceptable: ["list_pinned_chats"], writes: 1, delivered: 1, maxCalls: 2 } },
+  { id: "rn.en.pin", group: "rename", lang: "en", phrase: "rename the pinned release notes row to Release archive", expect: { first: ["rename_workspace"], acceptable: ["list_pinned_chats"], writes: 1, delivered: 1, maxCalls: 2 } },
+  { id: "rn.ru.question", group: "rename", lang: "ru", phrase: "а можно переименовать закреп Скрипты деплоя?", expect: { first: [], acceptable: ["list_pinned_chats"], writes: 0, maxCalls: 1 } },
+];
+
 // A chat's model and thinking level changed in place (set_chat_model). It is a write, so only on a
 // command; a question about it is none. The words are the user's own, dictation included («форт» for
 // effort). "This chat" is the one the conversation is about. A family name that fits several models
@@ -808,6 +820,7 @@ export const CASES = [
   ...modelCases.map((c) => ({ block: "models", ...c })),
   ...pinnedCases.map((c) => ({ block: "pinned", ...c })),
   ...pinCases.map((c) => ({ block: "pin", ...c })),
+  ...renameCases.map((c) => ({ block: "rename", ...c })),
   ...questionCases.map((c) => ({ block: "questions", ...c })),
   ...chatModelCases.map((c) => ({ block: "chatmodel", ...c })),
   ...workspaceCases.map((c) => ({ block: "workspace", ...c })),

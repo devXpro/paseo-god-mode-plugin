@@ -611,17 +611,23 @@ const ROW_QUESTIONS = {
 
 const latestChat = (row) => Math.max(0, ...row.chats.map((c) => Date.parse(c.updatedAt) || 0));
 
-// needs_clarification for the workspace start_chat was asked to open a chat in: nothing was started.
+// What the question about a workspace says was not done, and what else there is to offer when no row fits.
+const ROW_TOOLS = {
+  start_chat: { undone: "no chat was started", orElse: "Ask which one, or start the chat in the project alone, which gives it a workspace of its own:" },
+  rename_workspace: { undone: "nothing was renamed", orElse: "Ask which one:" },
+};
+
+// needs_clarification for the workspace a tool was asked to act on: nothing was done.
 // The rows to pick from come newest first, told apart by their chats.
-export function rowsQuestion(query, reason, rows, { now = Date.now() } = {}) {
+export function rowsQuestion(query, reason, rows, { now = Date.now(), tool = "start_chat" } = {}) {
   const shown = [...rows].sort((a, b) => latestChat(b) - latestChat(a)).slice(0, CHOICES_SHOWN);
   const ask =
     reason === "no_match"
-      ? "The most recent workspaces follow; the user may have said a name in another language or spelling. Ask which one, or start the chat in the project alone, which gives it a workspace of its own:"
+      ? `The most recent workspaces follow; the user may have said a name in another language or spelling. ${ROW_TOOLS[tool].orElse}`
       : 'Ask the user which one, naming what tells them apart. Pick one yourself (call again with its workspace_id) only if the user\'s words pick it or this conversation already used exactly that workspace:';
   return {
     text: [
-      `${ROW_QUESTIONS[reason](query, rows.length)}, so no chat was started.`,
+      `${ROW_QUESTIONS[reason](query, rows.length)}, so ${ROW_TOOLS[tool].undone}.`,
       ask,
       ...shown.map((row) => `- ${pinnedLine(row, now)}`),
       rows.length > shown.length && reason !== "no_match" ? `… and ${rows.length - shown.length} more; a fuller name narrows it down.` : null,
@@ -629,6 +635,74 @@ export function rowsQuestion(query, reason, rows, { now = Date.now() } = {}) {
       .filter(Boolean)
       .join("\n"),
     data: { needs_clarification: { kind: "workspace", query: String(query ?? ""), reason, candidates: shown.map((row) => pinnedData(row, now)) } },
+  };
+}
+
+// ---- Renames ----------------------------------------------------------------------------------
+// rename_chat and rename_workspace answer with what Paseo itself shows: old_name read before the
+// request and new_name read back after it. new_name exists only when Paseo shows the name asked for;
+// otherwise current_name says what it shows instead, if it could be read at all.
+
+function renameFields({ outcome, oldName, shown, error }) {
+  const confirmed = outcome === "renamed" || outcome === "unchanged";
+  return {
+    outcome,
+    done: outcome === "renamed",
+    old_name: oldName,
+    ...(confirmed ? { new_name: shown } : {}),
+    ...(outcome === "error" && shown !== null ? { current_name: shown } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
+const renameFailure = (error, shown) => (shown === null ? `Not confirmed: ${error}. Whether it took effect is unknown: never say it did.` : `Not renamed: ${error}. Paseo shows "${truncate(shown, 70)}" now.`);
+
+// rename_chat's answer. shown is the name Paseo shows after the request, null when it could not be read.
+export function chatRenameResult({ outcome, chat, name, shown = chat.title, error = null }) {
+  const old = truncate(chat.title, 70);
+  const row = chat.workspace && chat.workspace !== name ? ` Its row in the sidebar keeps the name "${truncate(chat.workspace, 70)}": that is the workspace's name, and rename_workspace changes it.` : "";
+  const text = {
+    renamed: `Renamed the chat "${old}" to "${truncate(shown, 70)}" (${chat.project}). Paseo shows the new name now.${row}`,
+    unchanged: `The chat is already named "${old}" (${chat.project}); nothing changed.`,
+    archived: `Nothing changed: "${old}" (${chat.project}) is archived. Tell the user.`,
+    error: renameFailure(error, shown),
+  }[outcome];
+  return {
+    text,
+    data: {
+      chat_id: chat.id,
+      short_id: chat.id.slice(0, 7),
+      project: chat.project,
+      ...(chat.workspaceId ? { workspace_id: chat.workspaceId } : {}),
+      ...(chat.workspace ? { workspace: chat.workspace } : {}),
+      ...renameFields({ outcome, oldName: chat.title, shown, error }),
+    },
+  };
+}
+
+// rename_workspace's answer. after is the row as Paseo shows it after the request, null when it could
+// not be read. Its pin and its chats come from that same reading.
+export function workspaceRenameResult({ outcome, row, name, after = null, error = null, now = Date.now() }) {
+  const old = truncate(row.name, 70);
+  const shown = after?.name ?? null;
+  const kept = [
+    row.pinnedAt && after?.pinnedAt ? " It stays pinned, and the Pinned section shows the new name." : "",
+    after?.chats.length === 1 ? " Its chat keeps its own name." : "",
+    after?.chats.length > 1 ? ` Its ${after.chats.length} chats keep their own names.` : "",
+  ].join("");
+  const text = {
+    renamed: `Renamed the workspace "${old}" to "${truncate(name, 70)}" (${row.project}). Paseo's sidebar shows the new name now.${kept}`,
+    unchanged: `The workspace is already named "${old}" (${row.project}); nothing changed.`,
+    error: renameFailure(error, shown),
+  }[outcome];
+  return {
+    text,
+    data: {
+      workspace_id: row.id,
+      project: row.project,
+      ...renameFields({ outcome, oldName: row.name, shown, error }),
+      ...(after ? { pinned: Boolean(after.pinnedAt), pinned_at: toIso(after.pinnedAt), chats: after.chats.map((c) => chatData(c, now)) } : {}),
+    },
   };
 }
 

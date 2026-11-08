@@ -11,6 +11,7 @@ import {
   listSlashCommandsOn,
   pinChatOn,
   readActivityOn,
+  renameChatOn,
   readChatOn,
   runSlashCommandOn,
   searchMessagesOn,
@@ -41,7 +42,7 @@ const IDLE_TWIN = chat("1a2b3c4d-0000-4000-8000-000000000001", "Release notes 0.
 const BUSY_TWIN = chat("4e5f6a7b-0000-4000-8000-000000000002", "Release notes 0.6", { minutes: 400, status: "running", permissions: [APPROVAL] });
 
 function fakeDaemon(chats) {
-  const log = { sent: [], answered: [], cancelled: [], archived: [], pinned: [], read: [] };
+  const log = { sent: [], answered: [], cancelled: [], archived: [], pinned: [], renamed: [], read: [] };
   let archiveLookups = 0;
   const agent = (c) => ({
     agent: {
@@ -112,6 +113,10 @@ function fakeDaemon(chats) {
       log.pinned.push({ id, pinned });
       return { pinnedAt: pinned ? at(0) : null };
     },
+    async updateAgent(id, updates) {
+      log.renamed.push({ id, name: updates.name });
+      byId(id).title = updates.name;
+    },
     async listProviderSubagents() {
       return { subagents: [] };
     },
@@ -133,7 +138,7 @@ function fakeDaemon(chats) {
   };
 }
 
-const NOTHING = { sent: [], answered: [], cancelled: [], archived: [], pinned: [], read: [] };
+const NOTHING = { sent: [], answered: [], cancelled: [], archived: [], pinned: [], renamed: [], read: [] };
 const send = (daemon, chatRef, extra = {}) => sendMessageOn(daemon, { chat: chatRef, text: "проверь поды", waitSeconds: 1, ...extra });
 
 // Every tool that takes a chat, by the operation behind it.
@@ -144,6 +149,7 @@ const WRITES = {
   stop_chat: (daemon, ref) => stopChatOn(daemon, { chat: ref }),
   archive_chat: (daemon, ref) => archiveChatOn(daemon, { chat: ref }),
   pin_chat: (daemon, ref) => pinChatOn(daemon, { chat: ref, action: "pin" }),
+  rename_chat: (daemon, ref) => renameChatOn(daemon, { chat: ref, name: "Новое имя" }),
   run_slash_command: (daemon, ref) => runSlashCommandOn(daemon, { chat: ref, command: "compact", secret: "s", waitSeconds: 0 }),
 };
 const READS = {

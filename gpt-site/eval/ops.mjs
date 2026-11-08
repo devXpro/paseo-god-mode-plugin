@@ -7,7 +7,7 @@
 
 import { NEW_CHAT_ID } from "./world.mjs";
 
-const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", answer_questions: "auto", stop_chat: "ok", pin_chat: "ok", set_chat_model: "ok", update_site: "ok", run_slash_command: "auto" };
+const WRITE_DEFAULTS = { start_chat: "still_working", send_message: "auto", answer_approval: "ok", answer_questions: "auto", stop_chat: "ok", pin_chat: "ok", rename_chat: "ok", rename_workspace: "ok", set_chat_model: "ok", update_site: "ok", run_slash_command: "auto" };
 
 // Release fixtures relative to the Site version under test: the Mac has the same, a newer one, or
 // GitHub has a newer one than the Mac.
@@ -234,6 +234,49 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
     row.pinnedAt = pin ? new Date(now).toISOString() : null;
     if (!world.pins.includes(row)) world.pins.push(row);
     return text.pinResult({ action, outcome: pin ? "pinned" : "unpinned", row: shown(row), chat: target, now });
+  }
+
+  // Once rename_chat exists: renames a chat or a row, resolved and answered by the version's own code.
+  async function renameChat(_url, { chat, name } = {}) {
+    const args = { chat, name };
+    const picked = pickChat(chat);
+    if (picked.ask) {
+      log("renameChat", args, "needs_clarification");
+      return picked.ask;
+    }
+    const target = picked.chat;
+    const before = { ...target };
+    const done = (outcome, fields = {}) => {
+      log("renameChat", args, outcome);
+      return text.chatRenameResult({ outcome, chat: before, name, ...fields });
+    };
+    if (target.archived) return done("archived");
+    if (target.title === name) return done("unchanged");
+    fail(takeOutcome("rename_chat"));
+    target.title = name;
+    return done("renamed", { shown: name });
+  }
+
+  async function renameWorkspace(_url, { workspace, name } = {}) {
+    const args = { workspace, name };
+    const rows = sidebarRows();
+    const raw = String(workspace).trim();
+    const byId = rows.find((r) => r.id === raw);
+    const settled = byId ? { row: shown(byId) } : text.settleRow(rows.map(shown), raw);
+    if (!settled.row) {
+      log("renameWorkspace", args, "needs_clarification");
+      return text.rowsQuestion(raw, settled.ask, settled.rows, { now, tool: "rename_workspace" });
+    }
+    const row = rows.find((r) => r.id === settled.row.id);
+    const before = shown(row);
+    const done = (outcome, fields = {}) => {
+      log("renameWorkspace", args, outcome);
+      return text.workspaceRenameResult({ outcome, row: before, name, now, ...fields });
+    };
+    if (row.name === name) return done("unchanged", { after: before });
+    fail(takeOutcome("rename_workspace"));
+    row.name = name;
+    return done("renamed", { after: shown(row) });
   }
 
   function turnsOf(c, from, count) {
@@ -843,6 +886,7 @@ export function createOps({ world, scenario = {}, text, slash = null, models = n
       ...(models ? { listModels } : {}),
       ...(typeof text.pinnedResult === "function" ? { listPinnedChats } : {}),
       ...(typeof text.pinResult === "function" ? { pinChat } : {}),
+      ...(typeof text.chatRenameResult === "function" ? { renameChat, renameWorkspace } : {}),
       ...(typeof models?.chooseChange === "function" ? { setChatModel } : {}),
       ...(questions ? { readApproval, answerQuestions } : {}),
     },

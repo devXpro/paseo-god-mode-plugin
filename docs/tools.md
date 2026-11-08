@@ -28,6 +28,8 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
 | `stop_chat` | write, destructive | `chat`* | Stop what a chat is doing now. |
 | `archive_chat` | write, destructive | `chat`* | Archive a chat that is not working; a new message brings it back. |
 | `pin_chat` | write, idempotent | `action`* (pin, unpin), `chat`, `workspace_id` | Pin or unpin a chat's row in Paseo's sidebar; a row with no chat by its name or `workspace_id`. |
+| `rename_chat` | write, idempotent | `chat`*, `new_name`* | Rename a chat: its tab and its name in the chat lists. Not the label of its sidebar row, which is the workspace's name. |
+| `rename_workspace` | write, idempotent | `workspace`*, `new_name`* | Rename a workspace, a row of Paseo's sidebar, by its `workspace_id` or its name: the label in the Pinned section changes, the pin stays, and its chats stay with their own names. |
 | `set_chat_model` | write, idempotent | `chat`*, `model`, `thinking` | Change the model and the thinking level (effort) of a chat that exists, in that chat: its history stays and no new chat starts. |
 | `list_slash_commands` | read | `chat`*, `query`, `limit` | A chat's slash commands, each with what it does and whether God Mode runs it at once, after a yes, or not at all. See [slash-commands.md](slash-commands.md). |
 | `run_slash_command` | write, destructive, open world | `chat`*, `command`*, `args`, `if_busy` (interrupt), `confirmation`, `wait_seconds` | Run one of a chat's slash commands (`/compact`, `/code-review`, your own); anything above low risk asks first, a working chat waits for the user's word. See [slash-commands.md](slash-commands.md). |
@@ -141,6 +143,15 @@ Kind is taken from the tool's annotations. `*` marks a required argument.
   the project's runtime does not offer returns `needs_clarification` with the choices, and nothing
   starts. The site's defaults for new chats apply only where they fit: a Claude mode never reaches
   a Codex chat.
+- **Renames.** A chat's name and a sidebar row's name are two names: a row, the Pinned section included,
+  shows its workspace's name, so `rename_workspace` changes that label and `rename_chat` only the chat's
+  own tab and listing. They send the requests of Paseo's own Rename (`update_agent`, `workspace.title.set`)
+  and then read the name back from Paseo: `done: true` and `new_name` come only from what Paseo shows
+  afterwards, because a name it accepted can still be dropped. `rename_workspace` also reads back the
+  row's pin and chats (`pinned`, `pinned_at`, `chats`); the request changes neither. Both resolve their
+  target like every write: one clear match or `needs_clarification`, active chats and live rows only,
+  and an archived chat's id answers `archived`. `error` says why it did not happen, `current_name` what
+  Paseo shows instead; a blank `new_name` is refused before anything runs.
 - **A chat's model and thinking level.** `set_chat_model` changes them in the chat itself with Paseo's own
   request for it, in one request (the model first, since a level means something only against the model
   that offers it). The chat keeps its history and its runtime, and a chat that is working is changed

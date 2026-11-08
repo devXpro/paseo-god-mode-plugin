@@ -11,7 +11,7 @@ import { IMAGES_WIDGET_HTML } from "./widget.mjs";
 const MODES = ["default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 const READ_VIEWS = ["text", "commands", "thinking"];
 // Tools that act on agents or plugins: when one fails, nobody knows whether it took effect.
-const WRITES = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "set_chat_model", "run_slash_command", "update_site", "plugin_action"]);
+const WRITES = new Set(["start_chat", "send_message", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "rename_chat", "rename_workspace", "set_chat_model", "run_slash_command", "update_site", "plugin_action"]);
 const CALL_DEADLINE_MS = 45_000;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
@@ -47,7 +47,7 @@ const DICTATION_HINTS = {
 // Which words of a given language send and which only discuss: English examples do not carry
 // over to every phrasing (in Russian, "можешь закинуть" was read as an order).
 const COMMAND_HINTS = {
-  ru: 'In Russian, sending needs a direct command: «отправь», «отправляй», «закидывай», «скажи ему сейчас», or «да» to your «Отправить?». Not commands, ask «Отправить?» first: «можешь закинуть», «попроси агента …», «давай ему скажем …», «надо бы ему сказать …», «напиши промпт … и потом закинем». Switching a chat\'s model or effort, or opening a chat in a workspace, is a command too: «переключи на …», «смени модель», «поставь … max», «открой чат в этом воркспейсе»; «а можно переключить?», «может, поставить max?» are questions: ask first.',
+  ru: 'In Russian, sending needs a direct command: «отправь», «отправляй», «закидывай», «скажи ему сейчас», or «да» to your «Отправить?». Not commands, ask «Отправить?» first: «можешь закинуть», «попроси агента …», «давай ему скажем …», «надо бы ему сказать …», «напиши промпт … и потом закинем». Switching a chat\'s model or effort, or opening a chat in a workspace, is a command too: «переключи на …», «смени модель», «поставь … max», «открой чат в этом воркспейсе»; «а можно переключить?», «может, поставить max?» are questions: ask first. So is renaming: «переименуй чат в …», «переименуй воркспейс в …», «переименуй закреп …» are commands (a pin\'s label is its workspace\'s name: rename_workspace); «а можно переименовать?» is a question.',
 };
 
 // Server-level guidance. OpenAI: keep the essentials in the first 512
@@ -57,7 +57,7 @@ export function buildInstructions(config) {
     "Paseo runs the user's coding agents. One call first: news, what needs the user → overview; what agents or subagents do now → read_activity; what a chat said or ran → read_chat; a picture → show_images; where something was said → search_messages; plugins → plugin_read; slash commands (/compact) → run_slash_command, list_slash_commands.",
     "If an answer is cut (truncated, next_offset) and the question needs the rest, read on unasked: read_message by id, or the same call with next_offset. Not for a gist or count.",
     "A chat is one agent conversation (Claude, Codex…) in a project on the user's computer; subagents are helpers its agent started. An agent's thinking (read_chat view thinking) is not hidden and not your own reasoning: it is the agent's working notes, which Paseo shows the user in the chat. When asked how it reasoned or why it decided, read them and retell them. Read only what the question needs: the end of a long output (an error, a test summary, a conclusion) with read_message mode tail; a text of many pages: say how long it is and offer to read on.",
-    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it", "pin it", "switch it to Sonnet", "set its effort to max"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
+    'Write tools act on real agents: call one only when the user\'s latest words tell you to act now ("send it", "send it now", "tell it now: …", "start a chat in X …", "allow it", "stop it", "archive it", "compact it", "pin it", "rename it", "switch it to Sonnet", "set its effort to max"), or are "yes" to your own "Send it?". Not commands, so ask "Send it?" and wait: "write/draft a prompt" (also "…and then we\'ll send it"), "ask the agent to …", "let\'s tell it …", "you can/could send it", "we should tell it…", "I think it should…", "maybe we send it?", "ok" after a draft you did not ask about.',
     "One instruction from the user is one write call: never split it into several messages, never send it again or a reworded copy, not even after you described or planned what happens next.",
     '"It", "the agent", "this chat" mean the chat being discussed; keep it until the user names another. Pass a chat\'s id when an earlier result gave it: titles repeat. Otherwise pass the name the user said, with no list_chats first; the tool acts only on one clear match. needs_clarification means nothing was done: ask the user which one, unless their words pick one ("the latest" is the one updated most recently) or this conversation already read or used exactly one of them; then call again with its id.',
     "A write result is the truth: delivered=true (replied, still_working, not_waiting) means it arrived, so never send it again unless the user asks for another message; busy = not delivered: ask whether to add it to the current work or interrupt, and after that question a plain \"send it\" means add it (if_busy steer); an error = not confirmed, never say it was sent.",
@@ -152,7 +152,7 @@ const PINNED_OUT = {
   type: "object",
   properties: {
     workspace_id: { type: "string", description: "The pinned workspace. pin_chat takes it for a row with no chat; for the other tools, pass a chat's id." },
-    name: { type: "string", description: "The row's name as Paseo's sidebar shows it: the workspace's title, else its branch or folder." },
+    name: { type: "string", description: "The row's name as Paseo's sidebar shows it: the workspace's title, else its branch or folder. rename_workspace changes it." },
     project: { type: "string" },
     branch: nullableString,
     pinned_at: time,
@@ -436,6 +436,20 @@ const SKIPPED_IMAGE = {
 };
 
 const object = (properties) => ({ type: "object", properties: { ...properties, needs_clarification: CLARIFY_OUT } });
+
+// What rename_chat and rename_workspace answer: the names Paseo showed before and shows after.
+const RENAME_OUT = {
+  outcome: {
+    type: "string",
+    enum: ["renamed", "unchanged", "archived", "error"],
+    description: "renamed: done. unchanged: it already has this name. archived: the chat is archived, so nothing changed. error: not renamed (error says why).",
+  },
+  done: { type: "boolean", description: "true: Paseo shows the new name, never call it again for this request. false: it was not renamed." },
+  old_name: { type: "string", description: "The name Paseo showed before." },
+  new_name: { type: "string", description: "The name Paseo shows now, read back after the change. Only when that is the name asked for." },
+  current_name: { type: "string", description: "outcome error: the name Paseo shows now. Absent: it could not be read, so it is unknown whether the rename took effect." },
+  error: { type: "string", description: "Why it was not renamed, or could not be confirmed." },
+};
 
 const PLUGIN_RISK = { type: "string", enum: ["low", "outward", "disruptive", "destructive"], description: "low: local and undone with one more call; outward: reaches people or services; disruptive: interrupts work or cuts the computer off; destructive: loses something for good." };
 
@@ -974,6 +988,54 @@ export const TOOLS = [
     annotations: { ...write, idempotentHint: true },
   },
   {
+    name: "rename_chat",
+    description:
+      'Use this only when the user\'s latest words tell you to rename a chat ("rename this chat to Fleet map E", "call it Release notes"). It changes the chat\'s own name, the one on its tab and in the chat lists. A row of Paseo\'s sidebar, the Pinned section included, shows its workspace\'s name instead: for a row or a pin\'s label use rename_workspace. Pass the chat as for the other tools: its id when a result gave one, else the name the user said; it acts only on one clear match, and needs_clarification means nothing changed: ask which. new_name is the whole new name. Act without confirming first: one more call undoes it. done=true means Paseo shows the new name, read back after the change: tell the user old_name and new_name, and never call it again for this request. done=false means it was not renamed: say why (error, archived), and after an error never say it was.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat: CHAT,
+        new_name: { type: "string", description: "The chat's whole new name, as the user said it." },
+      },
+      required: ["chat", "new_name"],
+    },
+    outputSchema: object({
+      chat_id: { type: "string" },
+      short_id: { type: "string" },
+      project: { type: "string" },
+      workspace_id: { type: "string", description: "The workspace (the sidebar row) it sits in: rename_workspace takes it." },
+      workspace: { type: "string", description: "That workspace's name, which is what its sidebar row shows: renaming the chat does not change it." },
+      ...RENAME_OUT,
+    }),
+    annotations: { ...write, idempotentHint: true },
+  },
+  {
+    name: "rename_workspace",
+    description:
+      'Use this only when the user\'s latest words tell you to rename a workspace, a row of Paseo\'s sidebar ("rename this workspace to Deploy scripts", "rename the pinned Fleet map row to Proxy fleet"). The name a row shows, in the Pinned section too, is its workspace\'s name: a pinned row stays pinned and shows the new name, and the chats in it stay and keep their own names (rename_chat changes those). Pass workspace: its workspace_id from earlier results (list_pinned_chats, list_chats, start_chat), or its name as the user said it, with its project if they named one: "Fleet map (proxy)". It acts only on one clear match, and needs_clarification means nothing changed: ask which. new_name is the whole new name. Act without confirming first: one more call undoes it. done=true means Paseo shows the new name, read back after the change: tell the user old_name and new_name, and never call it again for this request. done=false means it was not renamed: say why (error), and after an error never say it was.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "The workspace to rename: its workspace_id from earlier results, or its name as the sidebar shows it (its title, branch or folder, or the title of a chat in it), with its project if the user named one.",
+        },
+        new_name: { type: "string", description: "The workspace's whole new name, as the user said it." },
+      },
+      required: ["workspace", "new_name"],
+    },
+    outputSchema: object({
+      workspace_id: { type: "string" },
+      project: { type: "string" },
+      ...RENAME_OUT,
+      outcome: { ...RENAME_OUT.outcome, enum: ["renamed", "unchanged", "error"], description: "renamed: done. unchanged: it already has this name. error: not renamed (error says why)." },
+      pinned: { type: "boolean", description: "Whether it is in the Pinned section, read back after the change." },
+      pinned_at: time,
+      chats: { type: "array", items: CHAT_OUT, description: "Its active chats, read back after the change: a rename leaves them in place, with their own names." },
+    }),
+    annotations: { ...write, idempotentHint: true },
+  },
+  {
     name: "set_chat_model",
     description:
       "Use this when the user's latest words tell you to change which model an existing chat runs on, or its thinking level (effort), in that same chat (\"switch this chat to Sonnet 5.5\", \"set its effort to max\", \"put it on Opus with max\"). The chat keeps its history and its conversation goes on: no new chat starts, and a chat that is working is changed too. Pass model and/or thinking, only what the user asked for. model takes the name as the user said it (list_models shows them) and must be one of this chat's own runtime: a Claude chat cannot move to Codex, other_runtime says so, and a chat on that model is a new one (start_chat) without this chat's history, so ask the user. thinking takes one of the model's levels: low, medium, high, xhigh, max; some Claude models also off and ultracode, Codex ultra. done=true means Paseo changed it: tell the user what it runs on now, never call it again for this request. busy=true: the chat was working, so part of it applies later. needs_clarification means nothing changed: ask the user which model or level, then call again. Use the chat being discussed unless the user names another. This is the way for /model and /effort, which run_slash_command does not.",
@@ -1327,6 +1389,12 @@ async function dispatch(name, args, config, ops, log, caller) {
       if (given.length !== 1) return { invalid: "Pass chat or workspace_id, one of them." };
       return ops.pinChat(url, given[0] === "chat" ? { chat: args.chat, action: args.action } : { workspaceId: args.workspace_id.trim(), action: args.action });
     }
+    case "rename_chat":
+      if (need("chat", "new_name")) return { invalid: need("chat", "new_name") };
+      return ops.renameChat(url, { chat: args.chat, name: args.new_name.trim() });
+    case "rename_workspace":
+      if (need("workspace", "new_name")) return { invalid: need("workspace", "new_name") };
+      return ops.renameWorkspace(url, { workspace: args.workspace.trim(), name: args.new_name.trim() });
     case "list_slash_commands":
       if (need("chat")) return { invalid: need("chat") };
       return ops.listSlashCommands(url, { chat: args.chat, query: args.query || undefined, limit: args.limit });

@@ -19,6 +19,7 @@ import {
   chatData,
   chatLine,
   chatQuestion,
+  chatRenameResult,
   chatState,
   choiceLine,
   contextLine,
@@ -62,6 +63,7 @@ import {
   truncate,
   withImagePlaceholders,
   withoutImages,
+  workspaceRenameResult,
 } from "./text.mjs";
 import {
   actionsLine,
@@ -449,21 +451,32 @@ function toRow(w, chats) {
   };
 }
 
-// The workspace start_chat is asked to open a chat in: a workspace_id from earlier results, or a name,
-// among the rows of Paseo's sidebar (within a project when one is named). Returns { place } with the
-// folder to work in, or { ask }.
-async function pickWorkspace(client, query, project) {
+// Every row of Paseo's sidebar, each with its active chats.
+async function fetchRows(client) {
   const [workspaces, chats] = await Promise.all([fetchAllWorkspaces(client), fetchChats(client)]);
-  let rows = workspaces.map((w) => toRow(w, chats));
+  return workspaces.map((w) => toRow(w, chats));
+}
+
+// The row a tool is asked to act on: a workspace_id from earlier results, or a name, settled strictly
+// like every write. Returns { row } or { ask }.
+function pickRow(rows, query, { tool } = {}) {
+  const raw = String(query).trim();
+  const byId = rows.find((r) => r.id === raw);
+  const settled = byId ? { row: byId } : settleRow(rows, raw);
+  return settled.row ? settled : { ask: rowsQuestion(raw, settled.ask, settled.rows, { tool }) };
+}
+
+// The workspace start_chat is asked to open a chat in, among the rows of Paseo's sidebar (within a
+// project when one is named). Returns { place } with the folder to work in, or { ask }.
+async function pickWorkspace(client, query, project) {
+  let rows = await fetchRows(client);
   if (project) {
     const picked = pickProject(await fetchProjects(client), project);
     if (picked.ask) return picked;
     rows = rows.filter((r) => r.project === picked.project.name);
   }
-  const raw = String(query).trim();
-  const byId = rows.find((r) => r.id === raw);
-  const settled = byId ? { row: byId } : settleRow(rows, raw);
-  if (!settled.row) return { ask: rowsQuestion(raw, settled.ask, settled.rows) };
+  const settled = pickRow(rows, query);
+  if (settled.ask) return settled;
   const row = settled.row;
   const directory = row.directory ?? row.chats.find((c) => c.cwd)?.cwd;
   if (!directory) throw new Error(`Paseo gave no folder for the workspace "${row.name}"`);
@@ -1560,6 +1573,67 @@ export async function pinChatOn(client, { chat, workspaceId, action } = {}) {
   if (pin === Boolean(row.pinnedAt)) return pinResult({ action, outcome: pin ? "already_pinned" : "not_pinned", row, chat: target });
   const { pinnedAt } = await client.setWorkspacePinned(row.id, pin);
   return pinResult({ action, outcome: pin ? "pinned" : "unpinned", row: { ...row, pinnedAt }, chat: target });
+}
+
+// Sends a rename and reads back what Paseo shows afterwards, whichever way the request went: a request
+// that failed may still have landed, and one Paseo accepted may not have (it drops a chat's name while
+// it is still creating the chat, and says accepted). shown is null when it could not be read.
+async function renameAndReadBack(request, read) {
+  let failure = null;
+  try {
+    await request();
+  } catch (error) {
+    failure = `Paseo refused it: ${truncate(error?.message ?? error, 200)}`;
+  }
+  let shown = null;
+  try {
+    shown = await read();
+  } catch {
+    // The answer then says it could not look.
+  }
+  return { failure, shown };
+}
+
+const notShown = (shown, name) => (shown === null ? "Paseo accepted the new name, but it could not be read back" : `Paseo accepted "${truncate(name, 70)}", but it does not show that name`);
+
+export async function renameChat(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => renameChatOn(client, args));
+}
+
+// rename_chat over an open connection (tests drive it with a fake client), with the request of
+// Paseo's Rename on a chat's tab. It only names the chat: the row in the sidebar has the workspace's name.
+export async function renameChatOn(client, { chat, name } = {}) {
+  const picked = await pickChat(client, chat);
+  if (picked.ask) return picked.ask;
+  const target = picked.chat;
+  const result = (outcome, fields = {}) => chatRenameResult({ outcome, chat: target, name, ...fields });
+  if (target.archived) return result("archived");
+  if (target.title === name) return result("unchanged");
+  const { failure, shown } = await renameAndReadBack(
+    () => client.updateAgent(target.id, { name }),
+    async () => (await client.fetchAgent(target.id))?.agent.title ?? null,
+  );
+  return shown === name ? result("renamed", { shown }) : result("error", { shown, error: failure ?? notShown(shown, name) });
+}
+
+export async function renameWorkspace(pairingUrl, args = {}) {
+  return withDaemon(pairingUrl, (client) => renameWorkspaceOn(client, args));
+}
+
+// rename_workspace over an open connection (tests drive it with a fake client), with the request of
+// Paseo's Rename on a sidebar row. A row's name is its workspace's, the Pinned section's included, and
+// the request changes only that: the pin and the chats are read back to say so.
+export async function renameWorkspaceOn(client, { workspace, name } = {}) {
+  const picked = pickRow(await fetchRows(client), workspace, { tool: "rename_workspace" });
+  if (picked.ask) return picked.ask;
+  const { row } = picked;
+  const result = (outcome, fields = {}) => workspaceRenameResult({ outcome, row, name, ...fields });
+  if (row.name === name) return result("unchanged", { after: row });
+  const { failure, shown: after } = await renameAndReadBack(
+    () => client.setWorkspaceTitle(row.id, name),
+    async () => (await fetchRows(client)).find((r) => r.id === row.id) ?? null,
+  );
+  return after?.name === name ? result("renamed", { after }) : result("error", { after, error: failure ?? notShown(after?.name ?? null, name) });
 }
 
 // ---- Models -------------------------------------------------------------------------------------

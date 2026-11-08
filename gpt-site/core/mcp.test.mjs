@@ -6,7 +6,7 @@ import { PaseoOffline } from "./paseo.mjs";
 import { BUILD } from "./build.mjs";
 import { VERSION } from "./version.mjs";
 import { changeResult } from "./models.mjs";
-import { chatData, pinnedResult, pinResult, rowQuestion, rowsQuestion } from "./text.mjs";
+import { chatData, chatRenameResult, pinnedResult, pinResult, rowQuestion, rowsQuestion, workspaceRenameResult } from "./text.mjs";
 
 const SECRET = "https://app.paseo.sh/#offer=secret-offer";
 
@@ -33,7 +33,7 @@ function fakeOps(overrides = {}) {
     return overrides[name] ? overrides[name](args) : { text: `${name} ok`, data: { echo: name } };
   };
   const ops = Object.fromEntries(
-    ["overview", "listChats", "listPinnedChats", "readChat", "readMessage", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "setChatModel", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
+    ["overview", "listChats", "listPinnedChats", "readChat", "readMessage", "readActivity", "showImages", "searchMessages", "listModels", "startChat", "sendMessage", "readApproval", "answerApproval", "answerQuestions", "stopChat", "archiveChat", "pinChat", "renameChat", "renameWorkspace", "setChatModel", "listSlashCommands", "runSlashCommand", "pluginRead", "pluginAction", "releaseStatus", "releaseStart"].map((n) => [n, op(n)]),
   );
   return { ops, calls };
 }
@@ -121,6 +121,7 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.doesNotMatch(plain.result.instructions, /по SEO/);
   assert.doesNotMatch(plain.result.instructions, /закинуть/, "language hints only for their language");
   assert.doesNotMatch(plain.result.instructions, /переключи|форт/, "nor the hints about switching a model");
+  assert.doesNotMatch(plain.result.instructions, /переименуй/, "nor the ones about renaming");
   assert.match(plain.result.instructions, /no read-back needed/);
   const marker = "where something was said → search_messages;";
   const routingEnd = text.indexOf(marker) + marker.length;
@@ -136,7 +137,8 @@ test("instructions follow the language and the confirmation setting, and route e
   assert.doesNotMatch(text, /One call per request/, "reading on is no longer against the rules");
   // A model kept an agent's thinking to itself as if it were its own hidden reasoning.
   assert.match(text, /An agent's thinking \(read_chat view thinking\) is not hidden and not your own reasoning: it is the agent's working notes, which Paseo shows the user in the chat\. When asked how it reasoned or why it decided, read them and retell them\./);
-  assert.match(text, /"archive it", "compact it", "pin it", "switch it to Sonnet", "set its effort to max"\), or are "yes"/);
+  assert.match(text, /"archive it", "compact it", "pin it", "rename it", "switch it to Sonnet", "set its effort to max"\), or are "yes"/);
+  assert.match(text, /«переименуй закреп …» are commands \(a pin's label is its workspace's name: rename_workspace\); «а можно переименовать\?» is a question/);
   assert.match(text, /Switching a chat's model or effort, or opening a chat in a workspace, is a command too: «переключи на …»/);
   assert.match(text, /«а можно переключить\?», «может, поставить max\?» are questions: ask first\./);
   assert.match(text, /and "effort" as «форт»/);
@@ -180,6 +182,8 @@ test("tools/list exposes twenty-five tools, output schemas and honest annotation
       "stop_chat",
       "archive_chat",
       "pin_chat",
+      "rename_chat",
+      "rename_workspace",
       "set_chat_model",
       "list_slash_commands",
       "run_slash_command",
@@ -222,6 +226,23 @@ test("tools/list exposes twenty-five tools, output schemas and honest annotation
   assert.equal(byName.pin_chat.annotations.idempotentHint, true, "a pin already as asked is left alone");
   assert.deepEqual(byName.pin_chat.inputSchema.required, ["action"], "a chat or, instead, a row's workspace_id");
   assert.deepEqual(byName.pin_chat.inputSchema.properties.action.enum, ["pin", "unpin"]);
+  for (const tool of ["rename_chat", "rename_workspace"]) {
+    assert.equal(byName[tool].annotations.readOnlyHint, false, tool);
+    assert.equal(byName[tool].annotations.destructiveHint, false, `${tool}: one more call undoes it`);
+    assert.equal(byName[tool].annotations.idempotentHint, true, `${tool}: a name already as asked is left alone`);
+    assert.match(byName[tool].description, /done=true means Paseo shows the new name, read back after the change: tell the user old_name and new_name/, tool);
+    assert.match(byName[tool].description, /needs_clarification means nothing changed: ask which/, tool);
+    assert.match(byName[tool].description, /Act without confirming first/, tool);
+  }
+  assert.deepEqual(byName.rename_chat.inputSchema.required, ["chat", "new_name"]);
+  assert.deepEqual(byName.rename_workspace.inputSchema.required, ["workspace", "new_name"]);
+  assert.deepEqual(byName.rename_chat.outputSchema.properties.outcome.enum, ["renamed", "unchanged", "archived", "error"]);
+  assert.deepEqual(byName.rename_workspace.outputSchema.properties.outcome.enum, ["renamed", "unchanged", "error"], "an archived workspace is not in the sidebar at all");
+  // A row's label is the workspace's: the wrong tool of the two changes the wrong name.
+  assert.match(byName.rename_chat.description, /A row of Paseo's sidebar, the Pinned section included, shows its workspace's name instead: for a row or a pin's label use rename_workspace/);
+  assert.match(byName.rename_workspace.description, /The name a row shows, in the Pinned section too, is its workspace's name: a pinned row stays pinned and shows the new name, and the chats in it stay and keep their own names/);
+  assert.match(byName.rename_workspace.description, /workspace_id from earlier results \(list_pinned_chats, list_chats, start_chat\)/);
+  assert.match(byName.list_pinned_chats.outputSchema.properties.pinned.items.properties.name.description, /rename_workspace changes it/);
   assert.equal(byName.set_chat_model.annotations.readOnlyHint, false);
   assert.equal(byName.set_chat_model.annotations.destructiveHint, false, "one more call puts it back");
   assert.equal(byName.set_chat_model.annotations.idempotentHint, true, "a model already set is left alone");
@@ -294,7 +315,7 @@ test("the call rules are repeated where ChatGPT picks the tool", () => {
   assert.match(byName.send_message.description, /say so and never send it again \(a reply cut to 1500 characters, reply_truncated, is read whole with read_message turn 1 when the user wants all of it\)/);
   assert.doesNotMatch(byName.send_message.description, /say so and stop/, "stop read as: no more calls, not even to read the rest of the reply");
   assert.match(byName.search_messages.description, /newest first; pass chat to search a single chat \(next_offset shows its older matches\)/);
-  for (const tool of ["read_chat", "read_message", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "set_chat_model", "list_slash_commands", "run_slash_command"]) {
+  for (const tool of ["read_chat", "read_message", "read_activity", "show_images", "search_messages", "send_message", "read_approval", "answer_approval", "answer_questions", "stop_chat", "archive_chat", "pin_chat", "rename_chat", "set_chat_model", "list_slash_commands", "run_slash_command"]) {
     const chat = byName[tool].inputSchema.properties.chat.description;
     assert.match(chat, /Ids are for calls only/, tool);
     assert.match(chat, /Keep the chat being discussed/, tool);
@@ -583,6 +604,38 @@ test("pin_chat passes a chat or a workspace id, and anything else is a JSON-RPC 
   assert.equal(calls.length, 2, "nothing ran for the bad calls");
 });
 
+test("rename_chat and rename_workspace pass the name trimmed, and a missing or blank one is a JSON-RPC error before anything runs", async () => {
+  const { ops, calls } = fakeOps();
+  const handle = createMcpHandler({ config: configured(), ops });
+  await handle(call("rename_chat", { chat: "#a22524f", new_name: "  Fleet map E  " }));
+  await handle(call("rename_workspace", { workspace: " wks_5e1d9a07c3b2f4e6 ", new_name: " Proxy fleet " }));
+  await handle(call("rename_workspace", { workspace: "Fleet map (proxy)", new_name: "Proxy fleet" }));
+  assert.deepEqual(
+    calls.map((c) => [c.name, c.url, c.args]),
+    [
+      ["renameChat", SECRET, { chat: "#a22524f", name: "Fleet map E" }],
+      ["renameWorkspace", SECRET, { workspace: "wks_5e1d9a07c3b2f4e6", name: "Proxy fleet" }],
+      ["renameWorkspace", SECRET, { workspace: "Fleet map (proxy)", name: "Proxy fleet" }],
+    ],
+  );
+  for (const [tool, bad] of [
+    ["rename_chat", { chat: "fleet" }],
+    ["rename_chat", { new_name: "x" }],
+    ["rename_chat", { chat: "fleet", new_name: "   " }],
+    ["rename_chat", { chat: " ", new_name: "x" }],
+    ["rename_chat", { chat: "fleet", new_name: 7 }],
+    ["rename_workspace", { workspace: "fleet" }],
+    ["rename_workspace", { new_name: "x" }],
+    ["rename_workspace", { workspace: "fleet", new_name: "\t\n" }],
+    ["rename_workspace", { workspace: "", new_name: "x" }],
+  ]) {
+    const refused = await handle(call(tool, bad));
+    assert.equal(refused.error?.code, -32602, JSON.stringify(bad));
+    assert.match(refused.error.message, /^Missing /, JSON.stringify(bad));
+  }
+  assert.equal(calls.length, 3, "nothing ran for the bad calls");
+});
+
 test("read_approval and answer_questions pass their arguments, and bad answers are a JSON-RPC error before anything runs", async () => {
   const { ops, calls } = fakeOps();
   const handle = createMcpHandler({ config: configured({ PASEO_WAIT_SECONDS: "8" }), ops });
@@ -634,6 +687,12 @@ test("a failed write never reads as done", async () => {
     pinChat: () => {
       throw new Error("no answer within 45 s");
     },
+    renameChat: () => {
+      throw new Error("no answer within 45 s");
+    },
+    renameWorkspace: () => {
+      throw new PaseoOffline("connect timed out");
+    },
     answerQuestions: () => {
       throw new Error("Permission request 'permission-7d1e' requires updatedInput.answers keyed by a question's full text or header");
     },
@@ -655,6 +714,8 @@ test("a failed write never reads as done", async () => {
   assert.match((await handle(call("stop_chat", { chat: "x" }))).result.content[0].text, /Nothing was sent\./);
   assert.match((await handle(call("archive_chat", { chat: "x" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("pin_chat", { chat: "x", action: "pin" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("rename_chat", { chat: "x", new_name: "y" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
+  assert.match((await handle(call("rename_workspace", { workspace: "x", new_name: "y" }))).result.content[0].text, /Nothing was sent\./);
   assert.match((await handle(call("set_chat_model", { chat: "x", thinking: "max" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("answer_questions", { chat: "x", request: "p", answers: [{ question: "1", options: ["1"] }] }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
   assert.match((await handle(call("run_slash_command", { chat: "x", command: "compact" }))).result.content[0].text, /Unknown whether it took effect: never say it did\./);
@@ -1043,6 +1104,23 @@ test("the shapes the operations produce match the declared output schemas", () =
     ["pin_chat", pinResult({ action: "unpin", outcome: "no_row", chat: pinnedChat }).data],
     ["pin_chat", rowQuestion("wks_gone").data],
     ["pin_chat", clarification],
+  );
+  // Renames, and every way those calls can end.
+  const renamedRow = { ...rows[0], name: "Proxy fleet" };
+  cases.push(
+    ["rename_chat", chatRenameResult({ outcome: "renamed", chat: pinnedChat, name: "New", shown: "New" }).data],
+    ["rename_chat", chatRenameResult({ outcome: "unchanged", chat: pinnedChat, name: "Fleet map" }).data],
+    ["rename_chat", chatRenameResult({ outcome: "archived", chat: { ...pinnedChat, archived: true }, name: "New" }).data],
+    ["rename_chat", chatRenameResult({ outcome: "error", chat: pinnedChat, name: "New", shown: "Fleet map", error: "Paseo refused it: Agent not found" }).data],
+    ["rename_chat", chatRenameResult({ outcome: "error", chat: { ...pinnedChat, workspace: null, workspaceId: null }, name: "New", shown: null, error: "Paseo accepted the new name, but it could not be read back" }).data],
+    ["rename_chat", clarification],
+    ["rename_workspace", workspaceRenameResult({ outcome: "renamed", row: rows[0], name: "Proxy fleet", after: renamedRow }).data],
+    ["rename_workspace", workspaceRenameResult({ outcome: "renamed", row: unpinned, name: "Proxy fleet", after: { ...unpinned, name: "Proxy fleet" } }).data],
+    ["rename_workspace", workspaceRenameResult({ outcome: "unchanged", row: rows[1], name: rows[1].name, after: rows[1] }).data],
+    ["rename_workspace", workspaceRenameResult({ outcome: "error", row: rows[0], name: "Proxy fleet", after: rows[0], error: "Paseo refused it: Workspace not found" }).data],
+    ["rename_workspace", workspaceRenameResult({ outcome: "error", row: rows[0], name: "Proxy fleet", after: null, error: "Paseo accepted the new name, but it could not be read back" }).data],
+    ["rename_workspace", rowsQuestion("fleet", "same_name", rows, { tool: "rename_workspace" }).data],
+    ["rename_workspace", rowsQuestion("zebra", "no_match", rows, { tool: "rename_workspace" }).data],
   );
   // A chat's model and thinking level changed in place, and every way that call can end.
   const sonnet = { id: "claude-sonnet-5-5", label: "Sonnet 5.5", thinkingOptions: [{ id: "max", label: "Max" }] };

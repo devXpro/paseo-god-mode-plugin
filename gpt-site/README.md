@@ -63,6 +63,8 @@ A spoken request can override the runtime, model, thinking and mode for one new 
 | `search_messages` | Where something was said: searches the message text of the most recent chats in parallel, or of one chat, and returns chat, turn and snippet. |
 | `list_models` | The runtimes Paseo can start (Claude, Codex…) with their models, thinking levels and modes. |
 | `start_chat` | A new chat in a project, or as another tab of a workspace that exists, with your task as the first message, on the runtime and model you name. |
+| `rename_chat` | Rename a chat: its tab and its name in the chat lists. |
+| `rename_workspace` | Rename a workspace, the label of its row in Paseo's sidebar and in Pinned; the pin and the chats stay. |
 | `set_chat_model` | Change the model and the thinking level (effort) of a chat that exists, in that chat. |
 | `send_message` | A follow-up or an answer to an existing chat. |
 | `answer_approval` | Allow or deny what a chat is waiting for. |
