@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { CLAUDE_NEW_CHAT_URL, claudeVoiceLaunchRpc, claudeVoiceStatusRpc, getClaudeVoiceRpc, setClaudeVoiceRpc } from "./shared/claude-voice.ts";
 import { connectRpc, disconnectRpc, statusRpc, tunnelSetupRpc } from "./shared/contracts.ts";
 import { VERSION } from "./shared/version.ts";
 import {
@@ -10,6 +11,8 @@ import {
 } from "./shared/voice-button.ts";
 import { Gateway } from "./server/gateway/service.ts";
 import { Tunnel } from "./server/tunnel/cloudflared.ts";
+import { findClaude, launchClaudeOnMac, listInstances, listProfiles } from "./server/voice-button/claude-mac.ts";
+import { readClaudeVoice, writeClaudeVoice } from "./server/voice-button/claude-settings.ts";
 import { detectVoiceHotkey, findChatGpt, isAccessibilityTrusted, launchOnMac, listShortcuts } from "./server/voice-button/mac.ts";
 import { readVoiceButton, writeVoiceButton } from "./server/voice-button/settings.ts";
 
@@ -84,6 +87,33 @@ export default function contribute(server: PluginServerContext) {
       return { outcome: "unsupported" as const, via: "none" as const, needsOneTap: false, url: null, message: "The voice button works on Mac and iPhone." };
     }
     return launchOnMac(settings);
+  });
+
+  server.handle(getClaudeVoiceRpc, async () => ({ settings: await readClaudeVoice() }));
+  server.handle(setClaudeVoiceRpc, async ({ settings }) => ({ settings: await writeClaudeVoice(settings) }));
+  server.handle(claudeVoiceStatusRpc, async () => {
+    const mac = process.platform === "darwin";
+    const claude = mac ? await findClaude() : null;
+    return {
+      platform: process.platform,
+      claude,
+      accessibilityTrusted: mac ? await isAccessibilityTrusted() : null,
+      profiles: mac ? listProfiles() : [],
+      running: claude ? (await listInstances(claude)).map((i) => i.profile) : [],
+    };
+  });
+  server.handle(claudeVoiceLaunchRpc, async ({ client }) => {
+    const settings = await readClaudeVoice();
+    if (client === "ios") {
+      const name = settings.iosShortcutName;
+      return name
+        ? { outcome: "open-url" as const, via: "shortcut" as const, needsOneTap: false, url: shortcutRunUrl(name), message: `Running the shortcut "${name}".` }
+        : { outcome: "open-url" as const, via: "url" as const, needsOneTap: true, url: CLAUDE_NEW_CHAT_URL, message: "Claude is open: tap its voice button." };
+    }
+    if (client === "android") {
+      return { outcome: "open-url" as const, via: "url" as const, needsOneTap: true, url: CLAUDE_NEW_CHAT_URL, message: "Claude is open: tap its voice button." };
+    }
+    return launchClaudeOnMac(settings);
   });
 
 

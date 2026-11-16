@@ -6,6 +6,16 @@ the MCP core behind it (up to 0.20 also the ChatGPT Site it published). It follo
 [Keep a Changelog](https://keepachangelog.com). Each `## [X.Y.Z]` section becomes the notes of the
 GitHub release vX.Y.Z.
 
+## [Unreleased]
+
+### Added
+
+- **Claude voice button.** A second voice button, off until **Claude voice in Paseo** is turned on: one
+  tap brings the Claude desktop app forward and presses its voice mode button through Accessibility,
+  opening a new chat first when Claude is elsewhere. It finds the button by several signals, not only
+  its label, in English, Russian and Ukrainian. On a phone it opens a new Claude chat. See
+  docs/claude-voice-button.md.
+
 ## [1.1.1] - 2026-11-17
 
 ### Fixed
