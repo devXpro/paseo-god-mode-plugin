@@ -8,7 +8,7 @@ OpenAI API or sees the conversation.
 ## Settings
 
 The God Mode screen has, under **Voice buttons**, a switch **ChatGPT voice in Paseo** (off by default).
-Once it is on, the same card shows:
+Once it is on, the card shows a row with the button's name and where it shows; **Edit** opens it:
 
 | Setting | Default | What it does |
 | --- | --- | --- |

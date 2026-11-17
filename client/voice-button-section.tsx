@@ -1,10 +1,11 @@
-// The voice buttons' settings: for each one a switch, and once it is on its name and where it shows.
+// The voice buttons' settings: for each one a switch, and once it is on a summary row that opens its name
+// and where it shows.
 // ChatGPT's button opens ChatGPT's own voice chat (its own shortcut on a Mac, on an iPhone the Apple
 // Shortcut named after the button); Claude's presses Claude's voice mode button through Accessibility
 // on a Mac and opens a new Claude chat on a phone.
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
-import { SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
+import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { type ClaudeVoiceSettings, claudeVoiceStatusRpc, getClaudeVoiceRpc, setClaudeVoiceRpc } from "../shared/claude-voice.ts";
@@ -40,6 +41,7 @@ function VoiceButtonCard<S extends ButtonSettings>(props: {
 }) {
   const { settings } = props;
   const [name, setName] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
 
@@ -69,6 +71,14 @@ function VoiceButtonCard<S extends ButtonSettings>(props: {
       {!settings && !props.loadError ? <SettingsRow label="Loading…" /> : null}
       {props.warning ? <SettingsRow label="Needs attention" error={props.warning} /> : null}
       {settings?.enabled ? (
+        <SettingsAction
+          label={shownName.trim() || settings.name}
+          hint={PLACEMENTS.filter((p) => settings.placements[p.key]).map((p) => (p.key === "slashCommand" ? `/${slash}` : p.label)).join(", ") || "Shown nowhere"}
+          actionLabel={open ? "Done" : "Edit"}
+          onPress={() => setOpen(!open)}
+        />
+      ) : null}
+      {settings?.enabled && open ? (
         <>
           <SettingsInput
             label="Name"
