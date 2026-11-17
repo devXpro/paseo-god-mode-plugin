@@ -143,12 +143,21 @@ test("the button is found when the message box is not focused", () => {
   assert.equal(pressedLabel(s, decide(s)), "Use voice mode");
 });
 
-test("a labelled voice button elsewhere still wins over position", () => {
+test("a voice mode label outside the composer is never pressed: a settings row or a help card is not the button", () => {
   const s = window({
     buttons: [attach, { label: "Fichiers" }],
     extra: [{ role: "AXButton", label: "Use voice mode", x: 50, y: 400, w: 30, h: 30 }],
   });
-  assert.equal(pressedLabel(s, decide(s)), "Use voice mode");
+  assert.equal(decide(s).action, "none");
+  const modal = { nodes: [{ i: 0, parent: -1, role: "AXWebArea" }, { i: 1, parent: 0, role: "AXButton", label: "Голосовой режим", x: 600, y: 300, w: 200, h: 30 }], url: "https://claude.ai/new#settings" };
+  assert.equal(decide(modal).action, "none");
+});
+
+test("with a draft, an icon after dictation is never taken for voice: send can sit there under a label we do not know", () => {
+  const s = window({ draft: "half a thought", send: null, buttons: [attach, dictate, { label: "Submit" }] });
+  const d = decide(s);
+  assert.equal(d.action, "none");
+  assert.equal(d.reason, "draft");
 });
 
 test("Claude Code or Cowork has no composer button for voice: open a new chat", () => {
@@ -177,10 +186,10 @@ test("the whole JXA program parses and defines run()", () => {
   assert.match(script, /function run\(argv\)/);
 });
 
-test("on a chat with a draft, the sidebar's New chat button opens a new chat", () => {
-  const s = window({ url: "https://claude.ai/chat/abc", link: false, draft: "черновик", buttons: [attach, dictate], extra: [{ role: "AXButton", title: "Создать", x: 355, y: 82, w: 268, h: 32 }] });
+test("on a chat without the button, the sidebar's New chat button is the way to a new chat", () => {
+  const s = window({ url: "https://claude.ai/chat/abc", link: false, buttons: [attach, dictate], extra: [{ role: "AXButton", title: "Создать", x: 355, y: 82, w: 268, h: 32 }] });
   const d = decide(s);
-  assert.equal(d.reason, "draft");
+  assert.equal(d.reason, "no-button");
   assert.equal(s.nodes[d.newChat as number].title, "Создать");
 });
 
@@ -199,4 +208,21 @@ test("AX booleans are NSNumber bools: JXA's kCFBooleanTrue is refused, and Elect
 
 test("the flag is not set again while Electron builds the page: each set starts it over", () => {
   assert.match(claudeAxScript(), /flagTakenAt < 0 \|\| now\(\) - flagTakenAt > 4000/);
+});
+
+test("a draft ends the attempt: the user's text is never left behind for a new chat", () => {
+  assert.match(claudeAxScript(), /if \(d\.reason === "draft"\) break;/);
+});
+
+test("the label is read again right before the press, and the whole script runs against one deadline", () => {
+  const script = claudeAxScript();
+  assert.match(script, /labelOf\(el\) !== d\.label/);
+  assert.match(script, /var end = Math\.min\(now\(\) \+ ms, deadline\)/);
+  assert.match(script, /result: "timeout"/);
+});
+
+test("Claude is brought forward once while the page loads, not on every tick", () => {
+  const script = claudeAxScript();
+  const wait = script.slice(script.indexOf("var web = waitFor("), script.indexOf("if (!web)"));
+  assert.doesNotMatch(wait, /front\(/);
 });

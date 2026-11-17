@@ -38,12 +38,15 @@ button presses it through Accessibility:
    holds the message box, icon-only, labelled "Use voice mode" or a known translation (the Russian
    interface says «Включить голосовой режим»; Ukrainian too), and never one of the known others (send,
    stop, dictation, attachments, model, tools, read aloud). With a label it does not know, it takes the
-   icon right after the dictation button, which is where voice mode sits.
+   icon right after the dictation button, which is where voice mode sits, and only while the message
+   box is empty (with a draft, send can take that spot). Right before the press it reads the button's
+   label again, in case the composer changed under it.
 4. When nothing matches it recovers, in order: Escape, sent only while that Claude is frontmost, closes
-   what covers the chat (settings, a menu, a dialog: Claude hides everything under a modal); then a new
-   chat: the sidebar's New chat («Создать»), only on a chat screen since on Claude Code's screen the
+   what covers the chat (settings, a menu, a dialog: Claude hides everything under a modal); then, when
+   the window is not on a chat, a new chat: the sidebar's New chat («Создать»), only on a chat screen since on Claude Code's screen the
    same button starts a Code session, or, when only one Claude instance runs, the link
-   `claude://claude.ai/new`. Then it looks again.
+   `claude://claude.ai/new`. Then it looks again. A draft in the message box hides the voice button;
+   the draft is the user's text, so nothing is done about it and the toast says so.
 5. After the press it checks that voice mode came up (the microphone control, «Выключить микрофон» /
    "Turn off microphone", appears). When voice is already on it says so and does not toggle it off.
 

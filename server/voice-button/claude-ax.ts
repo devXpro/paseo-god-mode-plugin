@@ -107,13 +107,15 @@ function decide(snapshot) {
   }
   candidates.sort(function (x, y) { return y.score - x.score; });
   var best = candidates[0];
-  if (best && best.strong) return { action: "press", index: best.node.i, label: best.text, why: "label" };
+  // Only the composer's own buttons: a "voice mode" row in settings or a help card is not the button.
+  if (best && best.strong && best.inComposer) return { action: "press", index: best.node.i, label: best.text, why: "label" };
   if (best && best.weak && best.inComposer) {
     return { action: "press", index: best.node.i, label: best.text, why: "voice word in the composer" };
   }
   // No label we know (another interface language): voice mode sits right after the dictation button,
-  // in the same row of the composer, so take the icon there unless it is one of the known others.
-  var dictation = near.filter(function (x) { return DICTATION.test(x.text); })[0];
+  // in the same row of the composer, so take the icon there unless it is one of the known others. Only
+  // while the box is empty: with a draft, send can take that spot under a label we do not know.
+  var dictation = composer && empty ? near.filter(function (x) { return DICTATION.test(x.text); })[0] : null;
   if (dictation) {
     var row = dictation.node.y + dictation.node.h / 2;
     var next = null;
@@ -276,8 +278,15 @@ function sleepMs(ms) { delay(ms / 1000); }
 
 function now() { return Date.now(); }
 
+/** Set by run(): the whole script answers before Paseo gives up on the button. */
+var deadline = Infinity;
+
+function left() {
+  return deadline - now();
+}
+
 function waitFor(fn, ms, step) {
-  var end = now() + ms;
+  var end = Math.min(now() + ms, deadline);
   var got = fn();
   while (!got && now() < end) {
     sleepMs(step || 150);
@@ -350,6 +359,11 @@ function look(app, area) {
   return { snap: all, d: decide(all), scope: "window" };
 }
 
+/** What a live element is called now, read the way the snapshot read it. */
+function labelOf(el) {
+  return textOf({ label: text(attr(el, "AXDescription")), title: text(attr(el, "AXTitle")), help: text(attr(el, "AXHelp")) });
+}
+
 function press(el) {
   return $.AXUIElementPerformAction(el, $("AXPress")) === 0;
 }
@@ -389,7 +403,9 @@ function pressEscape() {
 function run(argv) {
   var pid = parseInt(argv[0], 10);
   var mayDeepLink = argv[1] === "deeplink";
-  var waitMs = parseInt(argv[2] || "15000", 10);
+  // The time this script has, all of it: Paseo stops waiting for a plugin after 30 s.
+  var budget = parseInt(argv[2] || "20000", 10);
+  deadline = now() + budget;
   // "dry": find and report, press and navigate nothing (for checking a Mac by hand).
   var dry = argv[3] === "dry";
   openBundle = /^[A-Za-z0-9.-]+$/.test(argv[4] || "") ? argv[4] : "";
@@ -399,22 +415,25 @@ function run(argv) {
   // set starts that over: set every 300 ms, a freshly started Claude never showed its page in 25 s; set
   // once, it did in about 2 s. So set it until Claude takes it (a Claude still starting answers -25204),
   // then leave it alone, and set it again only if the page has not shown 4 s later.
+  // It does so for a Claude in the background too, so Claude is brought forward once here and again only
+  // right before a key or a press, never on every tick: the user may be working in another app.
   var flagTakenAt = -1;
+  if (!dry) front(pid);
   var web = waitFor(function () {
-    if (!dry && frontPid() !== pid) front(pid);
     if (flagTakenAt < 0 || now() - flagTakenAt > 4000) {
       if ($.AXUIElementSetAttributeValue(app, $("AXManualAccessibility"), YES) === 0) flagTakenAt = now();
     }
     return webAreaOf(app);
-  }, waitMs, 300);
+  }, budget, 300);
   if (!web) return JSON.stringify({ result: "no-window", steps: steps });
 
   // Ways out when the button is not there, tried in this order: Escape closes what covers the chat
   // (settings, a menu, a dialog: Claude hides everything under a modal), then a new chat replaces a
-  // screen that is not a chat or a message box holding a draft.
+  // screen that is not a chat. A draft is the user's text: nothing is done about it, they are told.
   var recoveries = ["escape", "new-chat"];
   var attempts = recoveries.length + 1;
   for (var attempt = 0; attempt < attempts; attempt++) {
+    if (left() < 1500) return JSON.stringify({ result: "timeout", steps: steps });
     var seen = waitFor(function () {
       var w = webAreaOf(app);
       if (!w) return null;
@@ -431,7 +450,10 @@ function run(argv) {
     if (d.action === "press") {
       var el = seen.snap.elements[d.index];
       front(pid);
-      if (!el || !press(el)) return JSON.stringify({ result: "press-failed", steps: steps });
+      // React reuses elements: if the composer changed since the snapshot (a reply streaming in,
+      // dictation filling the box), the same element may be send or stop by now.
+      if (!el || labelOf(el) !== d.label) return JSON.stringify({ result: "press-failed", why: "changed", steps: steps });
+      if (!press(el)) return JSON.stringify({ result: "press-failed", steps: steps });
       var on = waitFor(function () {
         var w = webAreaOf(app);
         if (!w) return null;
@@ -440,6 +462,7 @@ function run(argv) {
       }, 6000, 300);
       return JSON.stringify({ result: on ? "started" : "pressed", label: d.label, why: d.why, steps: steps });
     }
+    if (d.reason === "draft") break;
     var recovered = false;
     while (!recovered && recoveries.length) {
       var next = recoveries.shift();
@@ -471,7 +494,7 @@ function run(argv) {
 }
 `;
 
-/** The whole JXA program; `osascript -l JavaScript -e <script> <pid> <deeplink|no> <waitMs> [dry]`. */
+/** The whole JXA program; `osascript -l JavaScript -e <script> <pid> <deeplink|no> <budgetMs> <press|dry> [bundle id]`. */
 export function claudeAxScript(): string {
   return `${DECIDE_SOURCE}\n${COLLECT_SOURCE}`;
 }
@@ -486,7 +509,7 @@ export interface AxStep {
 }
 
 export interface AxResult {
-  result: "started" | "pressed" | "already-on" | "not-found" | "no-window" | "press-failed" | "dry-run";
+  result: "started" | "pressed" | "already-on" | "not-found" | "no-window" | "press-failed" | "timeout" | "dry-run";
   label?: string;
   why?: string;
   steps: AxStep[];
