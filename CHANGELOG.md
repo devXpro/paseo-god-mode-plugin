@@ -6,6 +6,15 @@ the MCP core behind it (up to 0.20 also the ChatGPT Site it published). It follo
 [Keep a Changelog](https://keepachangelog.com). Each `## [X.Y.Z]` section becomes the notes of the
 GitHub release vX.Y.Z.
 
+## [1.1.1] - 2026-11-17
+
+### Fixed
+
+- **Address → Connect on Windows** failed with "Unpacking cloudflared-darwin-amd64.tgz failed":
+  without Homebrew God Mode always downloaded the macOS build. On Windows it now downloads
+  `cloudflared-windows-amd64.exe` into `~/.paseo/god-mode/bin/cloudflared.exe` and finds it there.
+  macOS behaves as before. Thanks to @alexkonstant.
+
 ## [1.1.0] - 2026-11-16
 
 Claude reads only the text of an answer, and the ids the next call needs were only in the structured
