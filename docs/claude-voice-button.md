@@ -3,7 +3,7 @@
 An optional button in Paseo that starts Claude's own voice mode in the Claude desktop app, so you talk
 to Claude with your claude.ai account, its memory and the God Mode connector. It is the Claude twin of
 the [ChatGPT voice button](voice-button.md). It is off until you turn on **Claude voice in Paseo** in
-the God Mode screen, under **Voice button**, and it never calls an Anthropic API or sees the
+the God Mode screen, under **Voice buttons**, where you also give it its name and choose where it shows, and it never calls an Anthropic API or sees the
 conversation.
 
 ## Settings
