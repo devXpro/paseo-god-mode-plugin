@@ -9,8 +9,8 @@ import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSecti
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { type ClaudeVoiceSettings, claudeVoiceStatusRpc, getClaudeVoiceRpc, setClaudeVoiceRpc } from "../shared/claude-voice.ts";
-import { type VoiceButtonSettings, getVoiceButtonRpc, setVoiceButtonRpc, voiceSlashName } from "../shared/voice-button.ts";
-import { publishClaudeVoice, publishVoiceButton } from "./voice-button.tsx";
+import { type VoiceButtonSettings, getVoiceButtonRpc, setVoiceButtonRpc } from "../shared/voice-button.ts";
+import { publishClaudeVoice, publishVoiceButton, voiceSlashFor } from "./voice-button.tsx";
 
 const errorText = (error: unknown) => String((error as Error)?.message ?? error);
 
@@ -36,17 +36,21 @@ function VoiceButtonCard<S extends ButtonSettings>(props: {
   save: (settings: S) => void;
   saving: boolean;
   saveError: unknown;
-  fallbackSlash: string;
+  slashFor: (name: string) => string;
+  placeholder: string;
   warning?: string | null;
 }) {
   const { settings } = props;
   const [name, setName] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The name is saved after a pause; by then a switch may have changed, so it merges into the latest.
+  const latest = useRef(settings);
+  latest.current = settings;
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
 
   const change = (patch: Partial<S>) => {
-    if (settings) props.save({ ...settings, ...patch });
+    if (latest.current) props.save({ ...latest.current, ...patch });
   };
   // Saved half a second after the last key, so the buttons are not renamed letter by letter.
   const typeName = (text: string) => {
@@ -56,7 +60,7 @@ function VoiceButtonCard<S extends ButtonSettings>(props: {
     timer.current = setTimeout(() => change({ name: text.trim() } as Partial<S>), 500);
   };
   const shownName = name ?? settings?.name ?? "";
-  const slash = voiceSlashName(shownName) === "voice-chat" ? props.fallbackSlash : voiceSlashName(shownName);
+  const slash = props.slashFor(shownName);
 
   return (
     <SettingsCard>
@@ -84,7 +88,7 @@ function VoiceButtonCard<S extends ButtonSettings>(props: {
             label="Name"
             hint="On the button and in Command Center; one plain word is also its slash command."
             initialValue={settings.name}
-            placeholder="Jarvis"
+            placeholder={props.placeholder}
             onChangeText={typeName}
             error={name === null ? null : nameProblem(name)}
           />
@@ -129,7 +133,8 @@ function ChatGptVoiceCard() {
       save={(settings) => save.mutate(settings)}
       saving={save.isPending}
       saveError={save.isError ? save.error : null}
-      fallbackSlash="voice-chat"
+      slashFor={voiceSlashFor.chatgpt}
+      placeholder="Jarvis"
     />
   );
 }
@@ -163,7 +168,8 @@ function ClaudeVoiceCard() {
       save={(settings) => save.mutate(settings)}
       saving={save.isPending}
       saveError={save.isError ? save.error : null}
-      fallbackSlash="claude-voice"
+      slashFor={voiceSlashFor.claude}
+      placeholder="Claude"
       warning={warning}
     />
   );

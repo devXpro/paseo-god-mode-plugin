@@ -42,6 +42,8 @@ interface VoiceButtonSpec<S extends ButtonSettings> {
   launch: (rpc: Rpc, input: { client: Client }) => Promise<LaunchResult>;
   /** The same launch bound by a hook, for the sidebar row. */
   useLaunch: () => Launch;
+  /** A button whose slash command wins when both would take the same one; this one then uses fallbackSlash. */
+  yieldsTo?: { slash: () => string | null; subscribe: (listener: () => void) => () => void };
 }
 
 /** iOS opens what the daemon returns on the phone; Mac, browser and Electron ask the daemon's Mac. */
@@ -71,8 +73,11 @@ function createVoiceButton<S extends ButtonSettings>(spec: VoiceButtonSpec<S>) {
   const useSettings = () => useSyncExternalStore(subscribe, () => current);
   const slashName = (name: string) => {
     const word = voiceSlashName(name);
-    return word === "voice-chat" ? spec.fallbackSlash : word;
+    if (word === "voice-chat" || word === spec.yieldsTo?.slash()) return spec.fallbackSlash;
+    return word;
   };
+  /** The slash command this button registers now, or null when it registers none. */
+  const slash = () => (current?.enabled && current.placements.slashCommand ? slashName(current.name) : null);
 
   function SidebarItem(_props: PluginSidebarItemProps) {
     const settings = useSettings();
@@ -162,6 +167,7 @@ function createVoiceButton<S extends ButtonSettings>(spec: VoiceButtonSpec<S>) {
       syncCommands();
     };
     const stopListening = subscribe(syncAll);
+    const stopFollowing = spec.yieldsTo?.subscribe(syncCommands) ?? (() => {});
 
     const failed = (what: string) => (error: unknown) => {
       if (!lifetime.signal.aborted) console.error(`[god-mode] ${spec.id} button: ${what} failed`, error);
@@ -229,6 +235,7 @@ function createVoiceButton<S extends ButtonSettings>(spec: VoiceButtonSpec<S>) {
     return () => {
       lifetime.abort();
       stopListening();
+      stopFollowing();
       for (const registration of [...pills.values(), ...headers.values()]) registration.remove();
       pills.clear();
       headers.clear();
@@ -237,7 +244,7 @@ function createVoiceButton<S extends ButtonSettings>(spec: VoiceButtonSpec<S>) {
     };
   }
 
-  return { publish, useSettings, SidebarItem, contribute };
+  return { publish, subscribe, useSettings, slash, slashName, SidebarItem, contribute };
 }
 
 const chatgpt = createVoiceButton<VoiceButtonSettings>({
@@ -260,6 +267,7 @@ const claude = createVoiceButton<ClaudeVoiceSettings>({
   load: async (rpc) => (await rpc(getClaudeVoiceRpc, {})).settings,
   launch: (rpc, input) => rpc(claudeVoiceLaunchRpc, input),
   useLaunch: () => useRpc(claudeVoiceLaunchRpc),
+  yieldsTo: { slash: chatgpt.slash, subscribe: chatgpt.subscribe },
 });
 
 export const publishVoiceButton = chatgpt.publish;
@@ -268,5 +276,7 @@ export const VoiceButtonSidebarItem = chatgpt.SidebarItem;
 export const contributeVoiceButton = chatgpt.contribute;
 
 export const publishClaudeVoice = claude.publish;
+/** The slash command each button takes for a name, after the two have settled a clash. */
+export const voiceSlashFor = { chatgpt: chatgpt.slashName, claude: claude.slashName };
 export const ClaudeVoiceSidebarItem = claude.SidebarItem;
 export const contributeClaudeVoice = claude.contribute;

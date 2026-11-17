@@ -87,6 +87,26 @@ test("Claude not running at all is started first", async () => {
   assert.match(axCall(calls) as string, / 7000 deeplink \d+ press com.anthropic.claudefordesktop$/);
 });
 
+test("with only a profile running, the default Claude starts beside it (open -n), not the profile brought forward", async () => {
+  const { run, calls } = mac({ ps: [` 5000 ${EXE} --user-data-dir=/Users/me/.claude-evo-data/electron`], psAfterOpen: [` 5000 ${EXE} --user-data-dir=/Users/me/.claude-evo-data/electron`, ` 7000 ${EXE}`] });
+  await launchClaudeOnMac(settings(), { run, exists, platform: "darwin", sleep: noSleep, home });
+  assert.ok(calls.includes("/usr/bin/open -n -b com.anthropic.claudefordesktop"));
+  assert.match(axCall(calls) as string, / 7000 no \d+ press $/);
+});
+
+test("the script gets what is left of Paseo's 30 s, and the process limit stays inside it", async () => {
+  const timeouts: number[] = [];
+  const { run, calls } = mac({ ps: [` 4804 ${EXE}`] });
+  const timed: Runner = async (file, args, timeoutMs) => {
+    if (args.join(" ").includes("function run(argv)")) timeouts.push(timeoutMs ?? 0);
+    return run(file, args, timeoutMs);
+  };
+  await launchClaudeOnMac(settings(), { run: timed, exists, platform: "darwin", sleep: noSleep, home });
+  const budget = Number(/ 4804 deeplink (\d+) press/.exec(axCall(calls) as string)?.[1]);
+  assert.ok(budget > 20_000 && budget <= 26_500, `budget ${budget}`);
+  assert.ok(timeouts[0] > budget && timeouts[0] <= 28_000, `timeout ${timeouts[0]}`);
+});
+
 test("an unknown profile is refused before anything starts", async () => {
   const { run, calls } = mac({ ps: [] });
   const launch = await launchClaudeOnMac(settings({ profile: "nope" }), { run, exists, platform: "darwin", sleep: noSleep, home });
@@ -114,6 +134,8 @@ test("each script result becomes an honest outcome", async () => {
     [{ result: "pressed", steps: [] }, "voice-requested", false],
     [{ result: "already-on", steps: [] }, "already-on", false],
     [{ result: "not-found", steps: [{ decision: { action: "none", reason: "draft" } }] }, "app-opened", true],
+    [{ result: "timeout", steps: [] }, "app-opened", true],
+    [{ result: "press-failed", why: "changed", steps: [] }, "app-opened", true],
   ];
   for (const [ax, outcome, oneTap] of cases) {
     const { run } = mac({ ps: [` 4804 ${EXE}`], ax });
@@ -135,6 +157,8 @@ test("the reasons read as plain words", () => {
   assert.match(explainNotFound({ result: "not-found", steps: [{ decision: { action: "none", reason: "draft" } }] }), /draft/);
   assert.match(explainNotFound({ result: "not-found", steps: [{ decision: { action: "none", reason: "no-button", screen: "elsewhere" } }] }), /not on a chat/);
   assert.match(explainNotFound({ result: "no-window", steps: [] }), /window/);
+  assert.match(explainNotFound({ result: "timeout", steps: [] }), /too long/);
+  assert.match(explainNotFound({ result: "press-failed", why: "changed", steps: [] }), /changed/);
 });
 
 test("anything but a Mac is refused", async () => {

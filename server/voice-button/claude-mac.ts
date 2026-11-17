@@ -79,6 +79,8 @@ export interface ClaudeLaunchDeps {
 }
 
 const ONE_TAP = "Claude is open: tap its voice button.";
+/** Paseo stops waiting for a plugin RPC after 30 s; everything here, the press included, ends before. */
+const BUDGET_MS = 28_000;
 const result = (outcome: ClaudeVoiceLaunch["outcome"], via: ClaudeVoiceLaunch["via"], message: string, needsOneTap = false): ClaudeVoiceLaunch => ({
   outcome,
   via,
@@ -91,7 +93,8 @@ const result = (outcome: ClaudeVoiceLaunch["outcome"], via: ClaudeVoiceLaunch["v
 export function explainNotFound(ax: AxResult): string {
   const last = [...ax.steps].reverse().find((s) => s.decision)?.decision;
   if (ax.result === "no-window") return "Claude's window did not show up.";
-  if (ax.result === "press-failed") return "Claude did not take the press.";
+  if (ax.result === "press-failed") return ax.why === "changed" ? "Claude's message box changed just before the press." : "Claude did not take the press.";
+  if (ax.result === "timeout") return "Claude took too long to show its voice button.";
   if (last?.reason === "draft") return "There is a draft in Claude's message box, so its voice button is hidden.";
   if (last?.screen === "elsewhere") return "Claude is not on a chat, and no new chat could be opened.";
   if (last?.reason === "no-composer") return "Claude's message box was not found.";
@@ -116,9 +119,10 @@ export async function launchClaudeOnMac(
     // A profile starts as its own instance with its own data, the way the user's launcher aliases do.
     const opened = dataDir
       ? await run("/usr/bin/open", ["-n", "-a", app.path, "--env", `CLAUDE_CONFIG_DIR=${dataDir}`, "--args", `--user-data-dir=${join(dataDir, "electron")}`])
-      : await run("/usr/bin/open", ["-b", app.bundleId]);
+      : // -n: with only a profile running, plain `open -b` would bring that profile forward instead.
+        await run("/usr/bin/open", instances.length ? ["-n", "-b", app.bundleId] : ["-b", app.bundleId]);
     if (opened.code !== 0) throw new Error(`Could not open Claude: ${opened.stderr.trim()}`);
-    for (let attempt = 0; attempt < 20 && !target(); attempt++) {
+    for (let attempt = 0; attempt < 20 && !target() && Date.now() - began < 12_000; attempt++) {
       await sleep(500);
       instances = await listInstances(app, run);
     }
@@ -148,10 +152,16 @@ export async function launchClaudeOnMac(
   await bringForward();
   // A link opens a new chat only in the instance macOS picks, so it is used only when there is one.
   const deepLink = instances.length === 1 ? "deeplink" : "no";
-  // A Claude that has just started needs longer: Electron, then claude.ai over the network. Paseo
-  // gives a plugin RPC 30 s, so the whole press has to fit in that, with a margin.
-  const waitMs = String(Math.max(5_000, 22_000 - (Date.now() - began)));
-  const ran = await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", claudeAxScript(), String(instance.pid), deepLink, waitMs, "press", deepLink === "deeplink" && !profile ? app.bundleId : ""], 27_000);
+  // The script gets what is left of the budget and always answers within it, press included; the
+  // process limit is only a backstop a little later.
+  const remaining = BUDGET_MS - (Date.now() - began);
+  if (remaining < 6_000) return result("app-opened", "open", `Claude took too long to start. ${ONE_TAP}`, true);
+  const scriptMs = remaining - 1_500;
+  const ran = await run(
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", claudeAxScript(), String(instance.pid), deepLink, String(scriptMs), "press", deepLink === "deeplink" && !profile ? app.bundleId : ""],
+    remaining,
+  );
   let ax: AxResult;
   try {
     ax = JSON.parse(ran.stdout.trim()) as AxResult;
