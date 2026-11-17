@@ -16,10 +16,17 @@ var VOICE_STRONG = /\bvoice mode\b|\bvoice chat\b|голосов\S* режим|�
 var VOICE_WEAK = /\bvoice\b|голос|vocal|\bvoz\b|stimm|g[łl]os/i;
 var DICTATION = /dictat|диктов|диктуй|voice input|голосов\S* ввод|transcri/i;
 var ACTIVE = /turn (on|off) (the )?microphone|(end|exit|leave|stop) voice|(включить|выключить|отключить|вимкнути|увімкнути) микрофон|(включить|выключить|отключить|вимкнути|увімкнути) мікрофон|заверш\S* голос|выйти из голос/i;
+var NEW_CHAT = /^(new chat|start new chat|новый чат|создать|новий чат|створити)$/i;
 var DENY = /send|stop|cancel|attach|upload|\badd\b|plus|model|menu|tool|setting|close|copy|retry|edit|share|search|research|style|project|отправ|стоп|останов|отмен|прикреп|загруз|добав|модел|меню|инструмент|настро|закры|копир|повтор|измен|поделит|поиск|стил|проект/i;
 
+/** The label, title and help, each once: Chromium often repeats the aria-label as the title. */
 function textOf(n) {
-  return [n.label, n.title, n.help].filter(function (s) { return s; }).join(" ").trim();
+  var out = [];
+  [n.label, n.title, n.help].forEach(function (s) {
+    s = (s || "").trim();
+    if (s && out.indexOf(s) < 0) out.push(s);
+  });
+  return out.join(" ");
 }
 
 function ancestors(nodes, i, limit) {
@@ -98,25 +105,35 @@ function decide(snapshot) {
     if (c.inComposer) c.score += 30;
     candidates.push(c);
   }
-  var rightmost = null;
-  for (var r = 0; r < near.length; r++) {
-    if (!rightmost || near[r].node.x + near[r].node.w > rightmost.node.x + rightmost.node.w) rightmost = near[r];
-  }
-  for (var k = 0; k < candidates.length; k++) {
-    if (rightmost && candidates[k].node === rightmost.node) candidates[k].score += 15;
-  }
   candidates.sort(function (x, y) { return y.score - x.score; });
   var best = candidates[0];
   if (best && best.strong) return { action: "press", index: best.node.i, label: best.text, why: "label" };
-  // No label we know (another interface language): the voice button takes the send spot while the
-  // message box is empty, so it is the rightmost icon of the composer and never one of the known others.
   if (best && best.weak && best.inComposer) {
     return { action: "press", index: best.node.i, label: best.text, why: "voice word in the composer" };
   }
-  if (rightmost && empty && !rightmost.node.hasText && rightmost.text && !DENY.test(rightmost.text) && !DICTATION.test(rightmost.text) && !ACTIVE.test(rightmost.text)) {
-    return { action: "press", index: rightmost.node.i, label: rightmost.text, why: "send spot of an empty composer" };
+  // No label we know (another interface language): voice mode sits right after the dictation button,
+  // in the same row of the composer, so take the icon there unless it is one of the known others.
+  var dictation = near.filter(function (x) { return DICTATION.test(x.text); })[0];
+  if (dictation) {
+    var row = dictation.node.y + dictation.node.h / 2;
+    var next = null;
+    for (var r = 0; r < near.length; r++) {
+      var o = near[r].node;
+      var gap = o.x - (dictation.node.x + dictation.node.w);
+      if (o === dictation.node || gap < -2 || gap > 40 || Math.abs(o.y + o.h / 2 - row) > 8) continue;
+      if (!next || o.x < next.node.x) next = near[r];
+    }
+    if (next && !next.node.hasText && next.text && !DENY.test(next.text) && !DICTATION.test(next.text) && !ACTIVE.test(next.text)) {
+      return { action: "press", index: next.node.i, label: next.text, why: "next to dictation" };
+    }
   }
-  var links = nodes.filter(function (n) { return n && n.role === "AXLink" && urlPath(n.url) === "/new" && n.w > 0; });
+  // A new chat: a link to /new, or on a chat screen the sidebar's "New chat" ("Создать" in Russian;
+  // on Claude Code's screen the same button starts a Code session, so only on a chat).
+  var links = nodes.filter(function (n) {
+    if (!n || n.w <= 0) return false;
+    if (n.role === "AXLink" && urlPath(n.url) === "/new") return true;
+    return n.role === "AXButton" && screenOf(snapshot.url) === "chat" && NEW_CHAT.test(textOf(n));
+  });
   var reason = !composer ? "no-composer" : !empty ? "draft" : "no-button";
   return {
     action: "none",
@@ -233,11 +250,12 @@ function collect(root, budget) {
   return { nodes: nodes, elements: elements, visited: visited, truncated: stack.length > 0 };
 }
 
-function findRole(root, role, depth) {
+/** The claude.ai page: the desktop app's own shell is a file:// web area that holds it. */
+function findClaudeArea(root, depth) {
   var queue = [[root, 0]];
   while (queue.length) {
     var item = queue.shift();
-    if (roleOf(item[0]) === role) return item[0];
+    if (roleOf(item[0]) === "AXWebArea" && /^https:\/\/([a-z0-9-]+\.)*claude\.ai\//i.test(text(attr(item[0], "AXURL")))) return item[0];
     if (item[1] >= depth) continue;
     var kids = attr(item[0], "AXChildren");
     if (kids === undefined) continue;
@@ -264,18 +282,31 @@ function waitFor(fn, ms, step) {
   return got;
 }
 
+/**
+ * The window to work in. Claude Code opens windows of its own beside the chat window, so the window
+ * on a chat wins over the focused one, and is raised when it is not in front.
+ */
 function webAreaOf(app) {
-  var win = attr(app, "AXFocusedWindow") || attr(app, "AXMainWindow");
-  if (win === undefined) {
-    var ws = attr(app, "AXWindows");
-    if (ws !== undefined && ws.count > 0) win = ws.objectAtIndex(0);
+  var ws = attr(app, "AXWindows");
+  if (ws === undefined || ws.count === 0) return null;
+  var focused = attr(app, "AXFocusedWindow");
+  var best = null;
+  for (var w = 0; w < ws.count; w++) {
+    var win = ws.objectAtIndex(w);
+    if (roleOf(win) !== "AXWindow") continue;
+    var area = findClaudeArea(win, 20);
+    if (!area) continue;
+    var kids = attr(area, "AXChildren");
+    if (kids === undefined || kids.count === 0) continue;
+    var isFocused = focused !== undefined && $.CFEqual(focused, win);
+    var rank = (screenOf(areaUrl(area)) === "chat" ? 2 : 0) + (isFocused ? 1 : 0);
+    if (!best || rank > best.rank) best = { win: win, area: area, rank: rank, focused: isFocused };
   }
-  if (win === undefined || roleOf(win) !== "AXWindow") return null;
-  var area = findRole(win, "AXWebArea", 14);
-  if (!area) return null;
-  var kids = attr(area, "AXChildren");
-  if (kids === undefined || kids.count === 0) return null;
-  return { win: win, area: area };
+  if (best && !best.focused) {
+    $.AXUIElementPerformAction(best.win, $("AXRaise"));
+    $.AXUIElementSetAttributeValue(best.win, $("AXMain"), $.kCFBooleanTrue);
+  }
+  return best;
 }
 
 function areaUrl(area) {
@@ -319,8 +350,25 @@ function press(el) {
   return $.AXUIElementPerformAction(el, $("AXPress")) === 0;
 }
 
-function front(app) {
-  $.AXUIElementSetAttributeValue(app, $("AXFrontmost"), $.kCFBooleanTrue);
+/** Brings this pid forward. Setting AXFrontmost is ignored for a background caller; activation is not. */
+function front(pid) {
+  var running = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+  if (running && !running.isNil()) running.activateWithOptions(3);
+}
+
+function frontPid() {
+  var f = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  return f && !f.isNil() ? f.processIdentifier : -1;
+}
+
+/** Escape, key code 53, down and up. */
+function pressEscape() {
+  ObjC.import("CoreGraphics");
+  var down = $.CGEventCreateKeyboardEvent(null, 53, true);
+  $.CGEventPost(0, down);
+  delay(0.05);
+  var up = $.CGEventCreateKeyboardEvent(null, 53, false);
+  $.CGEventPost(0, up);
 }
 
 function run(argv) {
@@ -332,18 +380,22 @@ function run(argv) {
   var steps = [];
   var app = $.AXUIElementCreateApplication(pid);
   $.AXUIElementSetAttributeValue(app, $("AXManualAccessibility"), $.kCFBooleanTrue);
-  if (!dry) front(app);
+  if (!dry) front(pid);
   var web = waitFor(function () { return webAreaOf(app); }, waitMs, 250);
   if (!web) return JSON.stringify({ result: "no-window", steps: steps });
 
-  for (var attempt = 0; attempt < 2; attempt++) {
+  // Ways out when the button is not there, tried in this order: Escape closes what covers the chat
+  // (settings, a menu, a dialog: Claude hides everything under a modal), then a new chat replaces a
+  // screen that is not a chat or a message box holding a draft.
+  var recoveries = ["escape", "new-chat"];
+  for (var attempt = 0; attempt <= recoveries.length; attempt++) {
     var seen = waitFor(function () {
       var w = webAreaOf(app);
       if (!w) return null;
       web = w;
       var l = look(app, w.area);
-      return l.d.action === "none" && attempt === 1 && l.d.reason === "no-composer" ? null : l;
-    }, attempt === 0 ? 1500 : 8000, 300);
+      return l.d.action === "none" && attempt > 0 && l.d.reason === "no-composer" ? null : l;
+    }, attempt === 0 ? 1500 : 6000, 300);
     if (!seen) seen = look(app, web.area);
     var d = seen.d;
     steps.push({ attempt: attempt, scope: seen.scope, visited: seen.snap.visited, url: seen.snap.url, decision: d });
@@ -351,28 +403,42 @@ function run(argv) {
     if (dry) return JSON.stringify({ result: "dry-run", steps: steps });
     if (d.action === "press") {
       var el = seen.snap.elements[d.index];
-      front(app);
+      front(pid);
       if (!el || !press(el)) return JSON.stringify({ result: "press-failed", steps: steps });
       var on = waitFor(function () {
         var w = webAreaOf(app);
         if (!w) return null;
         var after = look(app, w.area).d;
         return after.action === "active" ? after : null;
-      }, 4000, 300);
+      }, 6000, 300);
       return JSON.stringify({ result: on ? "started" : "pressed", label: d.label, why: d.why, steps: steps });
     }
-    if (attempt === 1) break;
-    // Not a chat, a draft in the box or no button: open a new chat and look again.
-    if (d.newChat >= 0 && seen.snap.elements[d.newChat] && press(seen.snap.elements[d.newChat])) {
-      steps.push({ navigate: "new-chat-link" });
-    } else if (mayDeepLink) {
-      $.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString("claude://claude.ai/new"));
-      steps.push({ navigate: "deep-link" });
-    } else {
-      break;
+    var recovered = false;
+    while (!recovered && recoveries.length) {
+      var next = recoveries.shift();
+      if (next === "escape" && d.reason === "no-composer") {
+        // Keys go to the frontmost app, so only when that is this Claude.
+        front(pid);
+        sleepMs(200);
+        if (frontPid() === pid) {
+          pressEscape();
+          steps.push({ navigate: "escape" });
+          recovered = true;
+        }
+      } else if (next === "new-chat") {
+        if (d.newChat >= 0 && seen.snap.elements[d.newChat] && press(seen.snap.elements[d.newChat])) {
+          steps.push({ navigate: "new-chat-button" });
+          recovered = true;
+        } else if (mayDeepLink) {
+          $.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString("claude://claude.ai/new"));
+          steps.push({ navigate: "deep-link" });
+          recovered = true;
+        }
+      }
     }
+    if (!recovered) break;
     sleepMs(600);
-    front(app);
+    front(pid);
   }
   return JSON.stringify({ result: "not-found", steps: steps });
 }
