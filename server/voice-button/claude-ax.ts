@@ -151,6 +151,10 @@ export const COLLECT_SOURCE = String.raw`
 ObjC.import("ApplicationServices");
 ObjC.import("AppKit");
 
+// JXA hands YES over as something AX refuses (kAXErrorFailure, -25200), so the flag that
+// makes Electron publish its page was never set; an NSNumber bool is the CFBoolean AX expects.
+var YES = $.NSNumber.numberWithBool(true);
+
 var ATTRS = ["AXRole", "AXSubrole", "AXDescription", "AXTitle", "AXHelp", "AXChildren", "AXEnabled", "AXFocused", "AXPosition", "AXSize", "AXURL", "AXValue", "AXPlaceholderValue"];
 
 function attr(el, name) {
@@ -304,7 +308,7 @@ function webAreaOf(app) {
   }
   if (best && !best.focused) {
     $.AXUIElementPerformAction(best.win, $("AXRaise"));
-    $.AXUIElementSetAttributeValue(best.win, $("AXMain"), $.kCFBooleanTrue);
+    $.AXUIElementSetAttributeValue(best.win, $("AXMain"), YES);
   }
   return best;
 }
@@ -391,12 +395,16 @@ function run(argv) {
   openBundle = /^[A-Za-z0-9.-]+$/.test(argv[4] || "") ? argv[4] : "";
   var steps = [];
   var app = $.AXUIElementCreateApplication(pid);
-  // Electron builds the page's tree only for a window that exists while Claude is frontmost and the flag
-  // is set; a flag set during launch, or on a window in the background, is ignored. So until the page
-  // shows, keep Claude in front and set the flag again.
+  // Electron builds the page's tree a second or two after AXManualAccessibility is set, and every new
+  // set starts that over: set every 300 ms, a freshly started Claude never showed its page in 25 s; set
+  // once, it did in about 2 s. So set it until Claude takes it (a Claude still starting answers -25204),
+  // then leave it alone, and set it again only if the page has not shown 4 s later.
+  var flagTakenAt = -1;
   var web = waitFor(function () {
     if (!dry && frontPid() !== pid) front(pid);
-    $.AXUIElementSetAttributeValue(app, $("AXManualAccessibility"), $.kCFBooleanTrue);
+    if (flagTakenAt < 0 || now() - flagTakenAt > 4000) {
+      if ($.AXUIElementSetAttributeValue(app, $("AXManualAccessibility"), YES) === 0) flagTakenAt = now();
+    }
     return webAreaOf(app);
   }, waitMs, 300);
   if (!web) return JSON.stringify({ result: "no-window", steps: steps });
