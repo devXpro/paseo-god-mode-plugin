@@ -33,6 +33,7 @@ export interface TunnelStatus {
 }
 
 const LOGIN_WAIT_MS = 10 * 60_000;
+const WINDOWS = process.platform === "win32";
 const BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 const tunnelDir = () => join(dataDir(), "tunnel");
 const recordFile = () => join(dataDir(), "tunnel.json");
@@ -41,7 +42,7 @@ const credentialsFile = () => join(tunnelDir(), "credentials.json");
 const logFile = () => join(tunnelDir(), "cloudflared.log");
 const pidFile = () => join(tunnelDir(), "cloudflared.pid");
 const originCert = () => join(homedir(), ".cloudflared", "cert.pem");
-const ownBinary = () => join(dataDir(), "bin", "cloudflared");
+const ownBinary = () => join(dataDir(), "bin", WINDOWS ? "cloudflared.exe" : "cloudflared");
 
 /** Where cloudflared is: Homebrew's, or the copy God Mode downloaded. */
 export function findCloudflared(): string | null {
@@ -54,18 +55,24 @@ async function install(): Promise<string> {
     const result = await run(brew, ["install", "cloudflared"], { timeoutMs: 10 * 60_000 });
     if (!result.ok) throw new Error(`brew install cloudflared failed:\n${tail(result)}`);
   } else {
-    // Without Homebrew: Cloudflare's own release build, unpacked into God Mode's data directory.
-    const asset = `cloudflared-darwin-${arch() === "arm64" ? "arm64" : "amd64"}.tgz`;
+    // Without Homebrew: Cloudflare's own release build, in God Mode's data directory. On Windows it is
+    // the .exe itself; there is no arm64 build, and the amd64 one runs under emulation.
+    const asset = WINDOWS ? "cloudflared-windows-amd64.exe" : `cloudflared-darwin-${arch() === "arm64" ? "arm64" : "amd64"}.tgz`;
     const response = await fetch(`https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`);
     if (!response.ok) throw new Error(`Downloading ${asset} failed: HTTP ${response.status}`);
     const dir = join(dataDir(), "bin");
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    const archive = join(dir, asset);
-    await writeFile(archive, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
-    const unpacked = await run("/usr/bin/tar", ["-xzf", archive, "-C", dir]);
-    await rm(archive, { force: true });
-    if (!unpacked.ok) throw new Error(`Unpacking ${asset} failed:\n${tail(unpacked)}`);
-    await chmod(ownBinary(), 0o755);
+    const body = Buffer.from(await response.arrayBuffer());
+    if (WINDOWS) {
+      await writeFile(ownBinary(), body);
+    } else {
+      const archive = join(dir, asset);
+      await writeFile(archive, body, { mode: 0o600 });
+      const unpacked = await run("/usr/bin/tar", ["-xzf", archive, "-C", dir]);
+      await rm(archive, { force: true });
+      if (!unpacked.ok) throw new Error(`Unpacking ${asset} failed:\n${tail(unpacked)}`);
+      await chmod(ownBinary(), 0o755);
+    }
   }
   const found = findCloudflared();
   if (!found) throw new Error("cloudflared was installed but is not where God Mode looks for it.");
@@ -159,7 +166,8 @@ export class Tunnel {
   private signIn(binary: string): Promise<{ loginUrl: string; done: Promise<void> }> {
     return new Promise((resolveLink, rejectLink) => {
       // A PATH without /usr/bin keeps cloudflared from opening a browser here: the link goes to the
-      // device the user pressed the button on.
+      // device the user pressed the button on. Windows ignores the case of variable names: Node keeps
+      // this PATH and drops the inherited Path, so cloudflared does not find cmd to open one either.
       const login = spawn(binary, ["tunnel", "login"], { env: { ...process.env, PATH: "/opt/homebrew/bin" }, stdio: ["ignore", "pipe", "pipe"] });
       this.login = login;
       let output = "";

@@ -21,8 +21,8 @@ button on its screen does, what it needs, and what God Mode keeps on the Mac.
 **Address → Connect** on God Mode's screen:
 
 1. God Mode looks for `cloudflared` (Homebrew's, or its own copy in `~/.paseo/god-mode/bin/`). If it
-   is missing, it installs it with `brew install cloudflared`, or without Homebrew downloads
-   Cloudflare's release build.
+   is missing, it installs it with `brew install cloudflared`, or without Homebrew (and always on
+   Windows) downloads Cloudflare's release build.
 2. Cloudflare's sign-in page opens on the device where you pressed the button. Sign in, pick the
    domain, press **Authorize**. The link is good for about ten minutes; press Connect again for a new one.
 3. God Mode creates a tunnel named `god-mode`, points `gm.<your domain>` at it, deletes the sign-in
@@ -76,7 +76,7 @@ you:
 | `tunnel/config.yml`, `tunnel/credentials.json` | The tunnel's configuration and credentials (`cloudflared` runs with them). |
 | `tunnel/cloudflared.log` | What `cloudflared` printed. |
 | `voice-button.json` | The voice button's settings. |
-| `bin/cloudflared` | Only when God Mode downloaded `cloudflared` itself. |
+| `bin/cloudflared` (`cloudflared.exe` on Windows) | Only when God Mode downloaded `cloudflared` itself. |
 
 God Mode reads Paseo's own `paseo.pid` and `local-credential` in `~/.paseo/` to reach the daemon, and
 never copies them.
