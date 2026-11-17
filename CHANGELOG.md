@@ -15,6 +15,9 @@ GitHub release vX.Y.Z.
   opening a new chat first when Claude is elsewhere. It finds the button by several signals, not only
   its label, in English, Russian and Ukrainian. On a phone it opens a new Claude chat. See
   docs/claude-voice-button.md.
+- **Each voice button's name and places on the screen.** Under **Voice buttons**, once a button is on:
+  its name (the label, Command Center title and slash command) and where it shows (workspace header,
+  every chat, sidebar, Command Center, slash command).
 
 ## [1.1.1] - 2026-11-17
 

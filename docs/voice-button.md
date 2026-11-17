@@ -7,19 +7,19 @@ OpenAI API or sees the conversation.
 
 ## Settings
 
-The screen has one switch, **ChatGPT voice in Paseo** (off by default): on, Paseo shows the button.
-The other settings are no longer on the screen and keep their defaults:
+The God Mode screen has, under **Voice buttons**, a switch **ChatGPT voice in Paseo** (off by default).
+Once it is on, the same card shows:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Name | Jarvis | The button's label and Command Center title. A plain one-word name is also its slash command (`/jarvis`); any other name uses `/voice-chat`. |
-| Placements | all on | A pill in every chat, a button in every workspace header (a new chat has no pill yet), a sidebar row, a Command Center item, a slash command. |
-| On a Mac | Press ChatGPT's voice shortcut | How the Mac starts voice; see below. |
-| iPhone shortcut | the name | The Apple Shortcut the iPhone runs. |
+| Name | Jarvis | The button's label and Command Center title. A plain one-word name is also its slash command (`/jarvis`); any other name uses `/voice-chat`. On an iPhone it is also the Apple Shortcut the button runs. |
+| Workspace header, Every chat, Sidebar, Command Center, Slash command | all on | Where the button shows: a button at the top of every workspace, a pill above every chat's message box, a sidebar row, a Command Center item, a slash command. |
 
-Settings are kept in `~/.paseo/god-mode/voice-button.json` on the daemon's Mac. The switch changes
-only whether the button is on, so a value an earlier version stored in that file stays in force.
-Other devices pick up a change the next time Paseo loads the plugin.
+The name is saved half a second after the last key. Two settings are not on the screen and keep their
+defaults: how a Mac starts voice (ChatGPT's own shortcut) and the iPhone shortcut's own name.
+
+Settings are kept in `~/.paseo/god-mode/voice-button.json` on the daemon's Mac. The device you change
+them on applies them at once; other devices pick up a change the next time Paseo loads the plugin.
 
 ## On a Mac
 
