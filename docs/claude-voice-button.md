@@ -28,17 +28,21 @@ button presses it through Accessibility:
 1. It finds the Claude instance: the one started without `--user-data-dir`, or the chosen profile's
    (started with `open -n` and that profile's data when it is not running), and brings that process
    forward by its pid.
-2. It reads Claude's window (`AXManualAccessibility` makes Electron publish it) and picks the voice
-   button by several signals, not only the label: a button of the composer that holds the message box,
-   icon-only, at the send spot while the box is empty, labelled "Use voice mode" or a known translation
-   (Russian and Ukrainian included), and never one of the known others (send, stop, dictation,
-   attachments, model, tools). An unknown interface language falls back to the send spot of an empty
-   composer.
-3. When the window is not on a chat (Claude Code, Cowork, settings) or the box holds a draft, it opens
-   a new chat: the sidebar's link to `/new` (found by its address, so in any language), or, when only
-   one Claude instance runs, the link `claude://claude.ai/new`. Then it looks again.
-4. After the press it checks that voice mode came up (the microphone controls appear). When voice is
-   already on it says so and does not toggle it off.
+2. It reads Claude's windows (`AXManualAccessibility` makes Electron publish them). The claude.ai page
+   sits inside the app's own `file://` page, and Claude Code opens windows of its own, so it takes the
+   claude.ai page of the window that is on a chat and raises that window.
+3. It picks the voice button by several signals, not only the label: a button of the composer that
+   holds the message box, icon-only, labelled "Use voice mode" or a known translation (the Russian
+   interface says «Включить голосовой режим»; Ukrainian too), and never one of the known others (send,
+   stop, dictation, attachments, model, tools, read aloud). With a label it does not know, it takes the
+   icon right after the dictation button, which is where voice mode sits.
+4. When nothing matches it recovers, in order: Escape, sent only while that Claude is frontmost, closes
+   what covers the chat (settings, a menu, a dialog: Claude hides everything under a modal); then a new
+   chat: the sidebar's New chat («Создать»), only on a chat screen since on Claude Code's screen the
+   same button starts a Code session, or, when only one Claude instance runs, the link
+   `claude://claude.ai/new`. Then it looks again.
+5. After the press it checks that voice mode came up (the microphone control, «Выключить микрофон» /
+   "Turn off microphone", appears). When voice is already on it says so and does not toggle it off.
 
 Pressing needs Paseo in System Settings → Privacy & Security → Accessibility, the same permission as
 the ChatGPT button. Without it, or when the button is not found, Claude is left in front and you tap
@@ -62,5 +66,9 @@ voice button. In a car, Claude's own CarPlay icon starts a voice chat by itself.
 - Claude's voice mode currently sees only one tool of each custom connector and asks for every write
   (anthropics/claude-ai-mcp#1316, #1144), which limits what God Mode can do by voice until Anthropic
   fixes it.
-- A new release of claude.ai can move or rename the button; the label, position and send-spot signals
-  each cover for the others, and the toast says when nothing matched.
+- A new release of claude.ai can move or rename the button; the label, place and dictation-neighbour
+  signals each cover for the others, and the toast says when nothing matched.
+- macOS hides every window from Accessibility while the screen is locked: the button then only brings
+  Claude forward.
+- Measured on 2026-11-17 (Claude 5.11492.5, Russian interface): voice on in about 1.5 s from a chat,
+  about 3 s with settings open over it.
