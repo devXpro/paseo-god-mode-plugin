@@ -190,3 +190,13 @@ test("on Claude Code's screen its Create button is not taken for a new chat", ()
   assert.equal(d.screen, "elsewhere");
   assert.equal(d.newChat, -1);
 });
+
+test("AX booleans are NSNumber bools: JXA's kCFBooleanTrue is refused, and Electron never publishes its page", () => {
+  const script = claudeAxScript();
+  assert.doesNotMatch(script, /kCFBooleanTrue/);
+  assert.match(script, /AXManualAccessibility"\), YES\)/);
+});
+
+test("the flag is not set again while Electron builds the page: each set starts it over", () => {
+  assert.match(claudeAxScript(), /flagTakenAt < 0 \|\| now\(\) - flagTakenAt > 4000/);
+});

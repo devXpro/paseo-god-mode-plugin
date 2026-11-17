@@ -28,7 +28,10 @@ button presses it through Accessibility:
 1. It finds the Claude instance: the one started without `--user-data-dir`, or the chosen profile's
    (started with `open -n` and that profile's data when it is not running), and brings that process
    forward by its pid.
-2. It reads Claude's windows (`AXManualAccessibility` makes Electron publish them). The claude.ai page
+2. It reads Claude's windows. `AXManualAccessibility` makes Electron publish the page, about two seconds
+   after it is set; it is set once and left alone, since every new set starts that over (set every
+   300 ms, a freshly started Claude never showed its page). In JXA it has to be an NSNumber bool:
+   `$.kCFBooleanTrue` is refused. The claude.ai page
    sits inside the app's own `file://` page, and Claude Code opens windows of its own, so it takes the
    claude.ai page of the window that is on a chat and raises that window.
 3. It picks the voice button by several signals, not only the label: a button of the composer that
@@ -70,5 +73,5 @@ voice button. In a car, Claude's own CarPlay icon starts a voice chat by itself.
   signals each cover for the others, and the toast says when nothing matched.
 - macOS hides every window from Accessibility while the screen is locked: the button then only brings
   Claude forward.
-- Measured on 2026-11-17 (Claude 5.11492.5, Russian interface): voice on in about 1.5 s from a chat,
-  about 3 s with settings open over it.
+- Measured on 2026-11-17 (Claude 5.11492.5, Russian interface), from the Paseo button to voice on:
+  about 2 s with Claude running, 5 to 9 s with Claude closed, about 3 s with settings open over a chat.
