@@ -60,7 +60,7 @@ test("a running default Claude is pressed into voice through Accessibility, with
   assert.equal(launch.outcome, "voice-started");
   assert.equal(launch.needsOneTap, false);
   const ax = axCall(calls) as string;
-  assert.match(ax, / 4804 deeplink 15000$/);
+  assert.match(ax, / 4804 deeplink \d+ press com.anthropic.claudefordesktop$/);
   assert.ok(!calls.some((c) => c.startsWith("/usr/bin/open")), "nothing to start");
   const front = calls.findIndex((c) => c.includes("runningApplicationWithProcessIdentifier(4804)"));
   assert.ok(front >= 0 && front < calls.indexOf(ax));
@@ -69,7 +69,7 @@ test("a running default Claude is pressed into voice through Accessibility, with
 test("with another instance running the link is not used, since macOS could send it there", async () => {
   const { run, calls } = mac({ ps: [` 4804 ${EXE}`, ` 5000 ${EXE} --user-data-dir=/Users/me/.claude-evo-data/electron`] });
   await launchClaudeOnMac(settings(), { run, exists, platform: "darwin", sleep: noSleep, home });
-  assert.match(axCall(calls) as string, / 4804 no 15000$/);
+  assert.match(axCall(calls) as string, / 4804 no \d+ press $/);
 });
 
 test("a profile that is not running starts as its own instance, then gets pressed", async () => {
@@ -77,14 +77,14 @@ test("a profile that is not running starts as its own instance, then gets presse
   const launch = await launchClaudeOnMac(settings({ profile: "evo" }), { run, exists, platform: "darwin", sleep: noSleep, home });
   assert.equal(launch.outcome, "voice-started");
   assert.ok(calls.includes(`/usr/bin/open -n -a /Applications/Claude.app --env CLAUDE_CONFIG_DIR=${home}/.claude-evo-data --args --user-data-dir=${home}/.claude-evo-data/electron`));
-  assert.match(axCall(calls) as string, / 6000 no 15000$/);
+  assert.match(axCall(calls) as string, / 6000 no \d+ press $/);
 });
 
 test("Claude not running at all is started first", async () => {
   const { run, calls } = mac({ ps: [], psAfterOpen: [` 7000 ${EXE}`] });
   await launchClaudeOnMac(settings(), { run, exists, platform: "darwin", sleep: noSleep, home });
   assert.ok(calls.includes("/usr/bin/open -b com.anthropic.claudefordesktop"));
-  assert.match(axCall(calls) as string, / 7000 deeplink/);
+  assert.match(axCall(calls) as string, / 7000 deeplink \d+ press com.anthropic.claudefordesktop$/);
 });
 
 test("an unknown profile is refused before anything starts", async () => {

@@ -242,7 +242,7 @@ function collect(root, budget) {
     nodes[i] = n;
     var kids = val(raw, "AXChildren");
     if (kids !== undefined) {
-      var count = kids.count;
+      var count = Number(kids.count);
       for (var k = count - 1; k >= 0; k--) stack.push([kids.objectAtIndex(k), i]);
     }
     if (role === "AXStaticText" && n.parent >= 0 && nodes[n.parent] && nodes[n.parent].role === "AXButton") nodes[n.parent].hasText = true;
@@ -259,7 +259,7 @@ function findClaudeArea(root, depth) {
     if (item[1] >= depth) continue;
     var kids = attr(item[0], "AXChildren");
     if (kids === undefined) continue;
-    for (var k = 0; k < kids.count; k++) queue.push([kids.objectAtIndex(k), item[1] + 1]);
+    for (var k = 0; k < Number(kids.count); k++) queue.push([kids.objectAtIndex(k), item[1] + 1]);
   }
   return null;
 }
@@ -288,16 +288,16 @@ function waitFor(fn, ms, step) {
  */
 function webAreaOf(app) {
   var ws = attr(app, "AXWindows");
-  if (ws === undefined || ws.count === 0) return null;
+  if (ws === undefined || Number(ws.count) === 0) return null;
   var focused = attr(app, "AXFocusedWindow");
   var best = null;
-  for (var w = 0; w < ws.count; w++) {
+  for (var w = 0; w < Number(ws.count); w++) {
     var win = ws.objectAtIndex(w);
     if (roleOf(win) !== "AXWindow") continue;
     var area = findClaudeArea(win, 20);
     if (!area) continue;
     var kids = attr(area, "AXChildren");
-    if (kids === undefined || kids.count === 0) continue;
+    if (kids === undefined || Number(kids.count) === 0) continue;
     var isFocused = focused !== undefined && $.CFEqual(focused, win);
     var rank = (screenOf(areaUrl(area)) === "chat" ? 2 : 0) + (isFocused ? 1 : 0);
     if (!best || rank > best.rank) best = { win: win, area: area, rank: rank, focused: isFocused };
@@ -350,10 +350,21 @@ function press(el) {
   return $.AXUIElementPerformAction(el, $("AXPress")) === 0;
 }
 
-/** Brings this pid forward. Setting AXFrontmost is ignored for a background caller; activation is not. */
+var openBundle = "";
+
+/**
+ * Brings this pid forward. AXFrontmost is ignored for a background caller and macOS may refuse an
+ * activation it did not see the user ask for; LaunchServices (\`open -b\`) is let through, so it is
+ * used as well whenever it cannot pick another instance (the caller passes the bundle id only then).
+ */
 function front(pid) {
   var running = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
   if (running && !running.isNil()) running.activateWithOptions(3);
+  if (openBundle && frontPid() !== pid) {
+    var sa = Application.currentApplication();
+    sa.includeStandardAdditions = true;
+    try { sa.doShellScript("/usr/bin/open -b " + openBundle); } catch (e) {}
+  }
 }
 
 function frontPid() {
@@ -377,25 +388,33 @@ function run(argv) {
   var waitMs = parseInt(argv[2] || "15000", 10);
   // "dry": find and report, press and navigate nothing (for checking a Mac by hand).
   var dry = argv[3] === "dry";
+  openBundle = /^[A-Za-z0-9.-]+$/.test(argv[4] || "") ? argv[4] : "";
   var steps = [];
   var app = $.AXUIElementCreateApplication(pid);
-  $.AXUIElementSetAttributeValue(app, $("AXManualAccessibility"), $.kCFBooleanTrue);
-  if (!dry) front(pid);
-  var web = waitFor(function () { return webAreaOf(app); }, waitMs, 250);
+  // Electron builds the page's tree only for a window that exists while Claude is frontmost and the flag
+  // is set; a flag set during launch, or on a window in the background, is ignored. So until the page
+  // shows, keep Claude in front and set the flag again.
+  var web = waitFor(function () {
+    if (!dry && frontPid() !== pid) front(pid);
+    $.AXUIElementSetAttributeValue(app, $("AXManualAccessibility"), $.kCFBooleanTrue);
+    return webAreaOf(app);
+  }, waitMs, 300);
   if (!web) return JSON.stringify({ result: "no-window", steps: steps });
 
   // Ways out when the button is not there, tried in this order: Escape closes what covers the chat
   // (settings, a menu, a dialog: Claude hides everything under a modal), then a new chat replaces a
   // screen that is not a chat or a message box holding a draft.
   var recoveries = ["escape", "new-chat"];
-  for (var attempt = 0; attempt <= recoveries.length; attempt++) {
+  var attempts = recoveries.length + 1;
+  for (var attempt = 0; attempt < attempts; attempt++) {
     var seen = waitFor(function () {
       var w = webAreaOf(app);
       if (!w) return null;
       web = w;
       var l = look(app, w.area);
-      return l.d.action === "none" && attempt > 0 && l.d.reason === "no-composer" ? null : l;
-    }, attempt === 0 ? 1500 : 6000, 300);
+      // A page that has just loaded shows its controls a moment later: give the button that moment.
+      return l.d.action === "none" && (attempt === 0 || l.d.reason === "no-composer") ? null : l;
+    }, attempt === 0 ? 2500 : 6000, 300);
     if (!seen) seen = look(app, web.area);
     var d = seen.d;
     steps.push({ attempt: attempt, scope: seen.scope, visited: seen.snap.visited, url: seen.snap.url, decision: d });
