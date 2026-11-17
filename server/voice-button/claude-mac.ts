@@ -102,6 +102,7 @@ export async function launchClaudeOnMac(
   settings: ClaudeVoiceSettings,
   { run = runFile, exists = existsSync, platform = process.platform, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), home = homedir() }: ClaudeLaunchDeps = {},
 ): Promise<ClaudeVoiceLaunch> {
+  const began = Date.now();
   if (platform !== "darwin") return result("unsupported", "none", "Paseo is not running on a Mac, so it cannot open Claude here.");
   const app = await findClaude(run, exists);
   if (!app) return result("unsupported", "none", "The Claude app is not in Applications.");
@@ -117,7 +118,7 @@ export async function launchClaudeOnMac(
       ? await run("/usr/bin/open", ["-n", "-a", app.path, "--env", `CLAUDE_CONFIG_DIR=${dataDir}`, "--args", `--user-data-dir=${join(dataDir, "electron")}`])
       : await run("/usr/bin/open", ["-b", app.bundleId]);
     if (opened.code !== 0) throw new Error(`Could not open Claude: ${opened.stderr.trim()}`);
-    for (let attempt = 0; attempt < 30 && !target(); attempt++) {
+    for (let attempt = 0; attempt < 20 && !target(); attempt++) {
       await sleep(500);
       instances = await listInstances(app, run);
     }
@@ -147,7 +148,10 @@ export async function launchClaudeOnMac(
   await bringForward();
   // A link opens a new chat only in the instance macOS picks, so it is used only when there is one.
   const deepLink = instances.length === 1 ? "deeplink" : "no";
-  const ran = await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", claudeAxScript(), String(instance.pid), deepLink, "15000"], 60_000);
+  // A Claude that has just started needs longer: Electron, then claude.ai over the network. Paseo
+  // gives a plugin RPC 30 s, so the whole press has to fit in that, with a margin.
+  const waitMs = String(Math.max(5_000, 22_000 - (Date.now() - began)));
+  const ran = await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", claudeAxScript(), String(instance.pid), deepLink, waitMs, "press", deepLink === "deeplink" && !profile ? app.bundleId : ""], 27_000);
   let ax: AxResult;
   try {
     ax = JSON.parse(ran.stdout.trim()) as AxResult;
