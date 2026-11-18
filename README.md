@@ -17,7 +17,7 @@ your phone, your car or a walk, while your Mac does the work.
 [![Licence](https://img.shields.io/github/license/devXpro/paseo-god-mode-plugin?style=flat-square&color=111111&labelColor=111111&label=licence)](LICENSE)
 [![Status](https://img.shields.io/badge/status-building%20in%20public-ffb020?style=flat-square&labelColor=111111)](#status)
 
-🎙️ **Voice or chat, in Claude or ChatGPT** · 🧠 **Every agent, every project** · 🧩 **Your Paseo plugins too** · 🔘 **Three buttons, no terminal** · 🔐 **Your own tunnel and sign-in** · ⚡ **Straight to Paseo on your Mac**
+🎙️ **Voice or chat, in Claude or ChatGPT** · 🧠 **Every agent, every project** · 🧩 **Your Paseo plugins too** · 🔘 **Three buttons, no terminal** · 🔐 **Your own tunnel and sign-in** · ⚡ **Straight to Paseo on your Mac or Windows**
 
 </div>
 
